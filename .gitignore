@@ -1,0 +1,13 @@
+# Environment — contains API keys, never commit
+kraken-bot/backend/.env
+
+# Runtime artefacts
+kraken-bot/backend/*.db
+kraken-bot/backend/*.log
+kraken-bot/__pycache__/
+kraken-bot/backend/__pycache__/
+**/__pycache__/
+**/*.pyc
+
+# Virtual environment
+.venv/

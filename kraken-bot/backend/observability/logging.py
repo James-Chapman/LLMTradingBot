@@ -1,0 +1,72 @@
+"""
+Structured logging setup
+"""
+import json
+import logging
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+
+class JSONFormatter(logging.Formatter):
+    """JSON formatter for structured logging"""
+
+    def format(self, record: logging.LogRecord) -> str:
+        log_entry = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "module": record.module,
+            "function": record.funcName,
+            "line": record.lineno,
+        }
+
+        # Add extra fields if present
+        if hasattr(record, 'extra_fields'):
+            log_entry.update(record.extra_fields)
+
+        # Add exception info if present
+        if record.exc_info:
+            log_entry["exception"] = self.formatException(record.exc_info)
+
+        return json.dumps(log_entry)
+
+def setup_logging(log_level: str = "INFO", log_file: str = "kraken_bot.log") -> None:
+    """Setup structured logging"""
+
+    # Create logger
+    logger = logging.getLogger("kraken_bot")
+    logger.setLevel(getattr(logging, log_level.upper()))
+
+    # Remove existing handlers
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+
+    # JSON formatter
+    formatter = JSONFormatter()
+
+    # Console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
+    # File handler
+    log_path = Path(log_file)
+    file_handler = logging.FileHandler(log_path)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+    # Prevent duplicate logs
+    logger.propagate = False
+
+def get_logger(name: str) -> logging.Logger:
+    """Get a logger instance"""
+    return logging.getLogger(f"kraken_bot.{name}")
+
+def log_event(event_type: str, **kwargs: Any) -> None:
+    """Log a structured event"""
+    logger = get_logger("events")
+    extra = {"extra_fields": {"event_type": event_type, **kwargs}}
+    logger.info(f"Event: {event_type}", extra=extra)

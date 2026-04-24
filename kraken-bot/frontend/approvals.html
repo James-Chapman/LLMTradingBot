@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Approvals — Kraken Bot</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <style>
+        :root {
+            --bg:      #0d1117;
+            --surface: #161b22;
+            --border:  #30363d;
+            --subtle:  #21262d;
+            --text:    #e6edf3;
+            --muted:   #8b949e;
+            --green:   #3fb950;
+            --red:     #f85149;
+            --blue:    #58a6ff;
+            --gold:    #d29922;
+        }
+        * { box-sizing: border-box; }
+        body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; margin: 0; }
+        .card  { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
+        .mono  { font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace; }
+        .label { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+        .pill  { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 9999px; font-size: 11px; font-weight: 600; border: 1px solid; }
+        .pill-blue  { color: var(--blue);  background: rgba(88,166,255,.1);  border-color: rgba(88,166,255,.3); }
+        .pill-gold  { color: var(--gold);  background: rgba(210,153,34,.1);  border-color: rgba(210,153,34,.3); }
+        .pill-green { color: var(--green); background: rgba(63,185,80,.1);   border-color: rgba(63,185,80,.3); }
+        .pill-red   { color: var(--red);   background: rgba(248,81,73,.1);   border-color: rgba(248,81,73,.3); }
+        .btn { padding: 8px 20px; font-size: 13px; font-weight: 600; border-radius: 6px; cursor: pointer; border: 1px solid; transition: opacity .15s; }
+        .btn:hover { opacity: .8; }
+        .btn-approve { color: var(--green); background: rgba(63,185,80,.12);  border-color: rgba(63,185,80,.3); }
+        .btn-reject  { color: var(--red);   background: rgba(248,81,73,.12);  border-color: rgba(248,81,73,.3); }
+    </style>
+</head>
+<body>
+
+<!-- ── Header ─────────────────────────────────────────────────────────── -->
+<header style="background:var(--surface);border-bottom:1px solid var(--border);" class="sticky top-0 z-50">
+    <div style="max-width:900px;margin:0 auto;padding:0 24px;" class="flex items-center justify-between h-14">
+        <div class="flex items-center gap-4">
+            <a href="/" style="font-size:13px;color:var(--blue);text-decoration:none;">← Dashboard</a>
+            <span style="color:var(--border);">|</span>
+            <span style="font-size:15px;font-weight:600;">Trade Approvals</span>
+        </div>
+        <div id="count-badge" class="pill pill-gold">Loading…</div>
+    </div>
+</header>
+
+<!-- ── Main ───────────────────────────────────────────────────────────── -->
+<main style="max-width:900px;margin:0 auto;padding:24px;">
+    <div id="container" style="display:flex;flex-direction:column;gap:16px;">
+        <div style="text-align:center;padding:80px 0;color:var(--muted);">
+            <div style="font-size:32px;margin-bottom:12px;">⏳</div>
+            <div style="font-size:14px;">Loading…</div>
+        </div>
+    </div>
+</main>
+
+<script>
+async function load() {
+    try {
+        const r = await fetch('/api/approvals');
+        if (!r.ok) return;
+        const approvals = await r.json();
+
+        document.getElementById('count-badge').textContent =
+            approvals.length ? `${approvals.length} pending` : 'No pending';
+
+        const el = document.getElementById('container');
+
+        if (!approvals.length) {
+            el.innerHTML = `
+                <div style="text-align:center;padding:80px 0;color:var(--muted);">
+                    <div style="font-size:40px;margin-bottom:16px;">✓</div>
+                    <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:8px;">No pending approvals</div>
+                    <div style="font-size:13px;">Set <code style="background:var(--subtle);padding:2px 6px;border-radius:4px;">TRADING_MODE=semi_automated</code> to generate trade proposals.</div>
+                </div>`;
+            return;
+        }
+
+        el.innerHTML = approvals.map(a => {
+            const long   = a.direction === 'long';
+            const col    = long ? 'var(--green)' : 'var(--red)';
+            const bg     = long ? 'rgba(63,185,80,.06)' : 'rgba(248,81,73,.06)';
+            const pct    = Math.round(a.confidence * 100);
+            const expiry = new Date(a.expires_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+            const riskCol = a.risk_approved ? 'var(--green)' : 'var(--red)';
+            return `
+            <div class="card" style="padding:24px;" id="card-${a.id}">
+                <!-- Title row -->
+                <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:16px;">
+                    <div style="display:flex;align-items:center;gap:10px;">
+                        <span style="font-size:20px;font-weight:700;">${a.market}</span>
+                        <span class="pill ${long ? 'pill-green' : 'pill-red'}">${long ? '▲' : '▼'} ${a.direction.toUpperCase()}</span>
+                    </div>
+                    <div style="text-align:right;font-size:12px;color:var(--muted);">
+                        <div>${a.strategy_id}</div>
+                        <div>Expires ${expiry}</div>
+                    </div>
+                </div>
+
+                <!-- Confidence bar -->
+                <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;">
+                    <div style="flex:1;height:6px;background:var(--subtle);border-radius:3px;">
+                        <div style="height:6px;border-radius:3px;width:${pct}%;background:${col};transition:width .3s;"></div>
+                    </div>
+                    <span style="font-size:13px;font-weight:700;color:${col};">${pct}%</span>
+                    <span style="font-size:12px;color:var(--muted);">confidence</span>
+                </div>
+
+                <!-- Details grid -->
+                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:20px;">
+                    <div>
+                        <div class="label" style="margin-bottom:6px;">Thesis</div>
+                        <div style="font-size:13px;line-height:1.5;">${a.thesis}</div>
+                    </div>
+                    <div>
+                        <div class="label" style="margin-bottom:6px;">Entry</div>
+                        <div style="font-size:13px;line-height:1.5;">${a.entry_plan}</div>
+                    </div>
+                    <div>
+                        <div class="label" style="margin-bottom:6px;">Exit</div>
+                        <div style="font-size:13px;line-height:1.5;">${a.exit_plan}</div>
+                    </div>
+                </div>
+
+                <!-- Risk + actions -->
+                <div style="display:flex;align-items:center;justify-content:space-between;padding-top:16px;border-top:1px solid var(--subtle);">
+                    <div style="font-size:12px;color:${riskCol};">
+                        Risk: ${a.risk_reason}
+                    </div>
+                    <div style="display:flex;gap:10px;">
+                        <button class="btn btn-approve" onclick="decide('${a.id}','approve')">✓ Approve</button>
+                        <button class="btn btn-reject"  onclick="decide('${a.id}','reject')">✗ Reject</button>
+                    </div>
+                </div>
+            </div>`;
+        }).join('');
+    } catch(e) { console.error(e); }
+}
+
+async function decide(id, action) {
+    const card = document.getElementById(`card-${id}`);
+    if (card) { card.style.opacity = '0.4'; card.style.pointerEvents = 'none'; }
+    try {
+        await fetch(`/api/approvals/${id}/${action}`, { method: 'POST' });
+        setTimeout(load, 400);
+    } catch(e) { console.error(e); if (card) { card.style.opacity = '1'; card.style.pointerEvents = ''; } }
+}
+
+load();
+setInterval(load, 3000);
+</script>
+</body>
+</html>

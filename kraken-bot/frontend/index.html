@@ -1,0 +1,1840 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kraken Bot</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+        :root {
+            --bg:      #0d1117;
+            --surface: #161b22;
+            --border:  #30363d;
+            --subtle:  #21262d;
+            --text:    #e6edf3;
+            --muted:   #8b949e;
+            --green:   #3fb950;
+            --red:     #f85149;
+            --blue:    #58a6ff;
+            --gold:    #d29922;
+            --orange:  #e3773a;
+        }
+        * { box-sizing: border-box; }
+        body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; margin: 0; }
+        .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
+        .mono { font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace; }
+        .label { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+        .pill { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 9999px; font-size: 11px; font-weight: 600; border: 1px solid; }
+        .pill-blue   { color: var(--blue);   background: rgba(88,166,255,.1);  border-color: rgba(88,166,255,.3); }
+        .pill-gold   { color: var(--gold);   background: rgba(210,153,34,.1);  border-color: rgba(210,153,34,.3); }
+        .pill-green  { color: var(--green);  background: rgba(63,185,80,.1);   border-color: rgba(63,185,80,.3); }
+        .pill-red    { color: var(--red);    background: rgba(248,81,73,.1);   border-color: rgba(248,81,73,.3); }
+        .pill-orange { color: var(--orange); background: rgba(227,119,58,.1);  border-color: rgba(227,119,58,.3); }
+        .pill-muted  { color: var(--muted);  background: rgba(139,148,158,.1); border-color: rgba(139,148,158,.3); }
+        .divider { border: none; border-top: 1px solid var(--border); margin: 0; }
+        .row-sep { border-bottom: 1px solid var(--subtle); }
+        .signal-long  { border-left: 3px solid var(--green); }
+        .signal-short { border-left: 3px solid var(--red); }
+        .news-card:hover { border-color: var(--muted) !important; }
+        .toggle-btn { padding: 3px 10px; font-size: 11px; font-weight: 600; border-radius: 4px; cursor: pointer; border: 1px solid; transition: opacity .15s; }
+        .toggle-on  { color: var(--green); background: rgba(63,185,80,.1);  border-color: rgba(63,185,80,.3); }
+        .toggle-off { color: var(--muted); background: rgba(139,148,158,.08); border-color: rgba(139,148,158,.3); }
+        .estop-btn { padding: 7px 18px; font-size: 13px; font-weight: 700; border-radius: 6px; cursor: pointer; border: 1px solid; transition: all .15s; letter-spacing: .03em; }
+        .estop-active   { color: #fff; background: var(--red); border-color: var(--red); }
+        .estop-inactive { color: var(--red); background: rgba(248,81,73,.12); border-color: rgba(248,81,73,.4); }
+        .estop-active:hover   { opacity: .85; }
+        .estop-inactive:hover { background: rgba(248,81,73,.2); }
+        .resume-btn { padding: 7px 18px; font-size: 13px; font-weight: 700; border-radius: 6px; cursor: pointer; color: var(--green); background: rgba(63,185,80,.14); border: 1px solid rgba(63,185,80,.4); }
+        .resume-btn:hover { background: rgba(63,185,80,.25); }
+        ::-webkit-scrollbar { width: 5px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+        @keyframes live-pulse {
+            0%   { box-shadow: 0 0 0 0   rgba(63,185,80,.6); }
+            70%  { box-shadow: 0 0 0 6px rgba(63,185,80,.0); }
+            100% { box-shadow: 0 0 0 0   rgba(63,185,80,.0); }
+        }
+    </style>
+</head>
+<body x-data="dashboard()">
+
+<!-- ── Header ─────────────────────────────────────────────────────────── -->
+<header style="background:var(--surface);border-bottom:1px solid var(--border);" class="sticky top-0 z-50"
+        :style="emergencyStop ? 'border-bottom: 2px solid var(--red);' : ''">
+    <div style="max-width:1280px;margin:0 auto;padding:0 24px;" class="flex items-center justify-between h-14">
+        <div class="flex items-center gap-3">
+            <span style="font-size:18px;font-weight:700;color:var(--text);">⚡ Kraken Bot</span>
+            <span style="color:var(--muted);font-size:12px;">v0.1.0</span>
+            <!-- Emergency stop banner -->
+            <span x-show="emergencyStop" class="pill pill-red" style="font-size:12px;font-weight:700;letter-spacing:.04em;">■ EMERGENCY STOP</span>
+        </div>
+        <div class="flex items-center gap-3">
+            <span class="pill pill-blue"   x-show="environment === 'paper'">PAPER</span>
+            <span class="pill pill-red"    x-show="environment === 'live'">LIVE</span>
+            <span class="pill pill-muted"  x-show="mode === 'manual'">MANUAL</span>
+            <span class="pill pill-gold"   x-show="mode === 'semi_automated'">SEMI-AUTO</span>
+            <span class="pill pill-green"  x-show="mode === 'fully_automated'">AUTO</span>
+            <div style="width:1px;height:20px;background:var(--border);"></div>
+            <div>
+                <div class="label" style="margin-bottom:1px;">Total Equity</div>
+                <div class="mono" style="font-size:14px;font-weight:600;"><span x-text="currencySymbol"></span><span x-text="equity"></span></div>
+            </div>
+            <div style="width:1px;height:20px;background:var(--border);"></div>
+            <div>
+                <div class="label" style="margin-bottom:1px;">Available Cash</div>
+                <div class="mono" style="font-size:14px;font-weight:600;"><span x-text="currencySymbol"></span><span x-text="cash"></span></div>
+            </div>
+            <div style="width:1px;height:20px;background:var(--border);"></div>
+            <a href="/approvals" class="pill pill-blue" style="text-decoration:none;cursor:pointer;">
+                Approvals <span x-show="pendingCount > 0" x-text="'(' + pendingCount + ')'" style="margin-left:3px;"></span>
+            </a>
+            <!-- Emergency stop / resume button -->
+            <button x-show="!emergencyStop" class="estop-inactive estop-btn" @click="activateStop()">⛔ Stop</button>
+            <button x-show="emergencyStop"  class="resume-btn"                @click="resumeBot()">▶ Resume</button>
+        </div>
+    </div>
+</header>
+
+<!-- ── Emergency stop overlay ─────────────────────────────────────────── -->
+<div x-show="emergencyStop" style="background:rgba(248,81,73,.07);border-bottom:1px solid rgba(248,81,73,.3);padding:10px 24px;text-align:center;">
+    <span style="color:var(--red);font-size:13px;font-weight:600;">
+        ⛔ Emergency stop is active. All trading is halted. The approval queue has been cleared. Click Resume to restart.
+    </span>
+</div>
+
+<!-- ── Main ───────────────────────────────────────────────────────────── -->
+<main style="max-width:1280px;margin:0 auto;padding:24px;display:flex;flex-direction:column;gap:20px;">
+
+    <!-- Market Briefing banner — only shown when a briefing is available -->
+    <div x-show="llmBriefing"
+         style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 20px;display:flex;align-items:flex-start;gap:14px;">
+        <!-- Icon + label -->
+        <div style="flex-shrink:0;margin-top:1px;">
+            <span style="font-size:16px;">🧠</span>
+        </div>
+        <div style="flex:1;min-width:0;">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:5px;">
+                <span style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);">Market Briefing</span>
+                <!-- Overall sentiment pill -->
+                <span class="pill"
+                      :class="(llmBriefing?.overall_sentiment ?? 0) >= 0.1 ? 'pill-green' :
+                               (llmBriefing?.overall_sentiment ?? 0) <= -0.1 ? 'pill-red' : 'pill-muted'"
+                      x-text="(llmBriefing?.overall_sentiment ?? 0) >= 0.1 ? '▲ Bullish' :
+                               (llmBriefing?.overall_sentiment ?? 0) <= -0.1 ? '▼ Bearish' : '— Neutral'">
+                </span>
+                <!-- Age + article count -->
+                <span style="font-size:11px;color:var(--muted);margin-left:auto;"
+                      x-text="llmBriefing ? timeAgo(new Date(llmBriefing.generated_at)) + ' · ' + llmBriefing.article_count + ' article' + (llmBriefing.article_count !== 1 ? 's' : '') : ''">
+                </span>
+            </div>
+            <!-- Key insight — the only content shown here -->
+            <p style="margin:0;font-size:13px;color:var(--text);line-height:1.55;" x-text="llmBriefing?.key_insight"></p>
+        </div>
+    </div>
+
+    <!-- Mode explanation banner -->
+    <div class="card" style="padding:14px 20px;display:flex;align-items:center;justify-content:space-between;gap:16px;">
+        <div class="flex items-center gap-3">
+            <div>
+                <span class="label">Current mode: </span>
+                <span x-show="mode==='manual'"         style="font-size:13px;font-weight:600;color:var(--muted);">MANUAL — Bot evaluates markets and surfaces signals. No trades are placed until you switch mode.</span>
+                <span x-show="mode==='semi_automated'"  style="font-size:13px;font-weight:600;color:var(--gold);">SEMI-AUTO — Bot proposes trades. Each signal appears in the Approvals queue for you to accept or reject.</span>
+                <span x-show="mode==='fully_automated'" style="font-size:13px;font-weight:600;color:var(--green);">FULLY AUTO — Bot executes trades immediately without approval. Stop-losses are automatic.</span>
+            </div>
+        </div>
+        <div style="font-size:12px;color:var(--muted);white-space:nowrap;">
+            Set <code style="background:var(--subtle);padding:2px 6px;border-radius:4px;">TRADING_MODE=semi_automated</code> in <code style="background:var(--subtle);padding:2px 6px;border-radius:4px;">.env</code> to receive trade proposals
+        </div>
+    </div>
+
+    <!-- Equity Curve -->
+    <div class="card" style="padding:0;">
+        <div class="flex items-center justify-between"
+             style="padding:14px 20px;cursor:pointer;user-select:none;"
+             @click="panels.equity = !panels.equity">
+            <div class="flex items-center gap-3">
+                <span class="label">Portfolio Value</span>
+                <!-- Live indicator: pulses green when SW is active and updates are arriving -->
+                <span x-show="_swActive" style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--green);">
+                    <span style="width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 0 0 rgba(63,185,80,.6);animation:live-pulse 2s infinite;display:inline-block;flex-shrink:0;"></span>
+                    Live
+                </span>
+            </div>
+            <span style="color:var(--muted);font-size:13px;" x-text="panels.equity ? '▲' : '▼'"></span>
+        </div>
+        <div x-show="panels.equity" style="padding:0 20px 20px;">
+            <div style="height:140px;"><canvas id="equity-chart"></canvas></div>
+        </div>
+    </div>
+
+    <!-- Markets / Signals / Open Positions -->
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;">
+
+        <!-- Markets -->
+        <div class="card" style="padding:0;">
+            <div class="flex items-center justify-between"
+                 style="padding:14px 20px;cursor:pointer;user-select:none;"
+                 @click="panels.markets = !panels.markets">
+                <div class="label">Markets</div>
+                <span style="color:var(--muted);font-size:13px;" x-text="panels.markets ? '▲' : '▼'"></span>
+            </div>
+            <div x-show="panels.markets" style="padding:0 20px 16px;">
+                <div style="font-size:11px;color:var(--muted);margin-bottom:10px;">click toggle to disable a market</div>
+                <div id="markets-list">
+                    <div style="color:var(--muted);font-size:13px;">Loading…</div>
+                </div>
+                <!-- Strategy selector -->
+                <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--subtle);">
+                    <div class="label" style="margin-bottom:10px;">Strategy</div>
+                    <template x-for="s in strategies" :key="s.id">
+                        <div class="flex items-center justify-between" style="padding:6px 0;">
+                            <span style="font-size:12px;" x-text="s.label || s.id"></span>
+                            <button class="toggle-btn" :class="s.selected ? 'toggle-on' : 'toggle-off'"
+                                    @click.stop="selectStrategy(s.id)"
+                                    x-text="s.selected ? 'Selected' : 'Select'"></button>
+                        </div>
+                    </template>
+                    <div x-show="!strategies.length" style="color:var(--muted);font-size:12px;">No strategies</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Signals -->
+        <div class="card" style="padding:0;">
+            <div class="flex items-center justify-between"
+                 style="padding:14px 20px;cursor:pointer;user-select:none;"
+                 @click="panels.signals = !panels.signals">
+                <div class="label">Signals</div>
+                <span style="color:var(--muted);font-size:13px;" x-text="panels.signals ? '▲' : '▼'"></span>
+            </div>
+            <div x-show="panels.signals" style="padding:0 20px 16px;">
+                <div id="signals-list" style="display:flex;flex-direction:column;gap:10px;">
+                    <div style="color:var(--muted);font-size:13px;">Waiting for price history (~5 min)…</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Positions -->
+        <div class="card" style="padding:0;">
+            <div class="flex items-center justify-between"
+                 style="padding:14px 20px;cursor:pointer;user-select:none;"
+                 @click="panels.positions = !panels.positions">
+                <div class="label">Open Positions</div>
+                <div class="flex items-center gap-2" @click.stop>
+                    <button x-show="environment === 'paper'"
+                            @click="resetPositions()"
+                            style="font-size:10px;font-weight:600;padding:3px 9px;border-radius:4px;cursor:pointer;color:var(--orange);background:rgba(227,119,58,.1);border:1px solid rgba(227,119,58,.3);">
+                        Reset
+                    </button>
+                    <span style="color:var(--muted);font-size:13px;" x-text="panels.positions ? '▲' : '▼'"></span>
+                </div>
+            </div>
+            <div x-show="panels.positions" style="padding:0 20px 16px;">
+                <div id="positions-list">
+                    <div style="color:var(--muted);font-size:13px;">No open positions</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Pending Approvals (hidden when empty or stopped) -->
+    <div class="card" style="padding:20px;" x-show="pendingCount > 0 && !emergencyStop">
+        <div class="flex items-center justify-between" style="margin-bottom:14px;">
+            <div class="label">Pending Approvals</div>
+            <div class="flex items-center gap-3">
+                <span class="pill pill-gold" x-text="pendingCount + ' pending'"></span>
+                <a href="/approvals" style="font-size:12px;color:var(--blue);text-decoration:none;">View all →</a>
+            </div>
+        </div>
+        <div id="approvals-queue" style="display:flex;flex-direction:column;gap:10px;"></div>
+    </div>
+
+    <!-- Signal Detail Modal -->
+    <div x-show="signalModal" x-cloak
+         style="position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.75);"
+         @click.self="signalModal=null;signalBreakdown=null;signalVoteRows=[]">
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;width:min(820px,96vw);max-height:92vh;overflow-y:auto;padding:28px;">
+            <template x-if="signalModal">
+                <div>
+                    <!-- ── Header ──────────────────────────────────────────────── -->
+                    <div class="flex items-center justify-between" style="margin-bottom:20px;">
+                        <div>
+                            <div style="font-size:19px;font-weight:700;"
+                                 x-text="signalModal.market + ' ' + (signalModal.direction==='long' ? '▲ LONG' : '▼ SHORT')"></div>
+                            <div style="font-size:12px;color:var(--muted);margin-top:3px;"
+                                 x-text="signalModal.strategy_id + ' · ' + (signalModal.created_at ? new Date(signalModal.created_at+'Z').toLocaleString() : '')"></div>
+                        </div>
+                        <div class="flex items-center gap-4">
+                            <div style="text-align:right;">
+                                <div class="label" style="margin-bottom:2px;">Final Confidence</div>
+                                <div style="font-size:24px;font-weight:800;font-family:monospace;line-height:1;"
+                                     :style="signalModal.confidence>=.7?'color:var(--green)':signalModal.confidence>=.5?'color:var(--gold)':'color:var(--red)'"
+                                     x-text="(signalModal.confidence*100).toFixed(1)+'%'"></div>
+                            </div>
+                            <button @click="signalModal=null;signalBreakdown=null;signalVoteRows=[]"
+                                    style="background:none;border:1px solid var(--border);color:var(--muted);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px;">✕ Close</button>
+                        </div>
+                    </div>
+
+                    <!-- ── Thesis ──────────────────────────────────────────────── -->
+                    <div style="background:rgba(139,148,158,.07);border-radius:8px;padding:13px 16px;margin-bottom:20px;font-size:13px;line-height:1.65;color:var(--muted);"
+                         x-text="signalModal.thesis"></div>
+
+                    <!-- ── Score Breakdown ─────────────────────────────────────── -->
+                    <template x-if="signalBreakdown">
+                    <div style="margin-bottom:20px;">
+                        <div class="label" style="margin-bottom:10px;">Score Breakdown</div>
+
+                        <!-- Waterfall -->
+                        <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;font-size:13px;margin-bottom:12px;">
+
+                            <!-- Column headers -->
+                            <div style="display:grid;grid-template-columns:1fr 110px 90px;gap:0;padding:7px 14px;background:var(--subtle);border-bottom:1px solid var(--border);">
+                                <span style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;">Component</span>
+                                <span style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;">Input</span>
+                                <span style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;text-align:right;">Δ Score</span>
+                            </div>
+
+                            <!-- Momentum base -->
+                            <div style="display:grid;grid-template-columns:1fr 110px 90px;gap:0;padding:9px 14px;border-bottom:1px solid var(--subtle);align-items:center;">
+                                <div>
+                                    <span style="font-weight:600;">Momentum base</span>
+                                    <span style="font-size:11px;color:var(--muted);margin-left:8px;">min(|momentum| × 100, 50)</span>
+                                </div>
+                                <span class="mono" style="font-size:12px;color:var(--muted);"
+                                      x-text="(signalBreakdown.momentum>=0?'+':'')+(signalBreakdown.momentum*100).toFixed(3)+'%'"></span>
+                                <span class="mono" style="text-align:right;font-weight:700;color:var(--blue);"
+                                      x-text="'+' + (signalBreakdown.base*100).toFixed(1)+'%'"></span>
+                            </div>
+
+                            <!-- Indicator consensus -->
+                            <div style="display:grid;grid-template-columns:1fr 110px 90px;gap:0;padding:9px 14px;border-bottom:1px solid var(--subtle);align-items:center;">
+                                <div>
+                                    <span style="font-weight:600;">Indicator consensus</span>
+                                    <span style="font-size:11px;color:var(--muted);margin-left:8px;"
+                                          x-text="signalBreakdown.votes+(signalBreakdown.votes===1?' net vote':' net votes')+' × 5%, capped ±20/+40'"></span>
+                                </div>
+                                <span class="mono" style="font-size:12px;color:var(--muted);"
+                                      x-text="(signalBreakdown.votes>=0?'+':'')+signalBreakdown.votes+' / '+signalBreakdown.available"></span>
+                                <span class="mono" style="text-align:right;font-weight:700;"
+                                      :style="signalBreakdown.indicatorBonus>0?'color:var(--green)':signalBreakdown.indicatorBonus<0?'color:var(--red)':'color:var(--muted)'"
+                                      x-text="(signalBreakdown.indicatorBonus>=0?'+':'')+(signalBreakdown.indicatorBonus*100).toFixed(1)+'%'"></span>
+                            </div>
+
+                            <!-- News sentiment -->
+                            <div style="display:grid;grid-template-columns:1fr 110px 90px;gap:0;padding:9px 14px;border-bottom:1px solid var(--subtle);align-items:center;">
+                                <div>
+                                    <span style="font-weight:600;">News sentiment</span>
+                                    <span style="font-size:11px;color:var(--muted);margin-left:8px;"
+                                          x-text="signalBreakdown.newsBonus>0 ? 'aligned with signal direction' : signalBreakdown.newsBonus<0 ? 'opposing signal direction' : 'neutral / no relevant news'"></span>
+                                </div>
+                                <span class="mono" style="font-size:12px;color:var(--muted);"
+                                      x-text="(signalBreakdown.newsSent>=0?'+':'')+signalBreakdown.newsSent.toFixed(2)"></span>
+                                <span class="mono" style="text-align:right;font-weight:700;"
+                                      :style="signalBreakdown.newsBonus>0?'color:var(--green)':signalBreakdown.newsBonus<0?'color:var(--red)':'color:var(--muted)'"
+                                      x-text="(signalBreakdown.newsBonus>=0?'+':'')+(signalBreakdown.newsBonus*100).toFixed(1)+'%'"></span>
+                            </div>
+
+                            <!-- ATR volatility -->
+                            <div style="display:grid;grid-template-columns:1fr 110px 90px;gap:0;padding:9px 14px;border-bottom:1px solid var(--border);align-items:center;">
+                                <div>
+                                    <span style="font-weight:600;">Volatility (ATR)</span>
+                                    <span style="font-size:11px;color:var(--muted);margin-left:8px;"
+                                          x-text="signalBreakdown.atrPct>1 ? signalBreakdown.atrPct.toFixed(3)+'% of price — penalty' : signalBreakdown.atrPct>0 ? signalBreakdown.atrPct.toFixed(3)+'% — no penalty' : 'ATR warming up'"></span>
+                                </div>
+                                <span class="mono" style="font-size:12px;color:var(--muted);"
+                                      x-text="signalBreakdown.atrPct.toFixed(3)+'%'"></span>
+                                <span class="mono" style="text-align:right;font-weight:700;"
+                                      :style="signalBreakdown.atrPenalty<0?'color:var(--orange)':'color:var(--muted)'"
+                                      x-text="(signalBreakdown.atrPenalty>=0?'+':'')+(signalBreakdown.atrPenalty*100).toFixed(1)+'%'"></span>
+                            </div>
+
+                            <!-- Strategy subtotal -->
+                            <div style="display:grid;grid-template-columns:1fr 90px;gap:0;padding:10px 14px;background:rgba(88,166,255,.06);border-bottom:1px solid var(--border);align-items:center;">
+                                <span style="font-size:13px;font-weight:700;color:var(--blue);">Strategy confidence</span>
+                                <span class="mono" style="text-align:right;font-size:16px;font-weight:800;color:var(--blue);"
+                                      x-text="(signalBreakdown.stratConf*100).toFixed(1)+'%'"></span>
+                            </div>
+
+                            <!-- Learner adjustment (only when it meaningfully changed) -->
+                            <template x-if="signalBreakdown.learnerAdjusted">
+                                <div style="display:grid;grid-template-columns:1fr 110px 90px;gap:0;padding:9px 14px;border-bottom:1px solid var(--subtle);align-items:center;">
+                                    <div>
+                                        <span style="font-weight:600;">Historical performance</span>
+                                        <span style="font-size:11px;color:var(--muted);margin-left:8px;">learner adjusted from past trade outcomes</span>
+                                    </div>
+                                    <span class="mono" style="font-size:12px;color:var(--muted);"
+                                          x-text="'× '+signalBreakdown.learnerScale.toFixed(2)"></span>
+                                    <span class="mono" style="text-align:right;font-weight:700;"
+                                          :style="signalBreakdown.learnerDiff>=0?'color:var(--green)':'color:var(--red)'"
+                                          x-text="(signalBreakdown.learnerDiff>=0?'+':'')+(signalBreakdown.learnerDiff*100).toFixed(1)+'%'"></span>
+                                </div>
+                            </template>
+
+                            <!-- LLM multiplier (when LLM was used) -->
+                            <template x-if="signalBreakdown.llmUsed">
+                                <div style="display:grid;grid-template-columns:1fr 110px 90px;gap:0;padding:9px 14px;border-bottom:1px solid var(--border);align-items:center;">
+                                    <div>
+                                        <span style="font-weight:600;">LLM multiplier</span>
+                                        <span style="font-size:11px;color:var(--muted);margin-left:8px;"
+                                              x-text="signalBreakdown.llmScale>=1 ? 'supported signal' : signalBreakdown.llmScale>=.7 ? 'partially opposed' : 'strongly opposed'"></span>
+                                        <template x-if="signalModal.llm_reasoning">
+                                            <span style="font-size:11px;font-style:italic;color:var(--muted);margin-left:4px;"
+                                                  x-text="'· &ldquo;'+signalModal.llm_reasoning+'&rdquo;'"></span>
+                                        </template>
+                                    </div>
+                                    <span class="mono" style="font-size:12px;color:var(--muted);"
+                                          x-text="'× '+signalBreakdown.llmScale.toFixed(2)"></span>
+                                    <span class="mono" style="text-align:right;font-weight:700;"
+                                          :style="(signalBreakdown.finalConf-signalBreakdown.preLlm)>=0?'color:var(--green)':'color:var(--red)'"
+                                          x-text="((signalBreakdown.finalConf-signalBreakdown.preLlm)>=0?'+':'')+((signalBreakdown.finalConf-signalBreakdown.preLlm)*100).toFixed(1)+'%'"></span>
+                                </div>
+                            </template>
+
+                            <!-- Final -->
+                            <div style="display:grid;grid-template-columns:1fr 90px;gap:0;padding:12px 14px;align-items:center;">
+                                <div>
+                                    <span style="font-size:14px;font-weight:800;">Final confidence</span>
+                                    <span x-show="!signalBreakdown.llmUsed"
+                                          style="font-size:11px;color:var(--muted);font-weight:400;margin-left:8px;">LLM unavailable — no multiplier</span>
+                                </div>
+                                <span class="mono" style="text-align:right;font-size:20px;font-weight:800;"
+                                      :style="signalBreakdown.finalConf>=.7?'color:var(--green)':signalBreakdown.finalConf>=.5?'color:var(--gold)':'color:var(--red)'"
+                                      x-text="(signalBreakdown.finalConf*100).toFixed(1)+'%'"></span>
+                            </div>
+                        </div>
+
+                        <!-- Indicator vote table -->
+                        <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;font-size:12px;">
+                            <div style="display:grid;grid-template-columns:130px 1fr 130px 56px;padding:7px 14px;background:var(--subtle);border-bottom:1px solid var(--border);">
+                                <span style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;">Indicator</span>
+                                <span style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;">Value</span>
+                                <span style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;">Reading</span>
+                                <span style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;text-align:right;">Vote</span>
+                            </div>
+                            <template x-for="row in signalVoteRows" :key="row.name">
+                                <div style="display:grid;grid-template-columns:130px 1fr 130px 56px;padding:8px 14px;border-bottom:1px solid var(--subtle);align-items:center;"
+                                     :style="!row.hasData ? 'opacity:.4' : ''">
+                                    <span style="font-weight:600;color:var(--text);" x-text="row.name"></span>
+                                    <span class="mono" style="color:var(--muted);" x-text="row.displayValue"></span>
+                                    <span style="font-size:11px;"
+                                          :style="row.vote===1?'color:var(--green)':row.vote===-1?'color:var(--red)':'color:var(--muted)'"
+                                          x-text="row.signal"></span>
+                                    <span class="mono" style="text-align:right;font-size:13px;font-weight:700;"
+                                          :style="row.vote===1?'color:var(--green)':row.vote===-1?'color:var(--red)':'color:var(--muted)'">
+                                        <span x-text="row.vote===1?'▲ +1':row.vote===-1?'▼ −1':row.hasData?'— 0':'n/a'"></span>
+                                    </span>
+                                </div>
+                            </template>
+                            <!-- Consensus footer -->
+                            <div style="display:grid;grid-template-columns:1fr auto;padding:9px 14px;background:rgba(88,166,255,.05);align-items:center;">
+                                <span style="font-size:12px;font-weight:600;color:var(--blue);">
+                                    Net consensus:
+                                    <span x-text="(signalBreakdown.votes>=0?'+':'')+signalBreakdown.votes"></span>
+                                    from
+                                    <span x-text="signalBreakdown.available"></span>
+                                    active indicator<span x-text="signalBreakdown.available!==1?'s':''"></span>
+                                    <span x-show="signalBreakdown.available<3"
+                                          style="font-weight:400;color:var(--muted);"> (gate inactive — needs ≥3)</span>
+                                    <span x-show="signalBreakdown.available>=3"
+                                          style="font-weight:400;color:var(--muted);"> (gate requires ≥1 to proceed ✓)</span>
+                                </span>
+                                <span class="mono" style="font-size:13px;font-weight:700;"
+                                      :style="signalBreakdown.indicatorBonus>0?'color:var(--green)':signalBreakdown.indicatorBonus<0?'color:var(--red)':'color:var(--muted)'"
+                                      x-text="'bonus '+(signalBreakdown.indicatorBonus>=0?'+':'')+(signalBreakdown.indicatorBonus*100).toFixed(1)+'%'"></span>
+                            </div>
+                        </div>
+
+                        <!-- Raw signal data (all supporting_signals values) -->
+                        <details style="margin-top:8px;">
+                            <summary style="font-size:11px;color:var(--muted);cursor:pointer;user-select:none;list-style:none;padding:5px 0;display:flex;align-items:center;gap:6px;">
+                                <span style="font-size:9px;">▸</span>
+                                <span>Raw signal data</span>
+                            </summary>
+                            <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden;margin-top:6px;">
+                                <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:0;font-size:11px;font-family:monospace;">
+                                    <template x-for="[k, v] in Object.entries(signalModal.supporting_signals ?? {})" :key="k">
+                                        <div style="display:flex;justify-content:space-between;align-items:center;padding:5px 12px;border-bottom:1px solid var(--subtle);gap:12px;"
+                                             :style="v == null ? 'opacity:.45' : ''">
+                                            <span style="color:var(--muted);"
+                                                  x-text="k.replace(/_/g,' ')"></span>
+                                            <span style="font-weight:600;"
+                                                  :style="v == null ? 'color:var(--muted)' : typeof v === 'number' && v > 0 ? 'color:var(--green)' : typeof v === 'number' && v < 0 ? 'color:var(--red)' : 'color:var(--text)'"
+                                                  x-text="v == null ? '–' : (typeof v === 'number' ? (Number.isInteger(v) ? v : parseFloat(v.toFixed(4))) : v)"></span>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </details>
+                    </div>
+                    </template><!-- /signalBreakdown -->
+
+                    <!-- ── Risk Decision ────────────────────────────────────────── -->
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px;">
+                        <div style="background:rgba(139,148,158,.07);border-radius:8px;padding:14px;">
+                            <div class="label" style="margin-bottom:8px;">Risk Decision</div>
+                            <div style="font-size:13px;">
+                                <span x-show="signalModal.risk_approved"  style="color:var(--green);font-weight:700;">✓ Approved</span>
+                                <span x-show="!signalModal.risk_approved && signalModal.risk_approved!==null" style="color:var(--red);font-weight:700;">✗ Rejected</span>
+                                <span x-show="signalModal.risk_approved===null" style="color:var(--muted);">—</span>
+                                <div style="margin-top:5px;font-size:12px;color:var(--muted);" x-text="signalModal.risk_reason||'—'"></div>
+                            </div>
+                        </div>
+                        <!-- LLM sentiment summary (detail is already in the waterfall) -->
+                        <div style="background:rgba(139,148,158,.07);border-radius:8px;padding:14px;">
+                            <div class="label" style="margin-bottom:8px;">LLM Assessment</div>
+                            <template x-if="signalModal.llm_used">
+                                <div style="font-size:13px;display:flex;flex-direction:column;gap:6px;">
+                                    <div class="flex items-center justify-between">
+                                        <span style="color:var(--muted);">Sentiment</span>
+                                        <span class="mono" :style="signalModal.llm_sentiment>=0?'color:var(--green)':'color:var(--red)'"
+                                              x-text="(signalModal.llm_sentiment>=0?'+':'')+signalModal.llm_sentiment.toFixed(2)"></span>
+                                    </div>
+                                    <div class="flex items-center justify-between">
+                                        <span style="color:var(--muted);">Scale</span>
+                                        <span class="mono" :style="signalModal.llm_confidence_scale>=1?'color:var(--green)':'color:var(--red)'"
+                                              x-text="'× '+signalModal.llm_confidence_scale.toFixed(2)"></span>
+                                    </div>
+                                    <div style="padding:7px 10px;background:rgba(139,148,158,.08);border-radius:5px;font-style:italic;font-size:12px;color:var(--muted);"
+                                         x-text="'&ldquo;'+signalModal.llm_reasoning+'&rdquo;'"></div>
+                                </div>
+                            </template>
+                            <template x-if="!signalModal.llm_used">
+                                <div style="font-size:12px;color:var(--muted);">LLM unavailable when this signal was generated — no adjustment applied.</div>
+                            </template>
+                        </div>
+                    </div>
+
+                    <!-- ── News in Context ─────────────────────────────────────── -->
+                    <template x-if="signalModal.news_context && signalModal.news_context.length">
+                        <div style="background:rgba(139,148,158,.07);border-radius:8px;padding:14px;margin-bottom:18px;">
+                            <div class="label" style="margin-bottom:10px;">News in Context</div>
+                            <div style="display:flex;flex-direction:column;gap:8px;">
+                                <template x-for="n in signalModal.news_context" :key="n.url">
+                                    <div style="display:flex;gap:10px;align-items:flex-start;">
+                                        <span style="font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;white-space:nowrap;margin-top:1px;flex-shrink:0;"
+                                              :style="`color:${$data._sourceBadge(n.source).col};background:${$data._sourceBadge(n.source).bg}`"
+                                              x-text="n.source"></span>
+                                        <div>
+                                            <a :href="n.url" target="_blank" rel="noopener"
+                                               style="font-size:12px;font-weight:600;color:var(--text);text-decoration:none;"
+                                               x-text="n.title"></a>
+                                            <div x-show="n.summary" style="font-size:11px;color:var(--muted);margin-top:2px;" x-text="n.summary"></div>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </template>
+
+                    <!-- ── Entry / Exit plans ──────────────────────────────────── -->
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:12px;">
+                        <div style="background:rgba(139,148,158,.07);border-radius:8px;padding:12px;">
+                            <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;">Entry Plan</div>
+                            <div x-text="signalModal.entry_plan"></div>
+                        </div>
+                        <div style="background:rgba(139,148,158,.07);border-radius:8px;padding:12px;">
+                            <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;">Exit Plan</div>
+                            <div x-text="signalModal.exit_plan"></div>
+                        </div>
+                    </div>
+
+                </div>
+            </template>
+        </div>
+    </div>
+
+    <!-- Trade Ledger -->
+    <div class="card" style="padding:0;">
+        <div class="flex items-center justify-between"
+             style="padding:14px 20px;cursor:pointer;user-select:none;"
+             @click="panels.tradeLedger = !panels.tradeLedger">
+            <span class="label">Trade Ledger</span>
+            <div class="flex items-center gap-3">
+                <span style="font-size:11px;color:var(--muted);" x-text="ledgerStatus"></span>
+                <span style="color:var(--muted);font-size:13px;" x-text="panels.tradeLedger ? '▲' : '▼'"></span>
+            </div>
+        </div>
+        <div x-show="panels.tradeLedger" style="padding:0 20px 20px;overflow-x:auto;">
+            <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                <thead>
+                    <tr style="border-bottom:1px solid var(--border);text-align:left;">
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;white-space:nowrap;">Time</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Market</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;" title="Buy = bought asset · Sell = sold asset · badge shows whether this trade opened or closed a position">Action</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Direction</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">Size</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">Price</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">Value</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Source</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Status</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;font-family:monospace;" title="Position ID — Open and Close rows share the same ID">Pos ID</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;" title="Signal that triggered this trade">Signal</th>
+                    </tr>
+                </thead>
+                <tbody id="ledger-body">
+                    <tr><td colspan="11" style="padding:20px 10px;color:var(--muted);text-align:center;">Loading…</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- P&L Summary -->
+    <div class="card" style="padding:0;">
+        <div class="flex items-center justify-between"
+             style="padding:14px 20px;cursor:pointer;user-select:none;"
+             @click="panels.pnlSummary = !panels.pnlSummary">
+            <span class="label">P&L Summary</span>
+            <div class="flex items-center gap-3">
+                <span style="font-size:11px;color:var(--muted);" x-text="pnlStatus"></span>
+                <span style="color:var(--muted);font-size:13px;" x-text="panels.pnlSummary ? '▲' : '▼'"></span>
+            </div>
+        </div>
+        <div x-show="panels.pnlSummary" style="padding:0 20px 20px;">
+            <div class="grid cols-2 gap-3">
+                <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                    <thead><tr style="border-bottom:1px solid var(--border);"><th style="padding:6px;text-align:left;color:var(--muted);">Day</th><th style="padding:6px;text-align:right;color:var(--muted);">P&L</th></tr></thead>
+                    <tbody id="pnl-day-body"></tbody>
+                </table>
+                <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                    <thead><tr style="border-bottom:1px solid var(--border);"><th style="padding:6px;text-align:left;color:var(--muted);">Market</th><th style="padding:6px;text-align:right;color:var(--muted);">P&L</th></tr></thead>
+                    <tbody id="pnl-market-body"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Closed Positions (signal outcomes with P&L) -->
+    <div class="card" style="padding:0;">
+        <div class="flex items-center justify-between"
+             style="padding:14px 20px;cursor:pointer;user-select:none;"
+             @click="panels.closedTrades = !panels.closedTrades">
+            <span class="label">Closed Positions</span>
+            <div class="flex items-center gap-3">
+                <span style="font-size:11px;color:var(--muted);" x-text="closedStatus"></span>
+                <span style="color:var(--muted);font-size:13px;" x-text="panels.closedTrades ? '▲' : '▼'"></span>
+            </div>
+        </div>
+        <div x-show="panels.closedTrades" style="padding:0 20px 20px;overflow-x:auto;">
+            <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                <thead>
+                    <tr style="border-bottom:1px solid var(--border);text-align:left;">
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;white-space:nowrap;">Time Closed</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;white-space:nowrap;">Time Opened</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;" title="How long the position was open">Duration</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Market</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Direction</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">Size</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;" title="Entry price">Price</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;" title="Size × entry price">Value</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">P&amp;L</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Source</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Status</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;font-family:monospace;" title="Position ID">Pos ID</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;" title="Signal that opened this position">Open Signal</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;" title="Signal that closed this position">Close Signal</th>
+                    </tr>
+                </thead>
+                <tbody id="closed-body">
+                    <tr><td colspan="14" style="padding:20px 10px;color:var(--muted);text-align:center;">Loading…</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Risk Rejections (collapsible, default collapsed) -->
+    <div class="card" style="padding:0;" x-show="riskRejections.length > 0">
+        <div class="flex items-center justify-between"
+             style="padding:14px 20px;cursor:pointer;user-select:none;"
+             @click="panels.riskRejections = !panels.riskRejections">
+            <div class="flex items-center gap-2">
+                <span class="label">Risk Rejections</span>
+                <span class="pill pill-orange" x-text="riskRejections.length + ' recent'"></span>
+            </div>
+            <span style="color:var(--muted);font-size:13px;" x-text="panels.riskRejections ? '▲' : '▼'"></span>
+        </div>
+        <div x-show="panels.riskRejections" style="padding:0 20px 20px;display:flex;flex-direction:column;gap:8px;">
+            <template x-for="(r, i) in riskRejections" :key="i">
+                <div style="display:grid;grid-template-columns:1fr auto;gap:12px;align-items:start;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-left:3px solid var(--orange);border-radius:0 6px 6px 0;">
+                    <div>
+                        <div class="flex items-center gap-2" style="margin-bottom:4px;">
+                            <span style="font-size:13px;font-weight:700;" x-text="r.market"></span>
+                            <span class="pill" :class="r.direction === 'long' ? 'pill-green' : 'pill-red'"
+                                  x-text="(r.direction === 'long' ? '▲ ' : '▼ ') + r.direction.toUpperCase()"></span>
+                            <span style="font-size:11px;font-weight:600;color:var(--orange);" x-text="Math.round(r.confidence * 100) + '% conf'"></span>
+                        </div>
+                        <div style="font-size:12px;color:var(--red);margin-bottom:3px;">⚠ <span x-text="r.reason"></span></div>
+                        <div style="font-size:11px;color:var(--muted);" x-text="r.thesis"></div>
+                    </div>
+                    <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">
+                        <span style="font-size:11px;color:var(--muted);white-space:nowrap;" x-text="timeAgo(new Date(r.timestamp))"></span>
+                        <button x-show="r.trade_idea_id" @click="showSignal(r.trade_idea_id)"
+                                style="font-size:10px;padding:3px 9px;border-radius:4px;background:rgba(139,148,158,.12);border:1px solid rgba(139,148,158,.25);color:var(--muted);cursor:pointer;white-space:nowrap;">
+                            📊 Detail
+                        </button>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+
+    <!-- Price Charts (5-min & 15-min candles, collapsed by default) -->
+    <div class="card" style="padding:0;">
+        <div class="flex items-center justify-between"
+             style="padding:14px 20px;cursor:pointer;user-select:none;"
+             @click="panels.priceCharts = !panels.priceCharts">
+            <span class="label">Price Charts <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted);">· 5 min &amp; 15 min</span></span>
+            <span style="color:var(--muted);font-size:13px;" x-text="panels.priceCharts ? '▲' : '▼'"></span>
+        </div>
+        <div x-show="panels.priceCharts" style="padding:0 20px 20px;">
+            <!-- One card per market; each card contains two charts side by side -->
+            <div id="candle-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(700px,1fr));gap:16px;"></div>
+        </div>
+    </div>
+
+    <!-- News Feed -->
+    <div class="card" style="padding:0;">
+        <div class="flex items-center justify-between"
+             style="padding:14px 20px;cursor:pointer;user-select:none;"
+             @click="panels.news = !panels.news">
+            <span class="label">Crypto News <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted);">· last 12 hours</span></span>
+            <div class="flex items-center gap-3">
+                <span style="font-size:11px;color:var(--muted);" x-text="newsStatus"></span>
+                <span style="color:var(--muted);font-size:13px;" x-text="panels.news ? '▲' : '▼'"></span>
+            </div>
+        </div>
+        <div x-show="panels.news" style="padding:0 20px 20px;">
+            <div id="news-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;">
+                <div style="color:var(--muted);font-size:13px;grid-column:span 3;">Loading news…</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Local LLM -->
+    <div class="card" style="padding:0;">
+        <div class="flex items-center justify-between"
+             style="padding:14px 20px;cursor:pointer;user-select:none;"
+             @click="panels.llm = !panels.llm">
+            <div class="flex items-center gap-3">
+                <div style="width:8px;height:8px;border-radius:50%;flex-shrink:0;"
+                     :style="llmAvailable ? 'background:var(--green);box-shadow:0 0 6px var(--green);' : 'background:var(--muted);'"></div>
+                <span class="label">Local LLM</span>
+                <span style="font-size:12px;color:var(--muted);" x-text="llmModel"></span>
+                <span style="font-size:12px;font-weight:600;"
+                      :style="llmAvailable ? 'color:var(--green)' : 'color:var(--muted)'"
+                      x-text="llmAvailable ? 'Available' : 'Unavailable'"></span>
+            </div>
+            <span style="color:var(--muted);font-size:13px;" x-text="panels.llm ? '▲' : '▼'"></span>
+        </div>
+        <div x-show="panels.llm" style="padding:0 20px 20px;display:flex;flex-direction:column;gap:12px;">
+            <!-- Market briefing (news-triggered) -->
+            <div x-show="llmBriefing" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 14px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+                    <span style="font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;">Market Briefing</span>
+                    <span style="font-size:10px;color:var(--muted);"
+                          x-text="llmBriefing ? timeAgo(new Date(llmBriefing.generated_at)) + ' · ' + llmBriefing.article_count + ' new article(s)' : ''"></span>
+                </div>
+                <div style="font-size:12px;color:var(--text);margin-bottom:6px;">
+                    <span style="color:var(--muted);">Insight: </span>
+                    <span style="font-weight:600;" x-text="llmBriefing?.key_insight"></span>
+                    <span style="margin-left:8px;font-size:11px;"
+                          :style="(llmBriefing?.overall_sentiment ?? 0) >= 0.1 ? 'color:var(--green)' : (llmBriefing?.overall_sentiment ?? 0) <= -0.1 ? 'color:var(--red)' : 'color:var(--muted)'"
+                          x-text="llmBriefing ? 'Overall ' + ((llmBriefing.overall_sentiment >= 0.1) ? '▲ bullish' : (llmBriefing.overall_sentiment <= -0.1) ? '▼ bearish' : '— neutral') : ''"></span>
+                </div>
+                <div style="display:flex;flex-wrap:wrap;gap:6px;">
+                    <template x-for="[mkt, out] in Object.entries(llmBriefing?.market_outlooks ?? {})">
+                        <div style="font-size:11px;padding:3px 10px;border-radius:9999px;border:1px solid;"
+                             :style="out.bias === 'bullish' ? 'color:var(--green);background:rgba(63,185,80,.08);border-color:rgba(63,185,80,.3)' :
+                                     out.bias === 'bearish' ? 'color:var(--red);background:rgba(248,81,73,.08);border-color:rgba(248,81,73,.3)' :
+                                                              'color:var(--muted);background:rgba(139,148,158,.08);border-color:rgba(139,148,158,.3)'">
+                            <span x-text="mkt"></span>
+                            <span x-text="out.bias === 'bullish' ? ' ▲' : out.bias === 'bearish' ? ' ▼' : ' —'"></span>
+                            <span x-show="out.note" style="margin-left:4px;opacity:.7;" x-text="'· ' + out.note"></span>
+                        </div>
+                    </template>
+                </div>
+            </div>
+            <div x-show="!llmBriefing && llmAvailable" style="font-size:12px;color:var(--muted);">
+                Waiting for first news fetch to trigger market briefing…
+            </div>
+            <!-- Reflection (hourly) -->
+            <div x-show="llmReflection" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 14px;">
+                <div style="font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;margin-bottom:5px;">Hourly Reflection</div>
+                <div style="font-size:12px;color:var(--text);margin-bottom:4px;">
+                    <span style="color:var(--muted);">Pattern: </span><span x-text="llmReflection?.pattern"></span>
+                </div>
+                <div style="font-size:12px;">
+                    <span style="color:var(--muted);">Suggestion: </span>
+                    <span style="color:var(--blue);" x-text="llmReflection?.suggestion"></span>
+                    <span style="font-size:10px;color:var(--muted);margin-left:6px;"
+                          x-text="llmReflection ? Math.round(llmReflection.confidence * 100) + '% confident' : ''"></span>
+                </div>
+            </div>
+            <div x-show="!llmReflection && llmAvailable" style="font-size:12px;color:var(--muted);">
+                No reflection yet — needs ≥5 closed trades
+            </div>
+        </div>
+    </div>
+
+    <!-- Bot Activity -->
+    <div class="card" style="padding:0;">
+        <div class="flex items-center justify-between"
+             style="padding:14px 20px;cursor:pointer;user-select:none;"
+             @click="panels.activity = !panels.activity">
+            <span class="label">Bot Activity</span>
+            <div class="flex items-center gap-3">
+                <span style="font-size:11px;color:var(--muted);">last 60 events · updates every 5s</span>
+                <span style="color:var(--muted);font-size:13px;" x-text="panels.activity ? '▲' : '▼'"></span>
+            </div>
+        </div>
+        <div x-show="panels.activity" style="padding:0 20px 20px;display:flex;flex-direction:column;gap:4px;max-height:320px;overflow-y:auto;">
+            <template x-if="activityLog.length === 0">
+                <div style="color:var(--muted);font-size:13px;padding:20px 0;text-align:center;">Waiting for first tick…</div>
+            </template>
+            <template x-for="(e, i) in activityLog" :key="i">
+                <div style="display:grid;grid-template-columns:auto 1fr;gap:10px;padding:6px 10px;border-radius:5px;font-size:13px;line-height:1.4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;"
+                     :style="e.level==='error'   ? 'background:rgba(248,81,73,.06);'   :
+                             e.level==='warn'    ? 'background:rgba(210,153,34,.05);'  :
+                             e.level==='success' ? 'background:rgba(63,185,80,.05);'   :
+                                                   'background:var(--subtle);'">
+                    <div style="display:flex;align-items:flex-start;gap:6px;white-space:nowrap;">
+                        <span :style="e.level==='error'   ? 'color:var(--red)'    :
+                                      e.level==='warn'    ? 'color:var(--gold)'   :
+                                      e.level==='success' ? 'color:var(--green)'  :
+                                                            'color:var(--muted)'"
+                              x-text="e.level==='error' ? '✗' : e.level==='warn' ? '!' : e.level==='success' ? '✓' : '·'"></span>
+                        <span style="color:var(--muted);font-size:11px;" x-text="new Date(e.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})"></span>
+                    </div>
+                    <div>
+                        <span :style="e.level==='error'   ? 'color:var(--red)'    :
+                                      e.level==='warn'    ? 'color:var(--gold)'   :
+                                      e.level==='success' ? 'color:var(--green)'  :
+                                                            'color:var(--text)'"
+                              x-text="e.message"></span>
+                        <span x-show="e.detail" style="color:var(--muted);margin-left:8px;" x-text="e.detail"></span>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+
+</main>
+
+<script>
+function dashboard() {
+    return {
+        mode: 'manual',
+        environment: 'paper',
+        currencySymbol: '€',
+        equity: '100.00',
+        cash: '0.00',
+        pendingCount: 0,
+        newsStatus: 'Loading…',
+        emergencyStop: false,
+        strategies: [],
+        riskRejections: [],
+        activityLog: [],
+        llmAvailable: false,
+        llmModel: '',
+        llmReflection: null,
+        llmBriefing: null,
+        signalModal: null,
+        signalBreakdown: null,
+        signalVoteRows: [],
+        ledgerStatus: 'Loading…',
+        closedStatus: 'Loading…',
+        pnlStatus: 'Loading...',
+        _chart: null,
+        _candleCharts: {},   // market → { chart5, series5, chart15, series15 }
+        _chartMarkets: [],   // markets rendered so far
+        _openPositionIds: new Set(),
+        _seenSignalIds: new Set(),   // IDs of signals already shown — avoids re-notifying on poll
+        _notifyReady: false,         // true after first render; prevents burst on page load
+        _swActive: false,
+        _lastUpdate: null,
+        // Collapsible panel state — Risk Rejections collapsed by default
+        panels: {
+            equity: true, markets: true, signals: true, positions: true,
+            tradeLedger: true, pnlSummary: true, closedTrades: true, riskRejections: false,
+            priceCharts: false, news: true, llm: true, activity: true
+        },
+
+        init() {
+            // Request desktop notification permission (silently ignored if already granted/denied)
+            if ('Notification' in window && Notification.permission === 'default') {
+                Notification.requestPermission();
+            }
+            this.loadDashboard();
+            this.loadNews();
+            this.loadLedger();
+            this.loadClosedTrades();
+            this.loadPnlSummary();
+            // Fallback polling — SW broadcasts keep things live; these fire if SW is unavailable
+            setInterval(() => this.loadDashboard(), 5000);
+            setInterval(() => this.loadNews(), 300000);
+            setInterval(() => this.loadLedger(), 15000);
+            setInterval(() => this.loadClosedTrades(), 30000);
+            setInterval(() => this.loadPnlSummary(), 30000);
+            setInterval(() => this.refreshCharts(), 60000);
+            // Event delegation for signal detail buttons rendered inside innerHTML tables
+            document.addEventListener('click', e => {
+                const btn = e.target.closest('.sig-btn');
+                if (btn) this.showSignal(btn.dataset.signalId);
+            });
+            // Register Service Worker for network-first caching + live broadcast updates
+            if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.register('/sw.js')
+                    .then(reg => {
+                        console.log('[SW] Registered — scope:', reg.scope);
+                        this._swActive = true;
+                    })
+                    .catch(err => console.warn('[SW] Registration failed:', err));
+                // Receive pushed updates from the SW
+                navigator.serviceWorker.addEventListener('message', event => {
+                    this._handleSwMessage(event.data);
+                });
+            }
+        },
+
+        // ── Service Worker message handler ─────────────────────────────────────
+
+        _handleSwMessage(msg) {
+            if (!msg) return;
+            if (msg.type === 'API_OFFLINE') {
+                console.warn('[SW] Backend offline for', msg.endpoint);
+                return;
+            }
+            if (msg.type !== 'API_UPDATE' || !msg.data) return;
+
+            this._lastUpdate = new Date();
+            const d = msg.data;
+
+            switch (msg.endpoint) {
+                case '/api/dashboard':
+                    this._applyDashboard(d);
+                    break;
+                case '/api/trades':
+                    this.renderLedger(d);
+                    this.ledgerStatus = d.length
+                        ? `${d.length} orders · updated ${new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}`
+                        : 'No trades yet';
+                    break;
+                case '/api/closed-trades':
+                    this.renderClosedTrades(d);
+                    this.closedStatus = d.length
+                        ? `${d.length} closed · updated ${new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}`
+                        : 'No closed trades yet';
+                    break;
+                case '/api/news':
+                    this.renderNews(d);
+                    this.newsStatus = `${d.length} article${d.length !== 1 ? 's' : ''} · ${new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}`;
+                    break;
+            }
+        },
+
+        // ── Dashboard data application (shared by fetch path + SW message path) ─
+
+        _applyDashboard(d) {
+            this.mode = d.mode;
+            this.environment = d.environment;
+            this.currencySymbol = d.currency_symbol || '€';
+            this.equity = d.equity;
+            this.cash = d.cash || '0.00';
+            this._openPositionIds = new Set(d.open_position_ids || []);
+            this.pendingCount = (d.approvals || []).length;
+            this.emergencyStop = d.control?.emergency_stop ?? false;
+            this.strategies = d.strategies || [];
+            this.riskRejections = d.risk_rejections || [];
+            this.activityLog = d.activity || [];
+            this.llmAvailable = d.llm?.available ?? false;
+            this.llmModel = d.llm?.model ?? '';
+            this.llmReflection = d.llm?.reflection ?? null;
+            this.llmBriefing = d.llm?.briefing ?? null;
+            this.renderMarkets(d.markets || [], d.control?.disabled_markets || []);
+            this.renderSignals(d.signals || []);
+            this.renderPositions(d.positions || []);
+            this.renderApprovals(d.approvals || []);
+            this.renderChart(d.equity_history || []);
+            // Load candle charts for any newly-seen markets
+            const symbols = (d.markets || []).map(m => m.symbol).filter(s => s);
+            const newMarkets = symbols.filter(s => !this._chartMarkets.includes(s));
+            if (newMarkets.length) {
+                this._chartMarkets = symbols;
+                this.loadCharts(symbols);
+            }
+        },
+
+        async loadDashboard() {
+            try {
+                const r = await fetch('/api/dashboard');
+                if (!r.ok) return;
+                // SW broadcasts the same data via postMessage; apply here too as
+                // a fallback for the first load before the SW has taken control
+                this._applyDashboard(await r.json());
+            } catch(e) { console.error('Dashboard:', e); }
+        },
+
+        async loadNews() {
+            try {
+                const r = await fetch('/api/news');
+                if (!r.ok) return;
+                const items = await r.json();
+                this.renderNews(items);
+                this.newsStatus = `${items.length} article${items.length !== 1 ? 's' : ''} · ${new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}`;
+            } catch(e) { console.error('News:', e); }
+        },
+
+        async activateStop() {
+            if (!confirm('Activate emergency stop? This will halt all trading and clear the approval queue.')) return;
+            await fetch('/api/control/emergency-stop', { method: 'POST' });
+            this.loadDashboard();
+        },
+
+        async resumeBot() {
+            await fetch('/api/control/resume', { method: 'POST' });
+            this.loadDashboard();
+        },
+
+        async selectStrategy(id) {
+            await fetch(`/api/control/strategies/${encodeURIComponent(id)}/select`, { method: 'POST' });
+            this.loadDashboard();
+        },
+
+        async toggleMarket(market) {
+            await fetch(`/api/control/markets/${encodeURIComponent(market)}/toggle`, { method: 'POST' });
+            this.loadDashboard();
+        },
+
+        renderMarkets(markets, disabledMarkets) {
+            const el = document.getElementById('markets-list');
+            if (!markets.length) {
+                el.innerHTML = '<div style="color:var(--muted);font-size:13px;">No data</div>';
+                return;
+            }
+            el.innerHTML = markets.map(m => {
+                const disabled = !m.enabled;
+                const priceStyle = disabled ? 'color:var(--muted);text-decoration:line-through;' : 'font-weight:600;';
+                return `
+                <div class="row-sep flex items-center justify-between" style="padding:8px 0;">
+                    <div class="flex items-center gap-2">
+                        <span style="font-size:13px;font-weight:600;${disabled ? 'color:var(--muted);' : ''}">${m.symbol}</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="mono" style="font-size:13px;${priceStyle}">${this.currencySymbol}${m.price}</span>
+                        <button class="toggle-btn ${disabled ? 'toggle-off' : 'toggle-on'}"
+                                onclick="Alpine.store && false; window._toggleMarket('${m.symbol}')"
+                                >${disabled ? 'Off' : 'On'}</button>
+                    </div>
+                </div>`;
+            }).join('');
+            window._toggleMarket = (market) => this.toggleMarket(market);
+        },
+
+        renderSignals(signals) {
+            const el = document.getElementById('signals-list');
+            if (!signals.length) {
+                el.innerHTML = '<div style="color:var(--muted);font-size:13px;">Waiting for price history (~5 min)…</div>';
+                return;
+            }
+
+            // Detect new signals and fire a desktop notification for each one.
+            // On the very first render we just seed _seenSignalIds so we don't
+            // spam notifications for signals that were already there on load.
+            if (!this._notifyReady) {
+                signals.forEach(s => { if (s.trade_idea_id) this._seenSignalIds.add(s.trade_idea_id); });
+                this._notifyReady = true;
+            } else if ('Notification' in window && Notification.permission === 'granted') {
+                signals.forEach(s => {
+                    if (!s.trade_idea_id || this._seenSignalIds.has(s.trade_idea_id)) return;
+                    this._seenSignalIds.add(s.trade_idea_id);
+                    const dir   = s.direction === 'long' ? '▲ LONG' : '▼ SHORT';
+                    const pct   = Math.round((s.confidence ?? 0) * 100);
+                    const risk  = s.risk_approved ? '✓ Risk approved' : '✗ Risk blocked';
+                    // Truncate thesis to ~120 chars so the notification body stays readable
+                    const thesis = (s.thesis || '').length > 120
+                        ? s.thesis.slice(0, 117) + '…'
+                        : (s.thesis || '');
+                    new Notification(`${s.market} ${dir} — ${pct}% confidence`, {
+                        body: `${thesis}\n${risk}`,
+                        tag:  s.trade_idea_id,   // deduplicate: same tag replaces any prior notification for this signal
+                        icon: '/favicon.ico',
+                    });
+                });
+            }
+
+            el.innerHTML = signals.map(s => {
+                const long    = s.direction === 'long';
+                const col     = long ? 'var(--green)' : 'var(--red)';
+                const bg      = long ? 'rgba(63,185,80,.06)' : 'rgba(248,81,73,.06)';
+                const pct     = Math.round(s.confidence * 100);
+                const riskCol = s.risk_approved ? 'var(--green)' : 'var(--red)';
+                const riskLbl = s.risk_approved ? '✓ Risk OK' : '✗ Risk blocked';
+                const clickable = s.trade_idea_id
+                    ? `class="sig-btn ${long ? 'signal-long' : 'signal-short'}" data-signal-id="${s.trade_idea_id}" title="Click to review signal" style="cursor:pointer;`
+                    : `class="${long ? 'signal-long' : 'signal-short'}" style="`;
+                return `
+                <div ${clickable}background:${bg};border-radius:0 6px 6px 0;padding:10px 12px;transition:filter .15s;" onmouseover="if(this.dataset.signalId)this.style.filter='brightness(1.15)'" onmouseout="this.style.filter=''">
+                    <div class="flex items-center justify-between" style="margin-bottom:6px;">
+                        <span style="font-size:13px;font-weight:700;">${s.market}</span>
+                        <span style="font-size:11px;font-weight:700;color:${col};">${long ? '▲' : '▼'} ${s.direction.toUpperCase()}</span>
+                    </div>
+                    <div class="flex items-center gap-2" style="margin-bottom:6px;">
+                        <div style="flex:1;height:4px;background:var(--subtle);border-radius:2px;">
+                            <div style="height:4px;border-radius:2px;width:${pct}%;background:${col};"></div>
+                        </div>
+                        <span style="font-size:11px;color:var(--muted);">${pct}%</span>
+                    </div>
+                    <div style="font-size:11px;color:var(--muted);line-height:1.4;margin-bottom:4px;">${s.thesis}</div>
+                    <div style="font-size:10px;font-weight:600;color:${riskCol};">${riskLbl}${!s.risk_approved && s.risk_reason ? ': ' + s.risk_reason : ''}</div>
+                </div>`;
+            }).join('');
+        },
+
+        renderPositions(positions) {
+            const el = document.getElementById('positions-list');
+            if (!positions.length) {
+                el.innerHTML = '<div style="color:var(--muted);font-size:13px;">No open positions</div>';
+                return;
+            }
+            el.innerHTML = positions.map(p => {
+                const pnl    = parseFloat(p.unrealized_pnl);
+                const cost   = (parseFloat(p.size) * parseFloat(p.avg_price));
+                const pnlCol = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+                const long   = p.direction === 'long';
+                const dirCol = long ? 'var(--green)' : 'var(--red)';
+                const dirLbl = long ? '▲ LONG' : '▼ SHORT';
+                const fmt2   = v => parseFloat(v).toLocaleString('en-GB', {minimumFractionDigits:2,maximumFractionDigits:2});
+                return `
+                <div class="row-sep" style="padding:10px 0;">
+                    <div class="flex items-center justify-between" style="margin-bottom:3px;">
+                        <div class="flex items-center gap-2">
+                            <span style="font-size:13px;font-weight:700;">${p.market}</span>
+                            <span style="font-size:10px;font-weight:700;color:${dirCol};">${dirLbl}</span>
+                        </div>
+                        <div class="mono" style="font-size:13px;font-weight:600;color:${pnlCol};">${pnl >= 0 ? '+' : ''}${this.currencySymbol}${fmt2(pnl)}</div>
+                    </div>
+                    <div class="flex items-center justify-between" style="margin-bottom:4px;">
+                        <div class="mono" style="font-size:11px;color:var(--muted);">${parseFloat(p.size).toFixed(6)} @ ${this.currencySymbol}${fmt2(p.avg_price)}</div>
+                        <div class="mono" style="font-size:11px;color:var(--muted);">Cost ${this.currencySymbol}${fmt2(cost)}</div>
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <div style="font-size:10px;color:var(--muted);font-family:monospace;">#${p.position_id}</div>
+                        <button onclick="window._closePos('${p.position_id_full}')"
+                                style="font-size:10px;font-weight:600;padding:3px 10px;border-radius:4px;cursor:pointer;color:var(--red);background:rgba(248,81,73,.1);border:1px solid rgba(248,81,73,.3);">
+                            ✕ Close
+                        </button>
+                    </div>
+                </div>`;
+            }).join('');
+            window._closePos = (id) => this.closePosition(id);
+        },
+
+        renderApprovals(approvals) {
+            const el = document.getElementById('approvals-queue');
+            if (!approvals.length) { el.innerHTML = ''; return; }
+            el.innerHTML = approvals.slice(0, 3).map(a => {
+                const long = a.direction === 'long';
+                const col  = long ? 'var(--green)' : 'var(--red)';
+                const pct  = Math.round(a.confidence * 100);
+                return `
+                <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:14px;">
+                    <div class="flex items-center justify-between" style="margin-bottom:8px;">
+                        <div class="flex items-center gap-2">
+                            <span style="font-size:14px;font-weight:700;">${a.market}</span>
+                            <span class="pill ${long ? 'pill-green' : 'pill-red'}">${long ? '▲' : '▼'} ${a.direction.toUpperCase()}</span>
+                        </div>
+                        <span style="font-size:12px;color:var(--muted);">${pct}% confidence</span>
+                    </div>
+                    <div style="font-size:12px;color:var(--muted);margin-bottom:12px;">${a.thesis}</div>
+                    <div style="font-size:11px;color:var(--muted);margin-bottom:10px;">
+                        <b style="color:var(--text);">Entry:</b> ${a.entry_plan} &nbsp;·&nbsp;
+                        <b style="color:var(--text);">Exit:</b> ${a.exit_plan}
+                    </div>
+                    <div class="flex gap-2">
+                        <button onclick="window._approveTrade('${a.id}')"
+                            style="padding:6px 14px;font-size:12px;font-weight:600;border-radius:6px;cursor:pointer;color:var(--green);background:rgba(63,185,80,.12);border:1px solid rgba(63,185,80,.3);">
+                            ✓ Approve
+                        </button>
+                        <button onclick="window._rejectTrade('${a.id}')"
+                            style="padding:6px 14px;font-size:12px;font-weight:600;border-radius:6px;cursor:pointer;color:var(--red);background:rgba(248,81,73,.12);border:1px solid rgba(248,81,73,.3);">
+                            ✗ Reject
+                        </button>
+                    </div>
+                </div>`;
+            }).join('');
+            window._approveTrade = async (id) => {
+                await fetch(`/api/approvals/${id}/approve`, { method: 'POST' });
+                this.loadDashboard();
+            };
+            window._rejectTrade = async (id) => {
+                await fetch(`/api/approvals/${id}/reject`, { method: 'POST' });
+                this.loadDashboard();
+            };
+        },
+
+        renderChart(history) {
+            if (!history.length) return;
+            const labels = history.map(h =>
+                new Date(h.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})
+            );
+            const values = history.map(h => h.equity);
+
+            if (this._chart) {
+                // Replace data in-place; 'none' skips the animation queue for instant repaint
+                this._chart.data.labels           = labels;
+                this._chart.data.datasets[0].data = values;
+                this._chart.update('none');
+                return;
+            }
+
+            const canvas = document.getElementById('equity-chart');
+            if (!canvas) return;   // panel may not be mounted yet — will render on next poll
+            const ctx = canvas.getContext('2d');
+
+            this._chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [{
+                        data: values,
+                        borderColor: '#58a6ff',
+                        backgroundColor: 'rgba(88,166,255,0.07)',
+                        fill: true,
+                        tension: 0.35,
+                        pointRadius: 0,
+                        borderWidth: 2,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: '#1c2128',
+                            borderColor: '#30363d',
+                            borderWidth: 1,
+                            callbacks: { label: c => this.currencySymbol + c.parsed.y.toFixed(2) }
+                        }
+                    },
+                    scales: {
+                        x: { grid: { color: '#21262d' }, ticks: { color: '#8b949e', maxTicksLimit: 8, font: { size: 10 } } },
+                        y: { grid: { color: '#21262d' }, ticks: { color: '#8b949e', font: { size: 10 }, callback: v => this.currencySymbol + v.toFixed(2) } }
+                    }
+                }
+            });
+
+            // Resize the chart whenever the panel container changes size
+            // (e.g. when the collapsible panel is opened after being collapsed)
+            new ResizeObserver(() => {
+                if (this._chart) this._chart.resize();
+            }).observe(canvas.parentElement);
+        },
+
+        _sourceBadge(source) {
+            const map = {
+                'CoinDesk':      ['#2684ff', 'rgba(38,132,255,.13)'],
+                'CoinTelegraph': ['#ffb400', 'rgba(255,180,0,.13)'],
+                'The Block':     ['#a78bfa', 'rgba(167,139,250,.13)'],
+                'Decrypt':       ['#34d399', 'rgba(52,211,153,.13)'],
+                'Bitcoin Magazine': ['#f97316', 'rgba(249,115,22,.13)'],
+                'Reuters':       ['#e11d48', 'rgba(225,29,72,.13)'],
+                'Fear & Greed':  ['#facc15', 'rgba(250,204,21,.13)'],
+            };
+            const [col, bg] = map[source] || ['var(--muted)', 'rgba(139,148,158,.1)'];
+            return { col, bg };
+        },
+
+        renderNews(items) {
+            const el = document.getElementById('news-grid');
+            if (!items.length) {
+                el.innerHTML = '<div style="color:var(--muted);font-size:13px;grid-column:span 3;">No news available yet — fetching…</div>';
+                return;
+            }
+            el.innerHTML = items.map(n => {
+                const { col: srcCol, bg: srcBg } = this._sourceBadge(n.source);
+                const ago    = this.timeAgo(new Date(n.published_at));
+                return `
+                <a href="${n.url || '#'}" target="_blank" rel="noopener noreferrer"
+                    style="display:block;text-decoration:none;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;transition:border-color .15s;"
+                    onmouseover="this.style.borderColor='var(--muted)'" onmouseout="this.style.borderColor='var(--border)'">
+                    <div class="flex items-center gap-2" style="margin-bottom:8px;">
+                        <span style="font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;color:${srcCol};background:${srcBg};">${n.source}</span>
+                        <span style="font-size:11px;color:var(--muted);">${ago}</span>
+                    </div>
+                    <p style="margin:0;font-size:12px;line-height:1.5;color:var(--text);display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;">${n.title}</p>
+                </a>`;
+            }).join('');
+        },
+
+        async loadCharts(markets) {
+            await Promise.all(markets.map(m => this._fetchAndRender(m)));
+        },
+
+        async refreshCharts() {
+            await Promise.all(this._chartMarkets.map(m => this._fetchAndRender(m)));
+        },
+
+        async _fetchAndRender(market) {
+            try {
+                // Fetch both timeframes in parallel
+                const enc = encodeURIComponent(market);
+                const [r5, r15] = await Promise.all([
+                    fetch(`/api/ohlc/${enc}?interval=5`),
+                    fetch(`/api/ohlc/${enc}?interval=15`),
+                ]);
+                const [d5, d15] = await Promise.all([r5.json(), r15.json()]);
+                const c5  = d5.candles  || [];
+                const c15 = d15.candles || [];
+                if (!c5.length && !c15.length) return;
+
+                // Helper: convert raw candle array to Lightweight Charts format
+                const toSeries = c => c.map(x => ({ time: x.t, open: x.o, high: x.h, low: x.l, close: x.c }));
+
+                // Derive price/change from 5-min (fall back to 15-min)
+                const ref = c5.length ? c5 : c15;
+                const last = ref[ref.length - 1];
+                const prev = ref[ref.length - 2];
+                const chg  = prev ? ((last.c - prev.c) / prev.c * 100) : 0;
+                const chgColor = chg >= 0 ? 'var(--green)' : 'var(--red)';
+                const priceFmt = v => v.toLocaleString('en-GB', {minimumFractionDigits:2, maximumFractionDigits:2});
+
+                // Pin a chart's visible range to the last N hours from now
+                const pinToWindow = (chart, hours) => {
+                    const now = Math.floor(Date.now() / 1000);
+                    chart.timeScale().setVisibleRange({ from: now - hours * 3600, to: now });
+                };
+
+                if (this._candleCharts[market]) {
+                    // Refresh data on existing charts and re-pin the visible window
+                    const { chart5, series5, chart15, series15 } = this._candleCharts[market];
+                    if (c5.length)  { series5.setData(toSeries(c5));   pinToWindow(chart5,  6); }
+                    if (c15.length) { series15.setData(toSeries(c15)); pinToWindow(chart15, 24); }
+                    const priceEl = document.getElementById(`chart-price-${market}`);
+                    if (priceEl) priceEl.innerHTML =
+                        `${this.currencySymbol}${priceFmt(last.c)} <span style="font-size:11px;color:${chgColor}">${chg>=0?'+':''}${chg.toFixed(2)}%</span>`;
+                    return;
+                }
+
+                // ── First render: build the market card ───────────────────────────
+                const grid   = document.getElementById('candle-grid');
+                const safeId = market.replace(/[^a-z0-9]/gi, '_');
+                const id5    = `candle5-${safeId}`;
+                const id15   = `candle15-${safeId}`;
+
+                const card = document.createElement('div');
+                card.className = 'card';
+                card.style.cssText = 'padding:16px;';
+                card.innerHTML = `
+                    <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px;">
+                        <span style="font-size:14px;font-weight:700;">${market}</span>
+                        <span id="chart-price-${market}" class="mono" style="font-size:13px;font-weight:600;">
+                            ${this.currencySymbol}${priceFmt(last.c)}
+                            <span style="font-size:11px;color:${chgColor}">${chg>=0?'+':''}${chg.toFixed(2)}%</span>
+                        </span>
+                    </div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                        <div>
+                            <div style="font-size:10px;color:var(--muted);margin-bottom:6px;text-align:center;letter-spacing:.05em;">5 MIN</div>
+                            <div id="${id5}" style="height:210px;"></div>
+                        </div>
+                        <div>
+                            <div style="font-size:10px;color:var(--muted);margin-bottom:6px;text-align:center;letter-spacing:.05em;">15 MIN</div>
+                            <div id="${id15}" style="height:210px;"></div>
+                        </div>
+                    </div>`;
+                grid.appendChild(card);
+
+                // Shared chart factory — creates a Lightweight Charts instance in the given container
+                const makeChart = (elId) => {
+                    const el = document.getElementById(elId);
+                    const chart = LightweightCharts.createChart(el, {
+                        width:  el.clientWidth,
+                        height: 210,
+                        layout:          { background: { color: '#161b22' }, textColor: '#8b949e' },
+                        grid:            { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
+                        crosshair:       { mode: LightweightCharts.CrosshairMode.Normal },
+                        rightPriceScale: { borderColor: '#30363d' },
+                        timeScale:       { borderColor: '#30363d', timeVisible: true, secondsVisible: false },
+                    });
+                    const series = chart.addCandlestickSeries({
+                        upColor:       '#3fb950', downColor:       '#f85149',
+                        borderUpColor: '#3fb950', borderDownColor: '#f85149',
+                        wickUpColor:   '#3fb950', wickDownColor:   '#f85149',
+                    });
+                    // Resize chart when the container width changes (e.g. window resize, panel open)
+                    new ResizeObserver(() => chart.applyOptions({ width: el.clientWidth })).observe(el);
+                    return { chart, series };
+                };
+
+                const { chart: chart5,  series: series5  } = makeChart(id5);
+                const { chart: chart15, series: series15 } = makeChart(id15);
+
+                if (c5.length)  { series5.setData(toSeries(c5));   pinToWindow(chart5,  6); }
+                if (c15.length) { series15.setData(toSeries(c15)); pinToWindow(chart15, 24); }
+
+                this._candleCharts[market] = { chart5, series5, chart15, series15 };
+                if (!this._chartMarkets.includes(market)) this._chartMarkets.push(market);
+
+            } catch(e) { console.error('Chart error', market, e); }
+        },
+
+        async loadLedger() {
+            try {
+                const r = await fetch('/api/trades');
+                if (!r.ok) return;
+                const trades = await r.json();
+                this.renderLedger(trades);
+                this.ledgerStatus = trades.length
+                    ? `${trades.length} orders · updated ${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`
+                    : 'No trades yet';
+            } catch(e) { console.error('Ledger:', e); }
+        },
+
+        renderLedger(trades) {
+            const tbody = document.getElementById('ledger-body');
+            if (!trades.length) {
+                tbody.innerHTML = '<tr><td colspan="11" style="padding:20px 10px;color:var(--muted);text-align:center;">No trades recorded yet</td></tr>';
+                return;
+            }
+            const fmt2 = v => parseFloat(v).toLocaleString('en-GB', {minimumFractionDigits:2,maximumFractionDigits:2});
+            const fmt6 = v => parseFloat(v).toFixed(6);
+            tbody.innerHTML = trades.map(t => {
+                const isLong  = t.direction === 'long';
+                const filled  = t.status === 'filled';
+                // trade_type: "open" = this trade opened a position, "close" = it closed one
+                const isOpen  = t.trade_type === 'open';
+                // Action: Buy = asset was purchased (long), Sell = asset was sold (short)
+                const isBuy   = isLong;
+                const actionLabel = isBuy ? 'Buy' : 'Sell';
+                // Neutral colour for Action — direction colour lives in the Direction column
+                const actionCol = 'var(--text)';
+                const posBadge  = isOpen
+                    ? `<span style="font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;color:var(--green);background:rgba(63,185,80,.1);border:1px solid rgba(63,185,80,.25);margin-left:5px;">Open</span>`
+                    : `<span style="font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;color:var(--orange);background:rgba(227,119,58,.12);border:1px solid rgba(227,119,58,.3);margin-left:5px;">Close</span>`;
+                // Direction column
+                const dirLabel = isLong ? '▲ Long' : '▼ Short';
+                const dirCol   = isLong ? 'var(--green)' : 'var(--red)';
+                const rowBg   = filled ? '' : 'background:rgba(248,81,73,.04);';
+                const srcCol  = t.source === 'stop-loss' ? 'var(--orange)'
+                              : t.source === 'manual'    ? 'var(--blue)'
+                              : t.source === 'auto'      ? 'var(--green)'
+                              :                            'var(--muted)';
+                const statusCell = filled
+                    ? `<span style="color:var(--green);font-weight:600;">filled</span>`
+                    : `<span style="color:var(--red);font-weight:600;">${t.status}</span>`;
+                const ts = t.timestamp ? new Date(t.timestamp) : null;
+                const timeStr = ts
+                    ? ts.toLocaleDateString('en-GB', {day:'2-digit',month:'short'}) + ' ' +
+                      ts.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})
+                    : '—';
+                const posId = t.position_id
+                    ? `<span style="font-family:monospace;font-size:10px;color:var(--muted);">#${t.position_id}</span>`
+                    : '—';
+                const sigBtn = t.trade_idea_id
+                    ? `<button class="sig-btn" data-signal-id="${t.trade_idea_id}"
+                               style="font-size:10px;padding:2px 8px;border-radius:4px;background:rgba(139,148,158,.12);border:1px solid rgba(139,148,158,.25);color:var(--muted);cursor:pointer;white-space:nowrap;"
+                               title="View the signal that triggered this trade">📊 Signal</button>`
+                    : `<span style="font-size:11px;color:var(--muted);">—</span>`;
+                return `<tr style="border-bottom:1px solid var(--subtle);${rowBg}">
+                    <td style="padding:7px 10px;color:var(--muted);white-space:nowrap;font-size:11px;">${timeStr}</td>
+                    <td style="padding:7px 10px;font-weight:700;">${t.market}</td>
+                    <td style="padding:7px 10px;font-weight:600;color:${actionCol};">${actionLabel}${posBadge}</td>
+                    <td style="padding:7px 10px;font-weight:700;color:${dirCol};font-size:11px;">${dirLabel}</td>
+                    <td style="padding:7px 10px;text-align:right;font-family:monospace;">${fmt6(t.size)}</td>
+                    <td style="padding:7px 10px;text-align:right;font-family:monospace;">${this.currencySymbol}${fmt2(t.price)}</td>
+                    <td style="padding:7px 10px;text-align:right;font-family:monospace;">${this.currencySymbol}${fmt2(t.value)}</td>
+                    <td style="padding:7px 10px;font-weight:600;color:${srcCol};">${t.source}</td>
+                    <td style="padding:7px 10px;">${statusCell}</td>
+                    <td style="padding:7px 10px;">${posId}</td>
+                    <td style="padding:7px 10px;">${sigBtn}</td>
+                </tr>`;
+            }).join('');
+        },
+
+        async loadClosedTrades() {
+            try {
+                const r = await fetch('/api/closed-trades');
+                if (!r.ok) return;
+                const trades = await r.json();
+                this.renderClosedTrades(trades);
+                this.closedStatus = trades.length
+                    ? `${trades.length} closed · updated ${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`
+                    : 'No closed trades yet';
+            } catch(e) { console.error('Closed trades:', e); }
+        },
+
+        async loadPnlSummary() {
+            try {
+                const r = await fetch('/api/pnl-summary');
+                if (!r.ok) return;
+                const summary = await r.json();
+                this.renderPnlSummary(summary);
+                const fmt2 = v => parseFloat(v).toLocaleString('en-GB', {minimumFractionDigits:2,maximumFractionDigits:2});
+                this.pnlStatus = `${this.currencySymbol}${fmt2(summary.total_pnl || 0)} total`;
+            } catch(e) { console.error('P&L summary:', e); }
+        },
+
+        renderPnlSummary(summary) {
+            const renderRows = (id, rows) => {
+                const tbody = document.getElementById(id);
+                const fmt2 = v => parseFloat(v).toLocaleString('en-GB', {minimumFractionDigits:2,maximumFractionDigits:2});
+                const entries = Object.entries(rows || {});
+                if (!entries.length) {
+                    tbody.innerHTML = '<tr><td colspan="2" style="padding:12px;color:var(--muted);text-align:center;">No P&L yet</td></tr>';
+                    return;
+                }
+                tbody.innerHTML = entries.map(([label, value]) => {
+                    const pnl = parseFloat(value || 0);
+                    const col = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+                    return `<tr style="border-bottom:1px solid var(--border);">
+                        <td style="padding:7px 6px;">${label}</td>
+                        <td style="padding:7px 6px;text-align:right;color:${col};font-family:monospace;">${pnl >= 0 ? '+' : ''}${this.currencySymbol}${fmt2(Math.abs(pnl))}</td>
+                    </tr>`;
+                }).join('');
+            };
+            renderRows('pnl-day-body', summary.by_day);
+            renderRows('pnl-market-body', summary.by_market);
+        },
+
+        renderClosedTrades(trades) {
+            const tbody = document.getElementById('closed-body');
+            if (!trades.length) {
+                tbody.innerHTML = '<tr><td colspan="14" style="padding:20px 10px;color:var(--muted);text-align:center;">No closed positions yet — positions close via stop-loss or a SELL signal</td></tr>';
+                return;
+            }
+            const fmt2 = v => parseFloat(v).toLocaleString('en-GB', {minimumFractionDigits:2,maximumFractionDigits:2});
+            const fmt6 = v => parseFloat(v).toFixed(6);
+            // Format millisecond duration into a human-readable string
+            const fmtDuration = ms => {
+                const totalSec = Math.floor(ms / 1000);
+                const d = Math.floor(totalSec / 86400);
+                const h = Math.floor((totalSec % 86400) / 3600);
+                const m = Math.floor((totalSec % 3600) / 60);
+                const s = totalSec % 60;
+                if (d > 0)  return `${d}d ${h}h`;
+                if (h > 0)  return `${h}h ${m}m`;
+                if (m > 0)  return `${m}m ${s}s`;
+                return `${s}s`;
+            };
+            // Format a Date as "DD Mon HH:MM"
+            const fmtTime = dt => dt
+                ? dt.toLocaleDateString('en-GB', {day:'2-digit',month:'short'}) + ' ' +
+                  dt.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})
+                : '—';
+            tbody.innerHTML = trades.map(t => {
+                const pnl    = parseFloat(t.pnl);
+                const pnlPct = parseFloat(t.pnl_pct) * 100;
+                const pnlCol = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+                const dirCol = t.direction === 'long' ? 'var(--green)' : 'var(--red)';
+                const dirLbl = t.direction === 'long' ? '▲ Long' : '▼ Short';
+                // Duration: time between entry and exit
+                const exitDt  = t.exit_at  ? new Date(t.exit_at)  : null;
+                const entryDt = t.entry_at ? new Date(t.entry_at) : null;
+                const durStr  = (exitDt && entryDt) ? fmtDuration(exitDt - entryDt) : '—';
+                // Size × entry price = position value at open
+                const posValue = parseFloat(t.size) * parseFloat(t.entry_price);
+                // Source: humanise the exit_reason field
+                const srcMap = { stop_loss: 'Stop Loss', auto: 'Auto', manual_approve: 'Manual',
+                                 operator_reset: 'Reset', manual_reject: 'Rejected' };
+                const srcLabel  = srcMap[t.exit_reason] || t.exit_reason.replace(/_/g, ' ');
+                const srcCol    = t.exit_reason === 'stop_loss'      ? 'var(--orange)'
+                                : t.exit_reason === 'auto'           ? 'var(--green)'
+                                : t.exit_reason === 'operator_reset' ? 'var(--red)'
+                                :                                       'var(--blue)';
+                const statusBadge = `<span style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;color:var(--muted);background:rgba(139,148,158,.12);border:1px solid rgba(139,148,158,.25);">Closed</span>`;
+                const posId = t.position_id
+                    ? `<span style="font-family:monospace;font-size:10px;color:var(--muted);">#${t.position_id}</span>`
+                    : '—';
+                const openBtn = t.trade_idea_id
+                    ? `<button class="sig-btn" data-signal-id="${t.trade_idea_id}"
+                               style="font-size:10px;padding:2px 8px;border-radius:4px;background:rgba(139,148,158,.12);border:1px solid rgba(139,148,158,.25);color:var(--muted);cursor:pointer;white-space:nowrap;"
+                               title="View the signal that opened this position">📊 Open</button>`
+                    : `<span style="font-size:11px;color:var(--muted);">—</span>`;
+                const closeBtn = t.closing_trade_idea_id
+                    ? `<button class="sig-btn" data-signal-id="${t.closing_trade_idea_id}"
+                               style="font-size:10px;padding:2px 8px;border-radius:4px;background:rgba(99,179,237,.10);border:1px solid rgba(99,179,237,.25);color:var(--blue);cursor:pointer;white-space:nowrap;"
+                               title="View the signal that closed this position">📊 Close</button>`
+                    : `<span style="font-size:11px;color:var(--muted);" title="Closed by stop-loss or manual action — no signal">—</span>`;
+                return `<tr style="border-bottom:1px solid var(--subtle);">
+                    <td style="padding:7px 10px;color:var(--muted);white-space:nowrap;font-size:11px;">${fmtTime(exitDt)}</td>
+                    <td style="padding:7px 10px;color:var(--muted);white-space:nowrap;font-size:11px;">${fmtTime(entryDt)}</td>
+                    <td style="padding:7px 10px;color:var(--muted);font-size:11px;white-space:nowrap;">${durStr}</td>
+                    <td style="padding:7px 10px;font-weight:700;">${t.market}</td>
+                    <td style="padding:7px 10px;font-weight:700;color:${dirCol};font-size:11px;">${dirLbl}</td>
+                    <td style="padding:7px 10px;text-align:right;font-family:monospace;">${fmt6(t.size)}</td>
+                    <td style="padding:7px 10px;text-align:right;font-family:monospace;">${this.currencySymbol}${fmt2(t.entry_price)}</td>
+                    <td style="padding:7px 10px;text-align:right;font-family:monospace;">${this.currencySymbol}${fmt2(posValue)}</td>
+                    <td style="padding:7px 10px;text-align:right;font-family:monospace;font-weight:700;color:${pnlCol};">
+                        ${pnl >= 0 ? '+' : ''}${this.currencySymbol}${fmt2(Math.abs(pnl))}
+                        <span style="font-size:10px;font-weight:400;margin-left:3px;">(${pnl >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%)</span>
+                    </td>
+                    <td style="padding:7px 10px;font-size:11px;font-weight:600;color:${srcCol};">${srcLabel}</td>
+                    <td style="padding:7px 10px;">${statusBadge}</td>
+                    <td style="padding:7px 10px;">${posId}</td>
+                    <td style="padding:7px 10px;">${openBtn}</td>
+                    <td style="padding:7px 10px;">${closeBtn}</td>
+                </tr>`;
+            }).join('');
+        },
+
+        async showSignal(tradeIdeaId) {
+            if (!tradeIdeaId) return;
+            try {
+                const r = await fetch(`/api/signals/${tradeIdeaId}`);
+                if (!r.ok) { alert('Signal detail not found.'); return; }
+                const s = await r.json();
+                this.signalModal    = s;
+                this.signalBreakdown = this._computeBreakdown(s);
+                this.signalVoteRows  = this._computeIndicatorVotes(s);
+            } catch(e) { console.error('Signal detail:', e); }
+        },
+
+        // ── Signal breakdown helpers ────────────────────────────────────────────
+
+        _computeBreakdown(s) {
+            const ss     = s.supporting_signals || {};
+            const isLong = s.direction === 'long';
+
+            // ── Momentum base ──────────────────────────────────────────────
+            const momentum = ss.momentum || 0;
+            const base     = Math.min(Math.abs(momentum) * 100, 0.50);
+
+            // ── Indicator consensus bonus ──────────────────────────────────
+            const votes     = ss.indicator_votes      ?? 0;
+            const available = ss.indicators_available ?? 0;
+            const indicatorBonus = available > 0
+                ? Math.max(-0.20, Math.min(0.40, votes * 0.05))
+                : 0;
+
+            // ── News sentiment bonus ───────────────────────────────────────
+            const newsSent = ss.news_sentiment || 0;
+            let newsBonus  = 0;
+            if      ((isLong && newsSent > 0) || (!isLong && newsSent < 0)) newsBonus =  0.10;
+            else if ((isLong && newsSent < 0) || (!isLong && newsSent > 0)) newsBonus = -0.10;
+
+            // ── ATR volatility penalty ─────────────────────────────────────
+            const atrPct    = ss.atr_pct || 0;
+            const atrPenalty = atrPct > 1.0 ? -Math.min(0.10, (atrPct - 1.0) * 0.05) : 0;
+
+            // ── Strategy subtotal ──────────────────────────────────────────
+            const stratConf = Math.max(0.10, Math.min(0.95,
+                base + indicatorBonus + newsBonus + atrPenalty));
+
+            // ── Learner adjustment ─────────────────────────────────────────
+            // pre_llm_confidence is after the learner; stratConf is what we computed above.
+            // The learner diff = preLlm − stratConf (what the learner added/removed).
+            const preLlm      = ss.pre_llm_confidence != null ? ss.pre_llm_confidence : stratConf;
+            const learnerDiff  = preLlm - stratConf;
+            const learnerScale = stratConf > 0 ? preLlm / stratConf : 1.0;
+
+            // ── LLM multiplier ─────────────────────────────────────────────
+            const llmScale = s.llm_confidence_scale ?? 1.0;
+            const llmUsed  = s.llm_used ?? false;
+            const finalConf = s.confidence;
+
+            return {
+                momentum: momentum * 100, base,
+                indicatorBonus, votes, available,
+                newsBonus, newsSent,
+                atrPct, atrPenalty,
+                stratConf, preLlm,
+                learnerDiff, learnerScale,
+                learnerAdjusted: Math.abs(learnerDiff) > 0.005,
+                learnerUp:   learnerDiff >  0.005,
+                learnerDown: learnerDiff < -0.005,
+                llmScale, llmUsed, finalConf,
+            };
+        },
+
+        _computeIndicatorVotes(s) {
+            const ss     = s.supporting_signals || {};
+            const isLong = s.direction === 'long';
+
+            // Mirrors Python's _vote(long_condition, short_condition):
+            //   available += 1 when either condition is true
+            //   +1 when indicator agrees with signal direction, -1 when it opposes
+            const vote = (longCond, shortCond) => {
+                if (longCond || shortCond) {
+                    const agrees = (isLong && longCond) || (!isLong && shortCond);
+                    return { vote: agrees ? 1 : -1, hasOpinion: true };
+                }
+                return { vote: 0, hasOpinion: false };
+            };
+
+            // Format a float for display (null/undefined → '–')
+            const fmt = (v, dp = 2) => (v == null ? '–' : parseFloat(v).toFixed(dp));
+            const fmtPct = (v, dp = 2) => (v == null ? '–' : parseFloat(v).toFixed(dp) + '%');
+
+            const rows = [];
+
+            // 1. RSI
+            const rsi = ss.rsi_14;
+            const rsiSig = ss.rsi_signal || (rsi != null ? (rsi >= 70 ? 'overbought' : rsi <= 30 ? 'oversold' : 'neutral') : null);
+            const { vote: rsiVote, hasOpinion: rsiOpin } = rsi != null
+                ? vote(rsi < 40, rsi > 60) : { vote: 0, hasOpinion: false };
+            rows.push({
+                name: 'RSI (14)',
+                displayValue: fmt(rsi, 1),
+                signal: rsiSig ?? '–',
+                vote: rsiVote, hasData: rsi != null, hasOpinion: rsiOpin,
+            });
+
+            // 2. EMA cross
+            const emaCross = ss.ema_cross;
+            const ema9  = ss.ema9;
+            const ema21 = ss.ema21;
+            const { vote: emaVote, hasOpinion: emaOpin } = emaCross != null
+                ? vote(emaCross === 'bullish', emaCross === 'bearish')
+                : { vote: 0, hasOpinion: false };
+            rows.push({
+                name: 'EMA 9/21',
+                displayValue: ema9 != null && ema21 != null
+                    ? `${fmt(ema9,0)} / ${fmt(ema21,0)}`
+                    : '–',
+                signal: emaCross ?? '–',
+                vote: emaVote, hasData: emaCross != null, hasOpinion: emaOpin,
+            });
+
+            // 3. Bollinger Bands position
+            const bbPos = ss.bb_position;
+            const bb    = ss.bb || {};
+            const bbUpper = bb.upper ?? null;
+            const bbLower = bb.lower ?? null;
+            const { vote: bbVote, hasOpinion: bbOpin } = bbPos != null
+                ? vote(bbPos < 30, bbPos > 70) : { vote: 0, hasOpinion: false };
+            rows.push({
+                name: 'BB Position',
+                displayValue: bbPos != null ? fmt(bbPos, 1) + '%' : '–',
+                signal: bbPos != null
+                    ? (bbPos >= 95 ? 'upper extreme' : bbPos >= 70 ? 'upper zone'
+                     : bbPos <= 5  ? 'lower extreme' : bbPos <= 30  ? 'lower zone' : 'mid-band')
+                    : '–',
+                vote: bbVote, hasData: bbPos != null, hasOpinion: bbOpin,
+            });
+
+            // 4. MACD line bias
+            const macd     = ss.macd || {};
+            const macdBias = ss.macd_bias || macd.bias;
+            const macdLine = macd.line ?? null;
+            const { vote: macdVote, hasOpinion: macdOpin } = macdBias != null
+                ? vote(macdBias === 'bullish', macdBias === 'bearish')
+                : { vote: 0, hasOpinion: false };
+            rows.push({
+                name: 'MACD bias',
+                displayValue: macdLine != null ? fmt(macdLine, 4) : '–',
+                signal: macdBias ?? '–',
+                vote: macdVote, hasData: macdBias != null, hasOpinion: macdOpin,
+            });
+
+            // 5. MACD signal crossover
+            const macdSigBias = ss.macd_signal_bias || macd.signal_bias;
+            const macdHist    = ss.macd_histogram   ?? macd.histogram ?? null;
+            const { vote: macdSigVote, hasOpinion: macdSigOpin } = macdSigBias != null
+                ? vote(macdSigBias === 'bullish', macdSigBias === 'bearish')
+                : { vote: 0, hasOpinion: false };
+            rows.push({
+                name: 'MACD crossover',
+                displayValue: macdHist != null ? (macdHist >= 0 ? '+' : '') + fmt(macdHist, 5) : '–',
+                signal: macdSigBias ?? '–',
+                vote: macdSigVote, hasData: macdSigBias != null, hasOpinion: macdSigOpin,
+            });
+
+            // 6. Stochastic %K
+            const stoch  = ss.stoch || {};
+            const stochK = ss.stoch_k ?? stoch.k ?? null;
+            const stochD = ss.stoch_d ?? stoch.d ?? null;
+            const stochBias = stoch.bias ?? (stochK != null ? (stochK < 20 ? 'oversold' : stochK > 80 ? 'overbought' : 'neutral') : null);
+            const { vote: stochVote, hasOpinion: stochOpin } = stochK != null
+                ? vote(stochK < 20, stochK > 80) : { vote: 0, hasOpinion: false };
+            rows.push({
+                name: 'Stochastic %K',
+                displayValue: stochK != null ? fmt(stochK, 1) + (stochD != null ? ' / ' + fmt(stochD, 1) : '') : '–',
+                signal: stochBias ?? '–',
+                vote: stochVote, hasData: stochK != null, hasOpinion: stochOpin,
+            });
+
+            // 7. Williams %R
+            const wr    = ss.williams_r;
+            const wrSig = ss.williams_r_signal ?? (wr != null ? (wr <= -80 ? 'oversold' : wr >= -20 ? 'overbought' : 'neutral') : null);
+            const { vote: wrVote, hasOpinion: wrOpin } = wr != null
+                ? vote(wr <= -80, wr >= -20) : { vote: 0, hasOpinion: false };
+            rows.push({
+                name: 'Williams %R',
+                displayValue: wr != null ? fmt(wr, 1) : '–',
+                signal: wrSig ?? '–',
+                vote: wrVote, hasData: wr != null, hasOpinion: wrOpin,
+            });
+
+            // 8. 5m price change  (positive → bullish; negative → bearish)
+            const pc5  = ss.price_change_5m;
+            const { vote: pc5Vote, hasOpinion: pc5Opin } = pc5 != null
+                ? vote(pc5 > 0, pc5 < 0)
+                : { vote: 0, hasOpinion: false };
+            rows.push({
+                name: '5m change',
+                displayValue: pc5 != null ? (pc5 >= 0 ? '+' : '') + fmt(pc5, 3) + '%' : '–',
+                signal: pc5 != null ? (pc5 > 0 ? 'positive' : pc5 < 0 ? 'negative' : 'flat') : '–',
+                vote: pc5Vote, hasData: pc5 != null, hasOpinion: pc5Opin,
+            });
+
+            // 9. 15m price change  (positive → bullish; negative → bearish)
+            const pc15 = ss.price_change_15m;
+            const { vote: pc15Vote, hasOpinion: pc15Opin } = pc15 != null
+                ? vote(pc15 > 0, pc15 < 0)
+                : { vote: 0, hasOpinion: false };
+            rows.push({
+                name: '15m change',
+                displayValue: pc15 != null ? (pc15 >= 0 ? '+' : '') + fmt(pc15, 3) + '%' : '–',
+                signal: pc15 != null ? (pc15 > 0 ? 'positive' : pc15 < 0 ? 'negative' : 'flat') : '–',
+                vote: pc15Vote, hasData: pc15 != null, hasOpinion: pc15Opin,
+            });
+
+            return rows;
+        },
+
+        async closePosition(positionIdFull) {
+            if (!positionIdFull) return;
+            if (!confirm('Close this position at the current market price?')) return;
+            try {
+                const r = await fetch(`/api/positions/${positionIdFull}/close`, { method: 'POST' });
+                if (!r.ok) {
+                    const err = await r.json().catch(() => ({}));
+                    alert(`Could not close position: ${err.detail || r.statusText}`);
+                    return;
+                }
+                const d = await r.json();
+                alert(`Position closed at ${this.currencySymbol}${parseFloat(d.fill_price).toLocaleString('en-GB', {minimumFractionDigits:2})}. Cash now ${this.currencySymbol}${parseFloat(d.cash).toLocaleString('en-GB', {minimumFractionDigits:2})}.`);
+                this.loadDashboard();
+                this.loadLedger();
+                this.loadClosedTrades();
+            } catch(e) { console.error('Close position:', e); }
+        },
+
+        async resetPositions() {
+            if (!confirm('Clear ALL open positions? This removes stale positions from before the one-position-per-pair rule was enforced. Only use this in paper mode to clean up.')) return;
+            try {
+                const r = await fetch('/api/positions/reset', { method: 'POST' });
+                const d = await r.json();
+                alert(`Cleared ${d.cleared} position(s).`);
+                this.loadDashboard();
+            } catch(e) { console.error('Reset:', e); }
+        },
+
+        timeAgo(date) {
+            const s = Math.floor((Date.now() - date) / 1000);
+            if (s < 60)    return 'just now';
+            if (s < 3600)  return Math.floor(s / 60) + 'm ago';
+            if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+            return Math.floor(s / 86400) + 'd ago';
+        }
+    };
+}
+</script>
+</body>
+</html>
