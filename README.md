@@ -1,0 +1,2 @@
+# LLMTradingBot
+LLM Trading Bot
