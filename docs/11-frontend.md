@@ -1,8 +1,8 @@
 # Frontend Architecture
 
-**File:** `frontend/index.html`
+**Files:** `frontend/index.html`, `frontend/approvals.html`, `frontend/static/styles.css`
 
-A single-page application served directly by FastAPI via `StaticFiles`. Uses **Alpine.js** for reactive UI state and **Tailwind CSS** (CDN) for styling. No build step, bundler, or Node.js toolchain is required.
+A single-page application served directly by FastAPI. Uses **Alpine.js** for reactive UI state, chart libraries from CDNs, and a shared local stylesheet at `/static/styles.css` for theme, utility classes, responsive layout, panels, buttons, grids, tables, and charts. No build step, bundler, or Node.js toolchain is required.
 
 ---
 
@@ -11,9 +11,37 @@ A single-page application served directly by FastAPI via `StaticFiles`. Uses **A
 | Library | Version | Purpose |
 |---------|---------|---------|
 | Alpine.js | 3.x (CDN) | Reactive component state and DOM binding |
-| Tailwind CSS | 3.x (CDN) | Utility-class styling |
 | Chart.js | 4.x (CDN) | Equity curve line chart |
 | Lightweight Charts | 4.x (CDN) | Candlestick price charts per market |
+| Shared CSS | `frontend/static/styles.css` | Theme variables, utility classes, responsive shells, panel layout, tables, charts, buttons |
+
+---
+
+## Responsive Layout and Styling
+
+The dashboard and approvals page load `/static/styles.css`. This file contains the dark theme variables and the responsive layout primitives used across both pages:
+
+- Local utility classes such as `.sticky`, `.top-0`, `.z-50`, `.flex`, `.items-center`, `.justify-between`, and `.gap-*` replace the previous Tailwind browser CDN script.
+- `.app-shell` with `--page-gutter` replaces fixed-width page caps and uses the full viewport width minus gutters.
+- `.dashboard-grid` is a vertical flex stack for major page sections.
+- `.core-grid` is a responsive status workspace: Markets, Signals, Open Positions, and Closed Positions sit side by side on desktop, use the same fixed panel height, and scroll internally when content is taller than the row.
+- `.approval-details` and `.chart-grid` are vertical stacks so each block uses the full available width.
+- `.news-grid` is a responsive article-card grid inside the full-width News Feed panel.
+- `.chart-pair-grid` is the only content grid that may place items side by side; it is reserved for the 5-minute and 15-minute chart panes inside each market chart card.
+- `.panel`, `.panel-header`, `.panel-body`, `.responsive-table`, `.activity-list`, `.core-panel`, `.core-scroll`, `.llm-status`, and `.llm-row` standardise panel structure while preserving existing Alpine state and DOM IDs.
+- `.chart-pane` and `.equity-chart-shell` use `clamp()` so widescreen users get larger charts while mobile users avoid horizontal page scroll.
+
+Breakpoint coverage used for layout verification:
+
+| Viewport | Expected layout |
+|---|---|
+| `390x844` | Single-column dashboard, wrapped header, no page-level horizontal scroll |
+| `768x1024` | Vertical block stack, wrapped header, panels remain touch-friendly |
+| `1366x768` | Full-width vertical panels with in-panel table scrolling |
+| `1920x1080` | Main content uses the monitor width; blocks remain stacked vertically |
+| `2560x1440` | Dashboard still uses the available width, with readable gutters and full-width blocks |
+
+The CSS keeps the existing theme palette and visual treatment. Functional hooks such as `equity-chart`, `markets-list`, `signals-list`, `positions-list`, `approvals-queue`, `ledger-body`, `closed-body`, `candle-grid`, and `news-grid` are intentionally retained.
 
 ---
 
@@ -67,6 +95,12 @@ function dashboard() {
     }
 }
 ```
+
+---
+
+## Service Worker Caching
+
+`/sw.js` uses a versioned cache (`kraken-bot-v6`) and claims open tabs as soon as the new worker activates. Navigation and other `text/html` requests are network-first, so the dashboard shell does not keep running stale inline scripts after frontend fixes. API dashboard endpoints remain network-first with client broadcasts, while non-HTML static assets use stale-while-revalidate.
 
 ---
 
@@ -269,24 +303,27 @@ Each market gets a single card containing **two side-by-side charts** — 5-min 
 
 ---
 
-### Portfolio Value
+### Equity Graph
 
-Uses **Chart.js** to render a line chart of total portfolio value over time. The data source is `equity_history` from `/api/dashboard` — up to 1 440 data points (4 hours at 10-second resolution, supplied by `_equity_ticker_loop`). The chart calls `chart.update('none')` on each live refresh to skip animation overhead and repaint immediately.
+Uses **Chart.js** to render a line chart of total equity over time. Each backend market-data tick records cash plus the current mark-to-market value of held crypto/stock positions into `equity_history`; `/api/dashboard` aligns the final history point with the same `Total Equity` value shown in the header, then the frontend redraws it on the next 5-second dashboard refresh. `_equity_ticker_loop` also records supplemental points from the latest known prices. Startup restores the full 1,440-point in-memory window, so the graph can show roughly 4 hours at 10-second resolution.
+
+The chart updates the existing Chart.js instance with `chart.update('none')`, so polling and service-worker broadcasts repaint without a page reload. Hover uses index mode with `intersect: false`, a larger hit radius, a tooltip with timestamp and equity value, and a custom `equityCursorLine` plugin that draws a vertical guide at the hovered point. The y-axis uses Chart.js autoscaling with `grace: '35%'`, so live refreshes do not mutate resolved Chart.js option proxy objects.
 
 ```javascript
 renderChart(history) {
-    const labels = history.map(p => new Date(p.timestamp).toLocaleTimeString());
-    const values = history.map(p => p.equity);
+    const labels = history.map(p => this._formatEquityTick(p.timestamp));
+    const values = history.map(p => Number(p.equity));
 
     if (!this._chart) {
-        const ctx = document.getElementById('equityChart').getContext('2d');
+        const ctx = document.getElementById('equity-chart').getContext('2d');
         this._chart = new Chart(ctx, {
             type: 'line',
-            data: {
-                labels,
-                datasets: [{ label: 'Equity', data: values, borderColor: '#10B981', ... }]
-            },
-            ...
+            data: { labels, datasets: [{ data: values, pointHitRadius: 12, pointHoverRadius: 4 }] },
+            plugins: [this._equityCursorLine()],
+            options: {
+                interaction: { mode: 'index', intersect: false },
+                scales: { y: { grace: '35%' } },
+            }
         });
     } else {
         this._chart.data.labels   = labels;
@@ -352,7 +389,7 @@ Displays the most recent 60 activity log entries in reverse-chronological order 
 
 ### News Feed Panel
 
-Displays all articles published in the **last 12 hours** in a 3-column grid. No item cap — the count varies with market activity. The panel header shows the article count and last-updated time. Each card shows:
+Displays all articles published in the **last 12 hours** in a responsive grid of article cards inside the full-width News Feed panel. No item cap — the count varies with market activity. The panel header shows the article count and last-updated time. Each card shows:
 - Source badge (blue for CoinDesk, gold for CoinTelegraph)
 - Publication time (`timeAgo()`)
 - Title (truncated to 3 lines)
@@ -393,30 +430,24 @@ Appends `'Z'` to the date string to force UTC interpretation (the backend emits 
 
 ## Layout Structure
 
-Panels are ordered top to bottom as follows. All panels are collapsible — clicking the panel header row toggles the body open or closed. **Risk Rejections** and **Price Charts** are collapsed by default; all others open.
+Panels are still collapsible and keep the same DOM IDs and API actions, but they no longer sit inside a fixed `1280px` vertical stack. The outer dashboard is:
 
+```html
+<main class="app-shell dashboard-shell dashboard-grid">
 ```
-┌─────────────────────────────────────────────────────────┐
-│  Header: Total Equity | Available Cash | Mode |         │
-│          Environment | Emergency Stop                   │
-├─────────────────────────────────────────────────────────┤
-│  Mode Banner                                            │
-├─────────────────────────────────────────────────────────┤
-│  Portfolio Value (Chart.js)                             │
-├──────────────┬──────────────────────────────────────────┤
-│  Markets     │                                          │
-│  Signals     │  (same row)                              │
-│  Positions   │                                          │
-├──────────────┴──────────────────────────────────────────┤
-│  Pending Approvals                                      │
-├─────────────────────────────────────────────────────────┤
-│  Trade Ledger (OPEN/CLOSED badges with P&L)             │
-│  Closed Trades (entry/exit/P&L%)                        │
-│  Risk Rejections  [collapsed by default]                │
-├─────────────────────────────────────────────────────────┤
-│  Price Charts (5min+15min side by side) [collapsed]     │
-│  News Feed (last 12 hours, 3-column grid)               │
-│  Local LLM Status (Briefing + Reflection)               │
-│  Bot Activity Log                                       │
-└─────────────────────────────────────────────────────────┘
-```
+
+All dashboard areas are stacked vertically in document order. The shell uses the available browser width instead of capping at the old fixed desktop width.
+
+| Area | Layout |
+|---|---|
+| Market Briefing | Full-width block |
+| Mode Banner | Full-width block |
+| Equity Graph | Full-width block |
+| Markets, Signals, Open Positions, Closed Positions | Responsive equal-height `.core-grid` panels with internal scrolling |
+| Pending Approvals | Full-width block |
+| Trade Ledger, P&L Summary, Risk Rejections | Full-width blocks |
+| Price Charts | Full-width block; only the 5-minute and 15-minute panes may sit side by side |
+| News Feed | Full-width panel containing a responsive article-card grid |
+| Local LLM, Bot Activity | Full-width blocks; Local LLM fields render as separate `.llm-row` lines |
+
+Tables keep horizontal scrolling inside `.panel-body-scroll`; the page itself should not gain horizontal scroll. Chart panels use `.chart-grid`, `.chart-pair-grid`, and `.chart-pane`, with dimensions controlled by CSS rather than fixed inline pixel heights.

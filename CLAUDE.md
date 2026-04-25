@@ -43,8 +43,10 @@ This is a trading bot software project to trade crypto currencies
 - Flag potential bugs or edge cases after the code explanation if relevant.
 - With every change, update the documents in the docs folder.
 - Use behaviour driven development in a GIVEN WHEN THEN style.
+- Tests should test behaviour and state rather than specific outcomes.
 - Create a new test for the desired outcome prior to making the code change.
 - Run the new test after a code change to validate the change.
+- Existing tests are there to prevent reverting to a broken or undesired state. Respect existing tests, be sure that new code doesn't introduce an issue that was previously resolved.
 - Run linter checks on madified files after code change.
 - After modifiying a file, run all unit tests for that file.
 - Run broader functionality tests to ensure change hasn't broken functionality.

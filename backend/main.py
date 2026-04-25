@@ -27,7 +27,7 @@ try:
     from config.currency import currency_symbol
     from config.settings import settings
     from control.state import LEGACY_STRATEGY_IDS, ControlState
-    from domain.models import ExecutionIntent
+    from domain.models import ExecutionIntent, MarketSnapshot
     from execution.kraken import KrakenExecutionEngine
     from execution.operator_reset import close_positions_for_operator_reset
     from execution.paper import PaperExecutionEngine
@@ -36,8 +36,6 @@ try:
         BitcoinMagazineAdapter,
         CoinDeskAdapter,
         CoinTelegraphAdapter,
-        CoinTelegraphMagazineAdapter,
-        CryptoNewsAdapter,
         CryptoPotaroAdapter,
         CryptoSlateAdapter,
         DecryptAdapter,
@@ -46,11 +44,13 @@ try:
         ReutersBusinessAdapter,
         TheBlockAdapter,
         TheDefiantAdapter,
+        normalise_news_item,
     )
     from llm.analyser import LLMAnalyser, SignalAnalysis
     from llm.client import OllamaClient
     from observability.activity import activity
     from observability.logging import get_logger, setup_logging
+    from portfolio.equity import align_equity_history_with_current, build_equity_snapshot
     from risk.engine import STOP_LOSS_ASSUMPTION, RiskEngine
     from risk.persistence import record_trade_result_and_persist
     from storage.database import init_database
@@ -107,10 +107,8 @@ news_adapters = [
     DecryptAdapter(),
     BitcoinMagazineAdapter(),
     CryptoSlateAdapter(),
-    CoinTelegraphMagazineAdapter(),
     TheDefiantAdapter(),
     CryptoPotaroAdapter(),
-    CryptoNewsAdapter(),
     NewsBTCAdapter(),
     ReutersBusinessAdapter(),
     FearGreedAdapter(),
@@ -141,6 +139,7 @@ approval_service.load_pending_from_repository()
 # In-memory state updated by the background loop
 _latest_signals: List[Dict[str, Any]] = []   # rolling buffer, newest first
 _current_prices: Dict[str, float] = {}
+_latest_market_snapshots: Dict[str, MarketSnapshot] = {}
 _active_markets: List[str] = []
 
 _SIGNAL_BUFFER_MAX = 12   # maximum signals kept in the panel
@@ -165,14 +164,17 @@ _OHLC_REFRESH_INTERVAL  = 120   # seconds between full refresh cycles
 _OHLC_INTER_MARKET_GAP  = 2.5   # seconds between markets to respect Kraken rate limits
 _OHLC_INTER_INTERVAL_GAP = 1.0  # seconds between the two interval fetches for the same market
 
-# Rolling price history: deque per market (30 s ticks, max 60 = 30 min window)
-_LOOKBACK_TICKS = 10
-_price_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=60))
+# Rolling price history: deque per market (30 s ticks, max 200 = ~100 min window).
+# _LOOKBACK_TICKS must be >= slow_ema + signal_period - 1 = 34 so that MACD is
+# computable before the first strategy evaluation.  200-bar buffer lets Wilder
+# SMMA (RSI) warm up well past its 14-bar seed window.
+_LOOKBACK_TICKS = 34
+_price_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=200))
 
 # Equity snapshots for chart (max 1 440 = 4 h at 10-s resolution) - pre-loaded from DB
 _equity_history: deque = deque(maxlen=1440)
 _current_equity: float = settings.starting_capital   # updated every 10 s by equity ticker
-_db_equity = repo.get_equity_history(limit=288)
+_db_equity = repo.get_equity_history(limit=1440)
 if _db_equity:
     _equity_history.extend(_db_equity)
     _current_equity = _db_equity[-1]["equity"]   # seed from most recent DB snapshot
@@ -220,6 +222,34 @@ def _record_trade_result(pnl: float) -> None:
     record_trade_result_and_persist(risk_engine, repo, pnl)
 
 
+# Record a mark-to-market portfolio value point for dashboard graphing.
+def _record_equity_snapshot(prices: Dict[str, float]) -> Dict[str, Any]:
+    """Compute, cache, and persist cash plus current position value."""
+    global _current_equity
+    snapshot = build_equity_snapshot(paper_engine, prices)
+    _current_equity = float(snapshot["equity"])
+    risk_engine.update_equity(_current_equity)
+    _equity_history.append(
+        {
+            "timestamp": str(snapshot["timestamp"]),
+            "equity": _current_equity,
+        }
+    )
+    repo.save_equity_snapshot(
+        _current_equity,
+        float(snapshot["cash"]),
+        float(snapshot["positions_value"]),
+    )
+    return snapshot
+
+
+# Cache the latest streamed market snapshot for strategy ticks.
+def _cache_market_snapshot(snapshot: MarketSnapshot) -> None:
+    """Store the most recent ticker snapshot from Kraken streaming."""
+    _latest_market_snapshots[snapshot.symbol] = snapshot
+    _current_prices[snapshot.symbol] = snapshot.price
+
+
 async def _send_alert(event_type: str, payload: Dict[str, Any]) -> None:
     """Post a JSON alert to the configured webhook URL, if one is set."""
     if not settings.alert_webhook_url:
@@ -261,6 +291,7 @@ async def _strategy_loop() -> None:
     )
     await _send_alert("bot_started", {"markets": _active_markets, "mode": settings.trading_mode})
     logger.info("Active markets confirmed", extra={"markets": _active_markets})
+    kraken_adapter.start_subscription(_active_markets, _cache_market_snapshot)
 
     tick = 0
     while True:
@@ -270,14 +301,25 @@ async def _strategy_loop() -> None:
                 await asyncio.sleep(30)
                 continue
 
-            # Only poll enabled markets
+            # Only evaluate enabled markets.
             active = [m for m in _active_markets if control.is_market_enabled(m)]
             if not active:
                 activity.warn("All markets disabled - tick skipped")
                 await asyncio.sleep(30)
                 continue
 
-            snapshots = await kraken_adapter.get_tickers_batch(active)
+            snapshots = {
+                sym: _latest_market_snapshots[sym]
+                for sym in active
+                if sym in _latest_market_snapshots
+            }
+            missing = [sym for sym in active if sym not in snapshots]
+            if missing:
+                snapshots.update(await kraken_adapter.get_tickers_batch(missing))
+            if not snapshots:
+                activity.warn("No market prices available - tick skipped")
+                await asyncio.sleep(30)
+                continue
             prices = {sym: snap.price for sym, snap in snapshots.items()}
 
             for sym, price in prices.items():
@@ -327,12 +369,10 @@ async def _strategy_loop() -> None:
             paper_engine.update_mark_prices(prices)
             paper_engine.update_trailing_prices(prices)
 
-            # Persist price ticks and equity snapshot every 30-s strategy tick.
-            # Fine-grained equity snapshots (every 10 s) are handled by _equity_ticker_loop.
+            # Persist price ticks and portfolio value for this market-data tick.
             for sym, price in prices.items():
                 repo.save_price_tick(sym, price)
-            positions_value = _current_equity - paper_engine.cash
-            repo.save_equity_snapshot(_current_equity, paper_engine.cash, positions_value)
+            _record_equity_snapshot(prices)
 
             # Trim old price ticks and activity log periodically (every ~5 min = 10 ticks)
             if tick % 10 == 0:
@@ -383,9 +423,20 @@ async def _strategy_loop() -> None:
                             {"market": pos.market, "position_id": pos.position_id, "pnl": pnl},
                         )
 
-            if warming_up:
+            # LLM-backed strategies do not require indicator warm-up — they derive signals
+            # from the LLM's analysis of price context and news rather than from price history.
+            _selected = _strategy_by_id(control.selected_strategy_id)
+            _uses_llm = getattr(_selected, "uses_llm_recommendation", False)
+            if warming_up and not _uses_llm:
                 await asyncio.sleep(30)
                 continue
+
+            # Reconcile pending live orders every 2 ticks (~60 s) so fills are visible promptly.
+            if tick % 2 == 0 and settings.trading_environment == "live":
+                try:
+                    await kraken_engine.reconcile_pending_orders()
+                except Exception as e:
+                    logger.warning("Order reconciliation error", extra={"error": str(e)})
 
             ideas = []
             active_strategy = _strategy_by_id(control.selected_strategy_id)
@@ -600,7 +651,8 @@ async def _strategy_loop() -> None:
                             )
                             _closing_long = _longs[0] if _longs else None
 
-                        size_base = (idea.position_sizing_proposal * _current_equity) / market_price
+                        sizing = risk_decision.adjusted_sizing or idea.position_sizing_proposal
+                        size_base = (sizing * _current_equity) / market_price
                         intent = ExecutionIntent(
                             approval_request_id="auto",
                             market=idea.market,
@@ -667,7 +719,7 @@ async def _strategy_loop() -> None:
                 _latest_signals = (signals + _retained)[:_SIGNAL_BUFFER_MAX]
 
         except Exception as e:
-            logger.error("Strategy loop error", extra={"error": str(e)})
+            logger.error("Strategy loop error", extra={"error": str(e)}, exc_info=True)
             activity.error("Strategy loop error", str(e))
 
         await asyncio.sleep(30)
@@ -707,7 +759,7 @@ async def _market_briefing_task(new_articles: List[Dict[str, Any]]) -> None:
                 outlooks,
             )
     except Exception as e:
-        logger.error("Market briefing task error", extra={"error": str(e)})
+        logger.error("Market briefing task error", extra={"error": str(e)}, exc_info=True)
 
 
 async def _news_loop() -> None:
@@ -723,6 +775,7 @@ async def _news_loop() -> None:
             for adapter in news_adapters:
                 items = await adapter.fetch_news()
                 all_items.extend(items)
+            all_items = [normalise_news_item(item) for item in all_items]
             all_items.sort(key=lambda x: x.published_at, reverse=True)
             for item in all_items:
                 try:
@@ -762,7 +815,7 @@ async def _news_loop() -> None:
                           ", ".join(sorted({i["source"] for i in _latest_news})))
             logger.info("News feed updated", extra={"count": len(_latest_news)})
         except Exception as e:
-            logger.error("News loop error", extra={"error": str(e)})
+            logger.error("News loop error", extra={"error": str(e)}, exc_info=True)
             activity.error("News fetch failed", str(e))
         await asyncio.sleep(300)
 
@@ -781,7 +834,7 @@ async def _reflection_loop() -> None:
                     f"Suggestion: {reflection.suggestion} ({reflection.insight_confidence:.0%} confidence)",
                 )
         except Exception as e:
-            logger.error("Reflection loop error", extra={"error": str(e)})
+            logger.error("Reflection loop error", extra={"error": str(e)}, exc_info=True)
         await asyncio.sleep(3600)
 
 
@@ -805,7 +858,7 @@ async def _ohlc_loop() -> None:
                     _ohlc_cache_5[market] = {"symbol": market, "interval": 5, "candles": candles}
                     logger.debug("OHLC 5m refreshed", extra={"market": market, "candles": len(candles)})
             except Exception as e:
-                logger.error("OHLC 5m fetch failed", extra={"market": market, "error": str(e)})
+                logger.error("OHLC 5m fetch failed", extra={"market": market, "error": str(e)}, exc_info=True)
 
             await asyncio.sleep(_OHLC_INTER_INTERVAL_GAP)
 
@@ -816,7 +869,7 @@ async def _ohlc_loop() -> None:
                     _ohlc_cache_15[market] = {"symbol": market, "interval": 15, "candles": candles}
                     logger.debug("OHLC 15m refreshed", extra={"market": market, "candles": len(candles)})
             except Exception as e:
-                logger.error("OHLC 15m fetch failed", extra={"market": market, "error": str(e)})
+                logger.error("OHLC 15m fetch failed", extra={"market": market, "error": str(e)}, exc_info=True)
 
             # Gap between markets prevents hitting Kraken's rate limit.
             await asyncio.sleep(_OHLC_INTER_MARKET_GAP)
@@ -830,21 +883,14 @@ async def _equity_ticker_loop() -> None:
     Running independently from the 30-s strategy loop gives the frontend chart a
     smooth, near-realtime view of portfolio value as market prices move.
     """
-    global _current_equity
     while True:
         await asyncio.sleep(10)
         if not _current_prices:
             continue
         try:
-            equity = paper_engine.get_total_equity(_current_prices)
-            _current_equity = equity
-            risk_engine.update_equity(equity)
-            _equity_history.append({"timestamp": datetime.now(timezone.utc).isoformat(), "equity": equity})
-            # Persist every ticker tick so a crash never loses more than 10 s of equity history
-            positions_value = equity - paper_engine.cash
-            repo.save_equity_snapshot(equity, paper_engine.cash, positions_value)
+            _record_equity_snapshot(_current_prices)
         except Exception as e:
-            logger.warning("Equity ticker error", extra={"error": str(e)})
+            logger.warning("Equity ticker error", extra={"error": str(e)}, exc_info=True)
 
 
 @asynccontextmanager
@@ -878,14 +924,22 @@ app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR / "static")), name="
 
 # Page routes
 
+# Serve the dashboard shell without browser caching so inline scripts stay current.
 @app.get("/")
 async def root():
-    return FileResponse(str(FRONTEND_DIR / "index.html"))
+    return FileResponse(
+        str(FRONTEND_DIR / "index.html"),
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
 
 
+# Serve the approvals shell without browser caching so frontend fixes apply immediately.
 @app.get("/approvals")
 async def approvals_page():
-    return FileResponse(str(FRONTEND_DIR / "approvals.html"))
+    return FileResponse(
+        str(FRONTEND_DIR / "approvals.html"),
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
 
 
 @app.get("/sw.js")
@@ -902,7 +956,7 @@ async def service_worker():
     return _Resp(
         content=content,
         media_type="application/javascript",
-        headers={"Cache-Control": "no-cache"},
+        headers={"Cache-Control": "no-store, max-age=0"},
     )
 
 
@@ -944,6 +998,7 @@ async def get_dashboard():
                 "size": f"{abs(pos.size):.6f}",
                 "avg_price": f"{pos.avg_price:.2f}",
                 "unrealized_pnl": f"{pos.unrealized_pnl:.2f}",
+                "trade_idea_id": paper_engine._position_meta.get(pos.position_id, {}).get("trade_idea_id", ""),
             }
             for pos in paper_engine.open_positions()
         ]
@@ -951,7 +1006,10 @@ async def get_dashboard():
         pending = approval_service.get_pending()
         approvals = [_approval_to_dict(req) for req in pending]
 
-        equity = paper_engine.get_total_equity(_current_prices) if _current_prices else settings.starting_capital
+        # get_total_equity uses avg_price as fallback when a market has no live price,
+        # so this is safe to call even when _current_prices is empty on first startup.
+        equity = paper_engine.get_total_equity(_current_prices)
+        equity_history = align_equity_history_with_current(_equity_history, equity)
 
         strategy_states = [
             {
@@ -978,7 +1036,7 @@ async def get_dashboard():
             "signals": _latest_signals,
             "positions": positions,
             "approvals": approvals,
-            "equity_history": list(_equity_history),
+            "equity_history": equity_history,
             "risk_rejections": list(_risk_rejections)[:20],
             "activity": activity.recent(60),
             "control": ctrl,
@@ -1051,7 +1109,8 @@ async def approve_trade(approval_id: str):
                 "detail": f"No live price for {idea.market}; trade logged but not executed"}
 
     equity = paper_engine.get_total_equity(_current_prices)
-    size_base = (idea.position_sizing_proposal * equity) / market_price
+    sizing = req.risk_decision.adjusted_sizing or idea.position_sizing_proposal
+    size_base = (sizing * equity) / market_price
 
     # Capture the FIFO long before execute() removes it (needed for PnL)
     _closing_long = None

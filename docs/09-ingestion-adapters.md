@@ -16,10 +16,13 @@ Provides async access to Kraken's public and private REST API. In paper trading 
 KrakenMarketAdapter(
     api_key:    Optional[str],   # from settings.kraken_api_key
     api_secret: Optional[str],   # from settings.kraken_api_secret
+    backoff_sleep: Callable = asyncio.sleep,
+    backoff_jitter: Optional[Callable] = None,
+    websocket_connect: Optional[Callable] = None,
 )
 ```
 
-Both credentials are `None` in paper mode. The adapter checks for their presence before any private API call.
+Both credentials are `None` in paper mode. `backoff_sleep`, `backoff_jitter`, and `websocket_connect` are injectable for BDD tests; normal runtime uses `asyncio.sleep`, random jitter, and `websockets.connect`.
 
 ---
 
@@ -81,7 +84,7 @@ class MarketSnapshot:
     volume:    float    # 24h volume
 ```
 
-Called every 30 seconds from `_strategy_loop`. A single batch call avoids the rate limit overhead of per-symbol requests.
+Used as the REST fallback when a WebSocket snapshot has not arrived for a symbol yet. A single batch call avoids the rate limit overhead of per-symbol requests.
 
 ---
 
@@ -115,17 +118,19 @@ Called by `_ohlc_loop` every 120 seconds with a 2.5-second inter-market gap to r
 
 ### `subscribe_ticker()` / `start_subscription()`
 
-Polling-based subscription shim. Calls `get_tickers_batch()` on an interval (currently unused — the strategy loop fetches directly). Provided for future use if the polling architecture is replaced with WebSocket streaming.
+Starts a public Kraken WebSocket v1 `ticker` subscription. Messages are parsed into the existing `MarketSnapshot` contract and cached by `_strategy_loop` through `_cache_market_snapshot()`.
+
+If WebSocket setup or streaming fails, the adapter logs a warning and falls back to polling with `get_tickers_batch()`. The strategy loop reads cached WebSocket snapshots first and only calls REST for markets that have not produced a stream update yet.
 
 ---
 
 ### Rate Limiting
 
-Kraken's public REST API has a per-IP rate limit. The adapter does not implement retry backoff itself — rate limit avoidance is achieved through loop design:
+Kraken's public REST API has a per-IP rate limit. REST calls are wrapped by `kraken_retry.call_with_kraken_backoff()`, which retries rate-limit and temporary-lockout responses with exponential backoff before surfacing the error. Rate limit avoidance is still supported by loop design:
 
 | Loop | Frequency | Call type |
 |------|-----------|-----------|
-| `_strategy_loop` | Every 30s | `get_tickers_batch()` — single batch request |
+| `_strategy_loop` | Every 30s | WebSocket cache first; `get_tickers_batch()` only for missing stream prices |
 | `_ohlc_loop` | Every 120s (2.5s/market) | `get_ohlc()` — one request per market |
 
 At two active markets, the OHLC loop sends two requests per 120-second cycle. Combined with the ticker batch (one request every 30 seconds), this stays well within Kraken's documented public tier limits.
@@ -164,7 +169,7 @@ Fetches and parses an RSS/Atom feed using Python's standard library `urllib.requ
 2. Find all `<item>` (RSS) or `<entry>` (Atom) elements.
 3. For each item, extract: `title`, `link`, `description` (used as `content`), `pubDate` / `published`.
 4. Generate a stable article ID: `sha256(title + url)[:16]` — consistent across restarts, no duplicates.
-5. Parse `pubDate` with multiple format fallbacks (RFC 2822, ISO 8601, etc.).
+5. Parse `pubDate` and normalise it to timezone-aware UTC before returning a `NewsItem`.
 6. Return up to `max_items` most recent items.
 
 **`NewsItem` structure:**
@@ -176,7 +181,7 @@ class NewsItem:
     source:       str       # "CoinDesk" or "CoinTelegraph"
     title:        str
     content:      str       # RSS description field (full HTML body)
-    published_at: datetime
+    published_at: datetime  # timezone-aware UTC
     url:          str
 ```
 

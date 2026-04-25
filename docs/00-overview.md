@@ -64,7 +64,7 @@ The primary design goals are:
 | Layer | Technology | Version / Notes |
 |---|---|---|
 | Web framework | FastAPI + Uvicorn | ASGI, async throughout |
-| Frontend | Alpine.js + Tailwind CSS | No build step; CDN-loaded |
+| Frontend | Alpine.js + local CSS | No build step; utility styling in `/static/styles.css` |
 | Charts | Lightweight Charts (candles), Chart.js (equity) | CDN-loaded |
 | Database | SQLite via SQLAlchemy 2.x | `StaticPool`; single file |
 | Settings | Pydantic v2 / pydantic-settings | `.env` file |

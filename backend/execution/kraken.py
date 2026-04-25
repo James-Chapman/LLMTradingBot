@@ -3,11 +3,12 @@ import asyncio
 import uuid
 from datetime import datetime, timezone
 from functools import partial
-from typing import Optional, Tuple
+from typing import Awaitable, Callable, Optional, Tuple
 
 import krakenex
 
 from domain.models import Direction, ExecutionIntent, OrderRecord
+from kraken_retry import call_with_kraken_backoff
 from observability.logging import get_logger
 
 logger = get_logger("kraken_execution")
@@ -45,6 +46,8 @@ class KrakenExecutionEngine:
         api_secret: Optional[str],
         repository=None,
         api_client=None,
+        backoff_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        backoff_jitter: Optional[Callable[[float], float]] = None,
     ):
         self._repo = repository
         self._api_key = api_key
@@ -52,6 +55,8 @@ class KrakenExecutionEngine:
         self._api = api_client or (
             krakenex.API(api_key, api_secret) if api_key and api_secret else None
         )
+        self._backoff_sleep = backoff_sleep
+        self._backoff_jitter = backoff_jitter
 
     async def execute(
         self,
@@ -82,7 +87,13 @@ class KrakenExecutionEngine:
 
         payload = self._build_add_order_payload(intent)
         try:
-            response = await _in_thread(self._api.query_private, "AddOrder", payload)
+            response = await call_with_kraken_backoff(
+                lambda: _in_thread(self._api.query_private, "AddOrder", payload),
+                sleep=self._backoff_sleep,
+                jitter=self._backoff_jitter,
+                logger=logger,
+                operation_name="Kraken AddOrder",
+            )
         except Exception as exc:
             order.status = "rejected"
             order.exchange_order_id = str(exc)
@@ -107,6 +118,63 @@ class KrakenExecutionEngine:
             "txid": order.exchange_order_id,
         })
         return order, ""
+
+    async def reconcile_pending_orders(self) -> int:
+        """Query Kraken for all pending live orders and update status in the repository.
+
+        Returns the count of orders whose status changed.
+        Calls QueryOrders with the txids of every pending live order and stamps
+        status="filled" (with fill price/fee) or "canceled"/"expired" as appropriate.
+        """
+        if self._api is None or self._repo is None:
+            return 0
+
+        pending = self._repo.get_pending_live_orders()
+        if not pending:
+            return 0
+
+        txids = [o["exchange_order_id"] for o in pending]
+        try:
+            response = await call_with_kraken_backoff(
+                lambda: _in_thread(
+                    self._api.query_private,
+                    "QueryOrders",
+                    {"txid": ",".join(txids), "trades": True},
+                ),
+                sleep=self._backoff_sleep,
+                jitter=self._backoff_jitter,
+                logger=logger,
+                operation_name="Kraken QueryOrders",
+            )
+        except Exception as exc:
+            logger.warning("Kraken QueryOrders failed", extra={"error": str(exc)})
+            return 0
+
+        errors = response.get("error") or []
+        if errors:
+            logger.warning("Kraken QueryOrders error", extra={"errors": errors})
+            return 0
+
+        result = response.get("result", {})
+        updated = 0
+        for order in pending:
+            txid = order["exchange_order_id"]
+            if txid not in result:
+                continue
+            info = result[txid]
+            kraken_status = info.get("status", "")
+            if kraken_status == "closed":
+                fill_price = float(info.get("price", order["price"]))
+                fee = float(info.get("fee", 0.0))
+                self._repo.update_order_status_and_fill(order["id"], "filled", fill_price, fee)
+                logger.info("Reconciled live order filled", extra={"txid": txid, "fill_price": fill_price})
+                updated += 1
+            elif kraken_status in ("canceled", "expired"):
+                self._repo.update_order_status_and_fill(order["id"], kraken_status, order["price"], 0.0)
+                logger.info("Reconciled live order", extra={"txid": txid, "status": kraken_status})
+                updated += 1
+
+        return updated
 
     def _build_add_order_payload(self, intent: ExecutionIntent) -> dict:
         """Build Kraken AddOrder payload from an execution intent."""

@@ -4,43 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Approvals — Kraken Bot</title>
-    <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
-    <style>
-        :root {
-            --bg:      #0d1117;
-            --surface: #161b22;
-            --border:  #30363d;
-            --subtle:  #21262d;
-            --text:    #e6edf3;
-            --muted:   #8b949e;
-            --green:   #3fb950;
-            --red:     #f85149;
-            --blue:    #58a6ff;
-            --gold:    #d29922;
-        }
-        * { box-sizing: border-box; }
-        body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; margin: 0; }
-        .card  { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
-        .mono  { font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace; }
-        .label { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
-        .pill  { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 9999px; font-size: 11px; font-weight: 600; border: 1px solid; }
-        .pill-blue  { color: var(--blue);  background: rgba(88,166,255,.1);  border-color: rgba(88,166,255,.3); }
-        .pill-gold  { color: var(--gold);  background: rgba(210,153,34,.1);  border-color: rgba(210,153,34,.3); }
-        .pill-green { color: var(--green); background: rgba(63,185,80,.1);   border-color: rgba(63,185,80,.3); }
-        .pill-red   { color: var(--red);   background: rgba(248,81,73,.1);   border-color: rgba(248,81,73,.3); }
-        .btn { padding: 8px 20px; font-size: 13px; font-weight: 600; border-radius: 6px; cursor: pointer; border: 1px solid; transition: opacity .15s; }
-        .btn:hover { opacity: .8; }
-        .btn-approve { color: var(--green); background: rgba(63,185,80,.12);  border-color: rgba(63,185,80,.3); }
-        .btn-reject  { color: var(--red);   background: rgba(248,81,73,.12);  border-color: rgba(248,81,73,.3); }
-    </style>
+    <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
 
 <!-- ── Header ─────────────────────────────────────────────────────────── -->
-<header style="background:var(--surface);border-bottom:1px solid var(--border);" class="sticky top-0 z-50">
-    <div style="max-width:900px;margin:0 auto;padding:0 24px;" class="flex items-center justify-between h-14">
-        <div class="flex items-center gap-4">
+<header class="app-header sticky top-0 z-50">
+    <div class="app-shell approvals-shell header-bar">
+        <div class="header-left">
             <a href="/" style="font-size:13px;color:var(--blue);text-decoration:none;">← Dashboard</a>
             <span style="color:var(--border);">|</span>
             <span style="font-size:15px;font-weight:600;">Trade Approvals</span>
@@ -50,8 +22,8 @@
 </header>
 
 <!-- ── Main ───────────────────────────────────────────────────────────── -->
-<main style="max-width:900px;margin:0 auto;padding:24px;">
-    <div id="container" style="display:flex;flex-direction:column;gap:16px;">
+<main class="app-shell approvals-shell page-stack">
+    <div id="container" class="approval-list">
         <div style="text-align:center;padding:80px 0;color:var(--muted);">
             <div style="font-size:32px;margin-bottom:12px;">⏳</div>
             <div style="font-size:14px;">Loading…</div>
@@ -89,7 +61,7 @@ async function load() {
             const expiry = new Date(a.expires_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
             const riskCol = a.risk_approved ? 'var(--green)' : 'var(--red)';
             return `
-            <div class="card" style="padding:24px;" id="card-${a.id}">
+            <div class="card approval-card" id="card-${a.id}">
                 <!-- Title row -->
                 <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:16px;">
                     <div style="display:flex;align-items:center;gap:10px;">
@@ -112,7 +84,7 @@ async function load() {
                 </div>
 
                 <!-- Details grid -->
-                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:20px;">
+                <div class="approval-details">
                     <div>
                         <div class="label" style="margin-bottom:6px;">Thesis</div>
                         <div style="font-size:13px;line-height:1.5;">${a.thesis}</div>
@@ -132,7 +104,7 @@ async function load() {
                     <div style="font-size:12px;color:${riskCol};">
                         Risk: ${a.risk_reason}
                     </div>
-                    <div style="display:flex;gap:10px;">
+                    <div class="approval-actions">
                         <button class="btn btn-approve" onclick="decide('${a.id}','approve')">✓ Approve</button>
                         <button class="btn btn-reject"  onclick="decide('${a.id}','reject')">✗ Reject</button>
                     </div>

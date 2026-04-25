@@ -6,6 +6,338 @@ This document tracks all identified bugs, improvements, and enhancements in the 
 
 ---
 
+## Open Todos — 2026-04-25
+
+### Critical — Test Runner Broken
+
+- [x] **CFG-001: pytest cannot discover tests — missing `pythonpath` config.**
+  - **Where:** `pyproject.toml`.
+  - **Problem:** `tests/bdd_helpers.py` is imported by every test file as a bare `from bdd_helpers import ...`. pytest does not add the `tests/` directory to `sys.path` automatically, so collection fails with `ModuleNotFoundError: No module named 'bdd_helpers'`. Every single test file is currently un-runnable via `pytest`.
+  - **Fix:** Add `[tool.pytest.ini_options]` to `pyproject.toml` with `pythonpath = ["tests"]` (pytest ≥ 7) and `testpaths = ["tests"]`.
+  - **Suggested test:** `pytest tests/ --collect-only` exits 0 with no import errors.
+
+---
+
+### New Bugs
+
+- [x] **BUG-016: Strategy fires before MACD and Bollinger Bands have enough data.**
+  - **Where:** `backend/main.py` line 169 (`_LOOKBACK_TICKS = 10`).
+  - **Problem:** The warm-up guard allows strategy evaluation after only 10 ticks (5 minutes). MACD requires 34 bars, Bollinger 20 bars. For the first ~17 minutes both indicators return `None`, so strategy signals are driven only by RSI, EMA, and price changes — a materially different and weaker signal set than the configured strategy expects.
+  - **Expected:** Warm-up threshold should be at least `slow_ema + signal_period - 1 = 34` ticks so all configured indicators are computable before the first trade idea is evaluated.
+  - **Suggested test:** GIVEN fewer than 34 price ticks in history WHEN the strategy loop evaluates THEN no trade ideas are emitted.
+
+- [x] **BUG-017: Live Kraken orders are never reconciled — status stays `"pending"` indefinitely.**
+  - **Where:** `backend/execution/kraken.py`, `backend/main.py`.
+  - **Problem:** `KrakenExecutionEngine.execute()` submits an order and stores the `txid`, but there is no follow-up `QueryOrders` poll or WebSocket fill event to update `status` to `"filled"` or `"rejected"`. A live order that fills on Kraken is invisible to the risk engine, the P&L ledger, and the stop-loss loop until the next restart (which never queries fills either).
+  - **Expected:** A periodic reconciliation task should call `QueryOrders` for all outstanding `"pending"` live orders and update status, fill price, and fee accordingly.
+  - **Suggested test:** GIVEN a live order with a known txid WHEN reconciliation runs and Kraken reports the order filled THEN the order record is updated to `status="filled"` with the actual fill price.
+
+- [x] **BUG-018: `_price_history` buffer (60 ticks = 30 min) is too small for Wilder RSI to fully warm up.**
+  - **Where:** `backend/main.py` line 170 (`maxlen=60`).
+  - **Problem:** Wilder's RSI is accurate only when the SMMA has smoothed over many periods beyond the seed window. With at most 60 ticks, RSI has at most 46 bars of SMMA smoothing (60 − 14 seed bars). Standard trading platforms use 100–500 bars. The current buffer produces an RSI that is noticeably different from charting platforms and will over-weight early bars.
+  - **Expected:** Increase `maxlen` to at least 200 (≈100 minutes at 30 s/tick) so indicators are properly seeded. The OHLC cache (100 candles × 5 min = 500 min) is already much deeper and is used where available.
+  - **Suggested test:** GIVEN a 200-bar price series WHEN RSI is computed THEN the result is within 1 point of an independently calculated reference RSI.
+
+- [x] **BUG-019: `CoinNewsAdapter` and `CoinWeekAdapter` silently return no news.**
+  - **Where:** `backend/ingestion/news_adapter.py`.
+  - **Problem:** Both adapters are documented as Phase 0 stubs and return empty lists. The news loop calls them without any indication to the operator that news is not actually being fetched. If the operator configures either adapter, they get silent zero-news results with no warning in the activity log.
+  - **Expected:** Either implement the adapters or log a one-time `WARNING` at startup so the operator knows those news sources are inactive.
+  - **Suggested test:** GIVEN `CoinNewsAdapter` is registered WHEN the news loop runs THEN the activity log contains a warning that this adapter is a stub.
+
+- [x] **BUG-020: Portfolio Value graph can lag behind the latest market-data tick.**
+  - **Where:** `backend/main.py`, `backend/portfolio/equity.py`, `frontend/index.html`.
+  - **Problem:** The dashboard header computed equity from fresh prices, but the graph history could persist `_current_equity` from the previous snapshot during the strategy tick. The chart could therefore show a stale portfolio value until the separate equity ticker loop ran.
+  - **Expected:** Every market-data tick should record a fresh portfolio snapshot equal to account cash plus the current marked value of open crypto/stock holdings.
+  - **BDD tests:** GIVEN cash and holdings WHEN a portfolio snapshot is built THEN equity equals cash plus current holdings value. GIVEN the strategy loop receives fresh tick prices WHEN source is inspected THEN the tick path records a fresh graph snapshot instead of persisting stale `_current_equity`.
+  - **Implementation:** Added `portfolio.equity.build_equity_snapshot()` and `_record_equity_snapshot(prices)`. The strategy loop now calls `_record_equity_snapshot(prices)` immediately after persisting the tick prices, and the equity ticker loop uses the same helper.
+
+- [x] **BUG-021: LLM signal analysis crashes on naive restored context timestamps.**
+  - **Where:** `backend/llm/analyser.py`.
+  - **Problem:** SQLite can return `llm_briefings.generated_at` and `llm_reflections.generated_at` as offset-naive datetimes. `analyse_signal()` subtracted those values from `datetime.now(timezone.utc)`, raising `TypeError: can't subtract offset-naive and offset-aware datetimes` and breaking the strategy loop.
+  - **Expected:** Briefing and reflection age calculations should accept both naive restored timestamps and aware UTC timestamps.
+  - **BDD tests:** GIVEN persisted naive LLM context timestamps WHEN signal analysis builds prompt context THEN UTC age calculations do not crash and the briefing/reflection blocks are still injected.
+  - **Implementation:** Added UTC timestamp normalisation helpers in `llm.analyser`, changed briefing/reflection default timestamps to `datetime.now(timezone.utc)`, normalised DB-loaded ISO timestamps, and routed all context age calculations through the safe helper.
+
+- [x] **BUG-022: News loop crashes sorting mixed naive and aware article timestamps.**
+  - **Where:** `backend/ingestion/news_adapter.py`, `backend/main.py`.
+  - **Problem:** RSS articles could carry offset-naive UTC timestamps while JSON-backed articles, such as Fear & Greed, used timezone-aware UTC. `_news_loop()` sorted all articles by `published_at`, which raised `TypeError: can't compare offset-naive and offset-aware datetimes`.
+  - **Expected:** Every news article should enter the news loop with a timezone-aware UTC `published_at` so cross-source sorting is deterministic.
+  - **BDD tests:** GIVEN RSS and JSON news with mixed naive/aware timestamps WHEN items are normalised and sorted THEN no datetime comparison error is raised. GIVEN the news loop source WHEN inspected THEN publish times are normalised before sorting.
+  - **Implementation:** Added `normalise_published_at()` and `normalise_news_item()`, kept RSS parser output timezone-aware UTC, and normalised the aggregate news list before sorting.
+
+- [x] **BUG-023: Local LLM can stay unavailable after one malformed JSON response.**
+  - **Where:** `backend/llm/client.py`, `backend/llm/analyser.py`.
+  - **Problem:** Ollama could return HTTP 200 with malformed JSON when a prompt was truncated or the model ignored JSON formatting. The client marked the whole service unavailable, and analyser-level `available` guards prevented the circuit breaker from making its half-open retry, so the Local LLM panel could remain unavailable.
+  - **Expected:** Malformed model JSON should fail only the current LLM task. Transport failures and timeouts should still open the circuit, and analyser workflows should allow half-open retry attempts when the cooldown has expired.
+  - **BDD tests:** GIVEN Ollama returns HTTP 200 with malformed JSON WHEN JSON is expected THEN the service remains available. GIVEN the circuit is ready for a half-open retry WHEN signal analysis runs THEN the analyser attempts the LLM call even while `available` is still false.
+  - **Implementation:** Added `OllamaClient.can_attempt`, stopped treating `JSONDecodeError` as an availability failure, and routed analyser availability checks through the half-open-aware helper.
+
+---
+
+### Code Quality
+
+- [x] **QUALITY-001: Background loops catch bare `Exception` — programming errors are silently swallowed.**
+  - **Where:** `backend/main.py` lines 669, 709, 764, 783, 807, 818, 846.
+  - **Problem:** Every background loop wraps its inner body in `except Exception as e: logger.warning(...)`. This correctly prevents one bad tick from crashing the bot, but it also masks `AttributeError`, `TypeError`, `KeyError`, and other programming mistakes. A bug introduced in the strategy or indicator code would log a warning and continue rather than surfacing as a visible failure.
+  - **Expected:** Narrow catches to `(httpx.RequestError, asyncio.TimeoutError, krakenex.APIError)` or equivalent. Re-raise `(KeyboardInterrupt, SystemExit)` and let unexpected exceptions propagate to the task, where FastAPI's exception handler can alert the operator.
+
+- [x] **QUALITY-002: `features/` directory is empty.**
+  - **Where:** `backend/features/`.
+  - **Problem:** The directory exists but contains no files. If it was intended for Gherkin `.feature` files it should be populated; if it is unused it should be removed to avoid confusion.
+  - **Expected:** Either add feature files or delete the directory.
+  - **Implementation:** Verified no `features/` directory remains in the tracked project tree.
+
+---
+
+### Missing Features
+
+- [x] **FEAT-001: Kraken ticker feed uses polling — no WebSocket support.**
+  - **Where:** `backend/ingestion/kraken_adapter.py` line 157.
+  - **Problem:** The ticker subscription comment explicitly flags WebSocket as a future enhancement. The current poll approach adds latency and costs one REST call per tick per market. At 30-second intervals with many markets this is tolerable, but a WebSocket feed would give real-time prices and reduce Kraken API rate-limit risk.
+  - **Expected:** Add an optional `KrakenWebSocketAdapter` that subscribes to the `ticker` channel and pushes prices to `_price_history` without polling. The existing REST adapter remains as a fallback.
+  - **BDD tests:** GIVEN a Kraken WebSocket ticker message WHEN it is parsed THEN the adapter returns the same `MarketSnapshot` contract used by polling. GIVEN the strategy loop source WHEN inspected THEN WebSocket snapshots are subscribed and used before REST polling fallback.
+  - **Implementation:** `KrakenMarketAdapter.subscribe_ticker()` now starts a WebSocket ticker subscription and falls back to polling if streaming fails. `_strategy_loop` starts the subscription after market validation and consumes cached stream snapshots before calling `get_tickers_batch()` for missing symbols.
+
+- [x] **FEAT-002: No rate-limit back-off on Kraken API errors.**
+  - **Where:** `backend/ingestion/kraken_adapter.py`, `backend/execution/kraken.py`.
+  - **Problem:** Neither the market data adapter nor the execution engine implements exponential back-off when Kraken returns a rate-limit error (`EGeneral:Too Many Requests`). A burst of retries after a rate-limit response will immediately trigger another rate-limit, compounding the problem.
+  - **Expected:** Add a `_backoff_retry` wrapper that detects Kraken rate-limit responses and sleeps with exponential jitter before retrying.
+  - **BDD tests:** GIVEN Kraken rate-limits a live order WHEN execution retries THEN the order is submitted after backoff. GIVEN Kraken temporarily rate-limits ticker calls WHEN batch prices are fetched THEN the adapter backs off and retries before returning market snapshots.
+  - **Implementation:** Added `kraken_retry.call_with_kraken_backoff()` with exponential delay plus jitter, and wired it into Kraken ticker, OHLC, asset-pair, `AddOrder`, and `QueryOrders` calls.
+
+---
+
+## UI Layout and CSS Refactor Plan — 2026-04-25
+
+> Analysis scope: `frontend/index.html`, `frontend/approvals.html`, and `docs/11-frontend.md`.
+> Goal: keep the current dark theme and all existing dashboard functionality while reducing wasted
+> space on widescreen monitors and preserving a clean layout on tablets and phones.
+> Implemented with shared CSS in `frontend/static/styles.css`.
+
+### Current whitespace findings
+
+- The dashboard header and main content are hard-capped at `max-width:1280px`, so 1440p and
+  ultrawide monitors show large unused side gutters even when panels contain dense data.
+- The approvals page is capped at `max-width:900px`, which is readable for forms but wasteful
+  when approval cards contain three independent detail columns.
+- The main dashboard uses a mostly vertical stack. After the first Markets / Signals / Open
+  Positions row, several dense panels render full-width one after another instead of using a
+  wider multi-column workspace.
+- Several grids are fixed rather than responsive:
+  `repeat(3,1fr)` for Markets / Signals / Positions, `repeat(3,1fr)` for News, and
+  `repeat(3,1fr)` inside approval cards.
+- Chart sizing is fixed (`140px` equity chart, `210px` candle chart panes), so wide monitors do
+  not gain much analytical area from the extra available width.
+- CSS is duplicated and split across inline `style` attributes and local utility classes. This
+  makes responsive layout changes risky and hard to test.
+
+- [x] **UI-001: Establish responsive layout baselines before implementation.**
+  - **Files:** `frontend/index.html`, `frontend/approvals.html`, `docs/11-frontend.md`
+  - **Scope:** Record the current panel order, visible controls, and breakpoint behavior before
+    changing layout.
+  - **Breakpoints to verify:** `390x844` mobile, `768x1024` tablet, `1366x768` laptop,
+    `1920x1080` desktop, and `2560x1440` widescreen.
+  - **BDD checks:** GIVEN each breakpoint WHEN the dashboard loads THEN every existing panel,
+    button, modal, chart, table, and approval action remains reachable.
+  - **Implementation:** Current fixed-width constraints and panel/grid behavior are captured in
+    the whitespace findings above and guarded by `tests/test_frontend_layout_bdd.py`.
+  - **Acceptance:** Baseline screenshots or notes exist for each breakpoint; no implementation
+    work begins until required current-state behavior is listed.
+
+- [x] **UI-002: Move shared CSS into `frontend/static/styles.css`.**
+  - **Files:** `frontend/static/styles.css`, `frontend/index.html`, `frontend/approvals.html`,
+    `backend/main.py`, `docs/11-frontend.md`
+  - **Scope:** Extract theme variables, card styles, pills, buttons, layout shells, panel headers,
+    grids, tables, modals, scrollbars, and chart containers into a shared stylesheet.
+  - **Implementation notes:** Tailwind's browser CDN has been removed and the remaining utility
+    dependencies are local classes in `frontend/static/styles.css`. Replace repeated inline style blocks with semantic classes such as
+    `.app-shell`, `.dashboard-grid`, `.panel`, `.panel-header`, `.metric-strip`,
+    `.responsive-table`, `.chart-grid`, and `.approval-card`.
+  - **BDD checks:** GIVEN the stylesheet is served by FastAPI WHEN `/` and `/approvals` load THEN
+    computed colors, borders, button states, and visible controls match the current theme.
+  - **Implementation:** Theme variables, shared pills/buttons, panel styling, responsive shells,
+    content-aware grids, tables, and chart containers now live in `/static/styles.css`.
+  - **Acceptance:** No embedded `<style>` blocks remain in dashboard pages; CSS is loaded from
+    `/static/styles.css`.
+
+- [x] **UI-003: Replace fixed page caps with adaptive application shells.**
+  - **Files:** `frontend/static/styles.css`, `frontend/index.html`, `frontend/approvals.html`
+  - **Scope:** Replace `max-width:1280px` and `max-width:900px` with responsive shells that use
+    the viewport without becoming unreadable.
+  - **Implementation notes:** Use CSS variables and `clamp()` for gutters, for example a shell
+    width based on `min(100% - var(--page-gutter) * 2, 1800px)` for the dashboard and a wider
+    approval workspace on large screens. Keep sensible line-length limits inside long text blocks
+    instead of constraining the entire page.
+  - **BDD checks:** GIVEN a `1920x1080` viewport WHEN the dashboard loads THEN side gutters are
+    small and intentional, while content remains aligned and readable. GIVEN a mobile viewport
+    WHEN the dashboard loads THEN no horizontal page scroll is introduced.
+  - **Implementation:** Dashboard and approval pages now use `.app-shell` with responsive gutter
+    and shell-width variables instead of fixed `1280px` / `900px` caps.
+  - **Acceptance:** Desktop pages use more monitor width; mobile and tablet retain readable
+    gutters and touch-friendly spacing.
+
+- [x] **UI-004: Rebuild the dashboard as a responsive dense workspace.**
+  - **Files:** `frontend/static/styles.css`, `frontend/index.html`, `docs/11-frontend.md`
+  - **Scope:** Preserve every existing dashboard panel while increasing useful horizontal space
+    for each panel.
+  - **Implementation notes:** Initial implementation used a multi-column dashboard workspace, but
+    the final requirement is a vertical stack where every block is full width.
+  - **No functionality loss:** Keep collapsible panel state, emergency stop/resume, market
+    toggles, strategy selector, reset positions, signal modal, approvals preview, tables,
+    candlestick charts, news cards, LLM panels, and activity log.
+  - **BDD checks:** GIVEN existing dashboard data WHEN each panel is expanded/collapsed THEN the
+    same DOM controls and API actions remain available after the layout refactor.
+  - **Implementation:** Dashboard panels now use `.dashboard-grid` as a full-width vertical stack.
+  - **Acceptance:** At `1920x1080`, panels use full available width; at mobile widths, the same
+    vertical order remains logical.
+
+- [x] **UI-005: Make grid panels content-aware instead of fixed-column.**
+  - **Files:** `frontend/static/styles.css`, `frontend/index.html`, `frontend/approvals.html`
+  - **Scope:** Replace fixed `repeat(3,1fr)` layouts with full-width vertical stacks.
+  - **Targets:** Markets / Signals / Positions, approval detail sections, P&L summary,
+    signal modal grids, and raw signal data.
+  - **Implementation notes:** Tables should keep horizontal scrolling inside their panel, not on
+    the page. The only side-by-side content layout should be the 5-minute / 15-minute chart pair.
+  - **BDD checks:** GIVEN narrow, laptop, and widescreen viewports WHEN grids render THEN cards do
+    not become cramped, overly stretched, or hidden off-screen.
+  - **Implementation:** Main dashboard groups, chart card list, approval details, and approval
+    lists now stack vertically. Chart pairs retain side-by-side behavior where space allows.
+  - **Acceptance:** Blocks fill available width naturally and do not sit side by side, except for
+    the 5-minute and 15-minute chart panes and the News Feed's internal article-card grid.
+
+- [x] **UI-006: Improve chart use of widescreen space.**
+  - **Files:** `frontend/static/styles.css`, `frontend/index.html`
+  - **Scope:** Give charts responsive dimensions that scale with their container and data density.
+  - **Implementation notes:** Increase equity chart height on desktop, use `aspect-ratio` or
+    `clamp()` for chart containers, and keep `ResizeObserver` behavior for Lightweight Charts.
+    Preserve the existing 5-minute and 15-minute chart pairing per market.
+  - **BDD checks:** GIVEN charts are opened or the browser is resized WHEN data is available THEN
+    Chart.js and Lightweight Charts resize without blank canvases or overlap.
+  - **Implementation:** Equity and candle chart containers now use CSS `clamp()` dimensions;
+    generated candle chart cards use `.chart-card`, `.chart-pair-grid`, and `.chart-pane`.
+  - **Acceptance:** Widescreen users get larger, more useful charts; mobile users still get
+    readable charts without horizontal page scroll.
+
+- [x] **UI-007: Make the sticky header wrap intelligently.**
+  - **Files:** `frontend/static/styles.css`, `frontend/index.html`, `frontend/approvals.html`
+  - **Scope:** Keep all header status, equity, cash, approvals, stop, and resume controls while
+    preventing crowding on smaller widths.
+  - **Implementation notes:** Use a responsive header grid or flex-wrap. On mobile, group metrics
+    into a compact status row and keep emergency stop/resume visually prominent.
+  - **BDD checks:** GIVEN mobile and desktop widths WHEN header content changes between paper/live
+    and normal/emergency states THEN text and buttons do not overlap.
+  - **Implementation:** Header layout now uses `.header-bar`, `.header-brand`, `.header-status`,
+    `.metric-block`, and responsive wrapping rules shared by dashboard and approvals pages.
+  - **Acceptance:** Header uses wide screens efficiently and remains usable on touch devices.
+
+- [x] **UI-008: Update frontend documentation after the layout refactor.**
+  - **Files:** `docs/11-frontend.md`, `docs/99-todo.md`
+  - **Scope:** Document the new stylesheet, layout shells, breakpoints, panel grid areas, and
+    browser verification checklist.
+  - **Implementation:** `docs/11-frontend.md` documents the shared stylesheet, responsive shells,
+    breakpoint expectations, and grid structure.
+  - **Acceptance:** Documentation matches the implemented CSS file and completed UI layout items
+    are marked done after BDD verification.
+
+- [x] **UI-009: Stack every page block vertically except paired market charts.**
+  - **Files:** `frontend/static/styles.css`, `frontend/index.html`, `frontend/approvals.html`,
+    `docs/11-frontend.md`, `tests/test_frontend_layout_bdd.py`
+  - **Scope:** Remove the multi-column dashboard workspace and make every dashboard and approval
+    block full width. The 5-minute and 15-minute charts remain paired; News Feed article cards
+    can also form a responsive card grid inside the full-width News Feed panel.
+  - **BDD checks:** GIVEN the stylesheet is inspected WHEN layout primitives are checked THEN
+    `.dashboard-grid`, `.core-grid`, `.approval-details`, and `.chart-grid` are vertical stacks,
+    `.news-grid` is a responsive card grid, and no dashboard CSS uses 12-column grid spans.
+  - **Implementation:** `.app-shell` now uses the full viewport width minus gutters; dashboard
+    and content grid classes use vertical flex stacks; P&L summary tables stack vertically; chart
+    cards stack by market while `.chart-pair-grid` keeps the 5-minute and 15-minute panes paired.
+  - **Acceptance:** No top-level page blocks render side by side; chart pairs remain side by side
+    when there is enough room.
+
+- [x] **UI-010: Restore News Feed article cards as responsive blocks.**
+  - **Files:** `frontend/static/styles.css`, `docs/11-frontend.md`,
+    `tests/test_frontend_layout_bdd.py`
+  - **Scope:** Keep the News Feed panel full width, but let individual news articles render as
+    card blocks in a responsive grid rather than one full-width article per row.
+  - **BDD checks:** GIVEN the stylesheet is inspected WHEN the News Feed layout is checked THEN
+    `.news-grid` uses CSS Grid with responsive `auto-fit` / `minmax()` columns while the dashboard
+    shell remains a vertical stack.
+  - **Implementation:** `.news-grid` now uses `display: grid` and
+    `repeat(auto-fit, minmax(min(100%, 280px), 1fr))`.
+  - **Acceptance:** News items appear as compact blocks again without reintroducing side-by-side
+    top-level dashboard panels.
+
+- [x] **UI-011: Rename "Portfolio Value" to "Equity Graph".**
+  - **Files:** `frontend/index.html`, `docs/11-frontend.md`, `tests/test_frontend_layout_bdd.py`.
+  - **Scope:** Update the dashboard panel label and frontend documentation from "Portfolio Value"
+    to "Equity Graph". Keep the existing chart DOM hook (`equity-chart`) unless a separate
+    refactor explicitly renames internal IDs.
+  - **BDD checks:** GIVEN the dashboard markup is inspected WHEN the equity chart panel is found
+    THEN the visible label is "Equity Graph" and "Portfolio Value" is no longer used as the panel
+    title.
+  - **Acceptance:** Operators see "Equity Graph" consistently in the UI and docs.
+  - **Implementation:** Dashboard panel and frontend docs now use "Equity Graph"; the existing `equity-chart` DOM hook is unchanged.
+
+- [x] **UI-012: Ensure Total Equity matches the Equity Graph value.**
+  - **Files:** `backend/main.py`, `backend/portfolio/equity.py`, `frontend/index.html`,
+    `tests/test_portfolio_equity_bdd.py`, `docs/03-background-loops.md`, `docs/11-frontend.md`.
+  - **Scope:** Verify the dashboard header `Total Equity` value and the latest Equity Graph point
+    are sourced from the same mark-to-market snapshot. If they already match, add a regression
+    test that locks the behavior in.
+  - **BDD checks:** GIVEN cash and open holdings WHEN `/api/dashboard` is built from current
+    prices THEN `equity` equals the last `equity_history` point and both equal cash plus current
+    holdings value.
+  - **Acceptance:** The header number cannot drift from the latest graph value after a market
+    tick, manual close, reset, or restart.
+  - **Implementation:** Added `align_equity_history_with_current()` and use it in `/api/dashboard` so the final graph point matches the same current mark-to-market equity used by the header.
+
+- [x] **UI-013: Place Markets, Signals, and Open Positions side by side with equal fixed panel heights.**
+  - **Files:** `frontend/static/styles.css`, `frontend/index.html`, `docs/11-frontend.md`,
+    `tests/test_frontend_layout_bdd.py`.
+  - **Scope:** Supersedes the UI-009/UI-005 vertical-stack rule for this specific dashboard row.
+    Markets, Signals, and Open Positions should render as three side-by-side panels on desktop
+    and collapse responsively on narrow screens.
+  - **Layout requirement:** The three panels must occupy the same pixel height in the row. Each
+    panel body must scroll internally so large market lists, signal lists, or position lists do
+    not make the row excessively tall.
+  - **BDD checks:** GIVEN desktop-width CSS WHEN the core grid is inspected THEN `.core-grid`
+    supports a three-column layout, each child panel has equal row height, and the list areas use
+    bounded internal scrolling. GIVEN mobile width WHEN inspected THEN the panels stack without
+    horizontal page scroll.
+  - **Acceptance:** The row is compact and balanced on widescreen monitors, with no functionality
+    loss for market toggles, signal detail buttons, position close buttons, or reset controls.
+  - **Implementation:** `.core-grid` now renders Markets, Signals, Open Positions, and Closed Positions as equal-height responsive desktop panels. Each panel body uses bounded internal scrolling. Closed Positions is included in the same row to satisfy UI-014 without duplicating Open Positions.
+
+- [x] **UI-014: Place Open Positions and Closed Positions side by side.**
+  - **Files:** `frontend/static/styles.css`, `frontend/index.html`, `docs/11-frontend.md`,
+    `tests/test_frontend_layout_bdd.py`.
+  - **Scope:** Add a responsive two-panel row for Open Positions and Closed Positions. Keep
+    tables and action controls intact.
+  - **Layout requirement:** On desktop, Open Positions and Closed Positions should sit side by
+    side and use internal scrolling where table content exceeds the row height. On smaller
+    screens, they should stack vertically.
+  - **BDD checks:** GIVEN desktop-width CSS WHEN position layout primitives are inspected THEN
+    open and closed position panels share a row. GIVEN narrow width WHEN inspected THEN the row
+    collapses to a single column.
+  - **Acceptance:** Operators can compare current exposure and closed-trade outcomes without
+    scrolling between distant sections.
+  - **Implementation:** Moved Closed Positions into the core status grid immediately beside Open Positions on desktop. Narrow screens collapse the grid responsively.
+
+- [x] **UI-015: Render each Local LLM panel item on its own line.**
+  - **Files:** `frontend/index.html`, `frontend/static/styles.css`, `docs/11-frontend.md`,
+    `tests/test_frontend_layout_bdd.py`.
+  - **Scope:** Update the Local LLM panel presentation so each visible item is on a separate
+    line rather than compressed into inline text.
+  - **Targets:** Availability/model status, market briefing fields, market outlook rows,
+    reflection pattern, reflection suggestion, confidence, and generated-at metadata.
+  - **BDD checks:** GIVEN Local LLM data is rendered WHEN the panel markup is inspected THEN each
+    LLM item uses a block/list row structure with no inline run-on metadata.
+  - **Acceptance:** The Local LLM panel is easier to scan and does not lose any briefing or
+    reflection information.
+  - **Implementation:** Added `.llm-status`, `.llm-card`, `.llm-row`, `.llm-key`, and `.llm-outlook` classes. Model/status, briefing fields, outlooks, reflection pattern, suggestion, and confidence now render as separate rows.
+
+---
+
 ## numpy Integration Plan — 2026-04-25
 
 > numpy 2.4.4 is already present in `requirements.txt` (transitive dep via pandas).

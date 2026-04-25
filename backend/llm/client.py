@@ -6,8 +6,9 @@ Falls back gracefully when Ollama is not available so the rest of the
 bot keeps running without it.
 """
 import json
+import re
 from datetime import datetime, timedelta
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import httpx
 
@@ -17,6 +18,89 @@ logger = get_logger("ollama")
 
 _INITIAL_RETRY_DELAY = timedelta(seconds=30)
 _MAX_RETRY_DELAY = timedelta(minutes=5)
+
+
+# Parse model content as JSON, allowing common LLM formatting mistakes.
+def _loads_model_json(content: str) -> dict[str, Any]:
+    """Return a parsed JSON object from raw model content."""
+    first_error = None
+    attempts = [
+        content,
+        _strip_json_code_fence(content),
+        _repair_missing_field_commas(_strip_json_code_fence(content)),
+    ]
+    for candidate in attempts:
+        try:
+            loaded = json.loads(candidate)
+            if isinstance(loaded, dict):
+                return loaded
+        except json.JSONDecodeError as exc:
+            if first_error is None:
+                first_error = exc
+
+        extracted = _extract_first_json_object(candidate)
+        if extracted is not None:
+            return extracted
+
+    if first_error is not None:
+        raise first_error
+    raise json.JSONDecodeError("Ollama JSON response was not an object", content, 0)
+
+
+# Remove Markdown code fences that some models still emit around JSON.
+def _strip_json_code_fence(content: str) -> str:
+    """Return content without a surrounding JSON Markdown fence."""
+    stripped = content.strip()
+    if not stripped.startswith("```"):
+        return stripped
+    lines = stripped.splitlines()
+    if len(lines) >= 3 and lines[0].startswith("```") and lines[-1].strip() == "```":
+        return "\n".join(lines[1:-1]).strip()
+    return stripped
+
+
+# Extract the first complete JSON object from content with surrounding prose.
+def _extract_first_json_object(content: str) -> Optional[dict[str, Any]]:
+    """Return the first JSON object embedded in content, if one parses."""
+    decoder = json.JSONDecoder()
+    for index, character in enumerate(content):
+        if character != "{":
+            continue
+        try:
+            loaded, _end = decoder.raw_decode(content[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(loaded, dict):
+            return loaded
+    return None
+
+
+# Insert missing commas between newline-separated JSON object fields.
+def _repair_missing_field_commas(content: str) -> str:
+    """Return content with obvious missing field separators repaired."""
+    lines = content.splitlines()
+    repaired = []
+    for index, line in enumerate(lines):
+        next_line = lines[index + 1] if index + 1 < len(lines) else ""
+        if _line_needs_field_comma(line, next_line):
+            line = f"{line.rstrip()},"
+        repaired.append(line)
+    return "\n".join(repaired)
+
+
+# Detect a JSON value line followed by another object field without a comma.
+def _line_needs_field_comma(line: str, next_line: str) -> bool:
+    """Return True when a missing comma can be inferred safely."""
+    stripped = line.strip()
+    next_stripped = next_line.strip()
+    if not stripped or stripped.endswith((",", "{", "[")):
+        return False
+    if not next_stripped.startswith('"') or '":' not in next_stripped:
+        return False
+    return bool(
+        stripped.endswith(('"', "}", "]"))
+        or re.search(r"(?<![A-Za-z])(?:true|false|null|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)$", stripped)
+    )
 
 
 class OllamaClient:
@@ -48,6 +132,13 @@ class OllamaClient:
     def retry_delay_seconds(self) -> int:
         """Return the current retry delay in whole seconds."""
         return int(self._retry_delay.total_seconds())
+
+    @property
+    def can_attempt(self) -> bool:
+        """Return whether a chat call may be attempted now."""
+        if self._circuit_state == "closed":
+            return True
+        return bool(self._next_retry_at and self._clock() >= self._next_retry_at)
 
     async def probe(self) -> bool:
         """Check whether Ollama is running and the configured model is loaded."""
@@ -94,11 +185,10 @@ class OllamaClient:
             content = r.json()["message"]["content"]
             self._mark_success()
             if expect_json:
-                return json.loads(content)
+                return _loads_model_json(content)
             return content
         except json.JSONDecodeError as e:
             logger.warning(f"Ollama returned non-JSON: {e}")
-            self._mark_failed(str(e))
             return None
         except Exception as e:
             self._mark_failed(str(e))

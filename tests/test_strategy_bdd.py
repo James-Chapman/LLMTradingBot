@@ -2,6 +2,7 @@
 import unittest
 
 from bdd_helpers import BACKEND_DIR  # noqa: F401
+from analysis.indicators import compute_all
 from domain.models import Direction
 from strategy.basic_strategy import BasicStrategy
 from strategy.indicator_only_strategy import IndicatorOnlyStrategy
@@ -40,19 +41,21 @@ class BasicStrategyBDDTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(ideas, [])
 
-    # GIVEN fewer than six usable indicators WHEN strategy evaluates THEN no trade signal is generated.
-    async def test_given_fewer_than_six_indicators_when_strategy_evaluates_then_no_signal_is_generated(self) -> None:
+    # GIVEN fewer than five usable indicators WHEN strategy evaluates THEN no trade signal is generated.
+    async def test_given_fewer_than_five_indicators_when_strategy_evaluates_then_no_signal_is_generated(
+        self,
+    ) -> None:
         strategy = BasicStrategy()
         market_data = {
             "BTC/EUR": {
                 "price": 102.0,
                 "previous_price": 100.0,
                 "indicators": {
-                    "rsi_14": 35.0,
-                    "ema_cross": "bullish",
-                    "bb": {"position": 25.0},
-                    "macd": {"bias": "bullish"},
-                    "stoch": {"k": 15.0, "d": 20.0},
+                    "rsi_14": 35.0,          # supports LONG (1)
+                    "ema_cross": "bullish",  # supports LONG (2)
+                    "bb": {"position": 50.0},  # neutral 30-70 — no vote
+                    "macd": {"bias": "bullish"},  # supports LONG (3) — no signal_bias key
+                    "stoch": {"k": 15.0, "d": 20.0},  # supports LONG (4)
                 },
             }
         }
@@ -61,21 +64,25 @@ class BasicStrategyBDDTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(ideas, [])
 
-    # GIVEN fewer than six indicators agree WHEN more indicators are available THEN no signal is generated.
-    async def test_given_only_five_supporting_indicators_when_strategy_evaluates_then_signal_is_blocked(self) -> None:
+    # BUG-020: GIVEN five trend indicators agree in a strongly trending market
+    # WHEN the contrarian indicators (RSI, BB, Stoch, WR) all oppose the direction
+    # THEN a signal IS generated — five agreeing trend indicators is the minimum threshold.
+    # (Previously blocked because MIN_INDICATORS_FOR_SIGNAL was 6, requiring a contrarian
+    # indicator to also agree, which is impossible in a pure trend.)
+    async def test_given_five_trend_indicators_in_trending_market_when_strategy_evaluates_then_signal_is_generated(self) -> None:
         strategy = BasicStrategy()
         market_data = {
             "AXS/EUR": {
                 "price": 102.0,
                 "previous_price": 100.0,
                 "indicators": {
-                    "rsi_14": 76.6,
-                    "ema_cross": "bullish",
-                    "bb": {"position": 80.0},
-                    "macd": {"bias": "bullish", "signal_bias": "bullish", "histogram": 0.5},
-                    "stoch": {"k": 93.2, "d": 90.0},
-                    "williams_r": -0.0,
-                    "price_changes": {"5m": 1.2, "15m": 2.4},
+                    "rsi_14": 76.6,        # > 60 — opposes LONG (contrarian signal)
+                    "ema_cross": "bullish",  # supports LONG ✓
+                    "bb": {"position": 80.0},  # > 70 — opposes LONG (contrarian)
+                    "macd": {"bias": "bullish", "signal_bias": "bullish", "histogram": 0.5},  # ✓ ✓
+                    "stoch": {"k": 93.2, "d": 90.0},  # > 80 — opposes LONG (contrarian)
+                    "williams_r": -0.0,    # >= -20 — opposes LONG (contrarian)
+                    "price_changes": {"5m": 1.2, "15m": 2.4},  # ✓ ✓
                     "atr_pct": 0.5,
                 },
             }
@@ -83,7 +90,10 @@ class BasicStrategyBDDTests(unittest.IsolatedAsyncioTestCase):
 
         ideas = await strategy.evaluate(market_data, news_signals=[])
 
-        self.assertEqual(ideas, [])
+        # EMA, MACD_bias, MACD_sig, 5m, 15m = 5 supporting → meets MIN_INDICATORS_FOR_SIGNAL
+        self.assertEqual(len(ideas), 1, "Five trend indicators in agreement should produce a signal")
+        self.assertEqual(ideas[0].supporting_signals["indicators_supporting"], 5)
+        self.assertEqual(ideas[0].supporting_signals["indicators_opposing"], 4)
 
     # GIVEN exactly six indicators agree WHEN more indicators oppose THEN the signal still passes.
     async def test_given_exactly_six_supporting_indicators_when_strategy_evaluates_then_signal_can_pass(self) -> None:
@@ -246,6 +256,43 @@ class BasicStrategyBDDTests(unittest.IsolatedAsyncioTestCase):
         ideas = await strategy.evaluate(market_data, news_signals=[])
 
         self.assertEqual(ideas, [])
+
+
+    # BUG-016: GIVEN fewer than 34 price ticks in history WHEN strategy evaluates
+    # THEN no trade idea is emitted because MACD and Bollinger are absent, leaving
+    # fewer than MIN_INDICATORS_FOR_SIGNAL usable indicators.
+    async def test_given_short_price_history_when_strategy_evaluates_then_no_signal_due_to_insufficient_indicators(
+        self,
+    ) -> None:
+        strategy = BasicStrategy()
+        # 20 ticks: RSI (needs 15) and EMA (needs 9/21) are present, but MACD (needs 34) is absent.
+        # With only EMA, RSI, price_changes, and stochastic available (<= 5 indicators), signal
+        # should be blocked even with strong momentum.
+        prices = [100.0 + i * 0.5 for i in range(20)]
+        indicators = compute_all(prices, tick_seconds=30)
+        market_data = {
+            "BTC/EUR": {
+                "price": prices[-1],
+                "previous_price": prices[0],
+                "indicators": indicators,
+            }
+        }
+
+        ideas = await strategy.evaluate(market_data, news_signals=[])
+
+        self.assertNotIn("macd", indicators, "MACD should be absent with only 20 ticks")
+        self.assertEqual(ideas, [], "No signal should fire when MACD is absent — too few indicators")
+
+    # BUG-016: GIVEN the warm-up constant WHEN inspected THEN it is at least the MACD minimum bar count.
+    def test_given_warmup_constant_when_inspected_then_it_meets_macd_minimum(self) -> None:
+        import backend.main as bot_main  # noqa: PLC0415
+
+        macd_minimum = 34  # slow_ema=26 + signal=9 - 1
+        self.assertGreaterEqual(
+            bot_main._LOOKBACK_TICKS,
+            macd_minimum,
+            "_LOOKBACK_TICKS must be >= 34 so all indicators are computable before strategy fires",
+        )
 
 
 if __name__ == "__main__":

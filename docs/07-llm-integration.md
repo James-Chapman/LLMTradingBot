@@ -40,16 +40,16 @@ async def chat(
 ) -> Optional[Dict]:
 ```
 
-POSTs to `/api/chat` with `"stream": false`. If `expect_json=True`, the response content is parsed with `json.loads()`. Returns `None` on any failure (timeout, JSON parse error, network error).
+POSTs to `/api/chat` with `"stream": false`. If `expect_json=True`, the response content is parsed with `json.loads()`. Returns `None` on failures that make the current task unusable.
 
-**Retry cooldown:** After any failure, `_retry_after` is set to `now + 5 minutes`. Subsequent calls within this window return `None` immediately without hitting the network. This prevents a cascade of timeouts if the model is loading or unavailable.
+**Circuit breaker:** Transport failures, HTTP errors, and timeouts mark Ollama unavailable and open the circuit. The retry window starts at 30 seconds, doubles on repeated failures, and caps at 5 minutes. When the retry window expires, `can_attempt` becomes true so the next LLM workflow can make a half-open retry even though `available` is still false.
 
 ```python
-if datetime.utcnow() < self._retry_after:
+if not client.can_attempt:
     return None
 ```
 
-The cooldown resets on the next successful call.
+Malformed model output is handled differently. If Ollama returns HTTP 200 but the model content is not immediately valid JSON, the client first strips common Markdown JSON fences, extracts an embedded JSON object if one is present, and repairs obvious missing commas between object fields. If no JSON object can be recovered, the current LLM task returns `None`, but the service remains available. This prevents one truncated or malformed model response from taking the Local LLM panel offline.
 
 ---
 
@@ -210,7 +210,7 @@ If the LLM is unavailable, `confidence_scale = 1.0` (no change), `llm_used = Fal
 
 #### Briefing Injection
 
-If `latest_briefing` is set, a briefing block is prepended to the user message. This gives the LLM cross-market context (e.g. "overall market is bearish — be conservative on this LONG"). The briefing's age in minutes is included so the LLM can weight stale data appropriately.
+If `latest_briefing` is set, a briefing block is prepended to the user message. This gives the LLM cross-market context (e.g. "overall market is bearish — be conservative on this LONG"). The briefing's age in minutes is included so the LLM can weight stale data appropriately. Briefing timestamps are normalised to timezone-aware UTC before the age calculation, so restored SQLite values without timezone offsets cannot crash signal analysis.
 
 #### Reflection Injection
 
@@ -223,7 +223,7 @@ Your most recent self-reflection (47m ago, confidence 72%):
 Apply this advice when assessing the current signal.
 ```
 
-This closes the feedback loop — the LLM's hourly pattern-finding advice now directly influences every subsequent trade decision. The reflection's age is shown so the LLM can weight it appropriately against fresher evidence.
+This closes the feedback loop — the LLM's hourly pattern-finding advice now directly influences every subsequent trade decision. The reflection's age is shown so the LLM can weight it appropriately against fresher evidence. Reflection timestamps use the same UTC normalisation as briefings.
 
 #### Indicator Reuse
 
@@ -254,6 +254,8 @@ The recommender receives the same contextual inputs as signal analysis, but ther
 The prompt includes current and previous price, momentum, the full technical indicator snapshot, latest briefing/reflection if available, portfolio equity/cash/exposure, open positions, and recent relevant news.
 
 Indicators are explicitly labelled as context only. The local strategy code does not require six indicators, consensus, RSI thresholds, or any other indicator condition for LLM-only signals.
+
+LLM-only trade ideas still pass through `RiskEngine` before approval or execution. Risk targets `TARGET_TRADE_AMOUNT` in quote currency, reduces the final notional to available cash when needed, and rejects only when the spendable amount would fall below `MIN_TRADE_SIZE`.
 
 Parsing rules:
 

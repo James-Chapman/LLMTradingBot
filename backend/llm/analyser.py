@@ -23,6 +23,34 @@ from .client import OllamaClient
 logger = get_logger("llm_analyser")
 CURRENCY_SYMBOL = currency_symbol(settings.base_currency)
 
+
+# Return the current time as a timezone-aware UTC datetime.
+def _utc_now() -> datetime:
+    """Return a timezone-aware UTC timestamp."""
+    return datetime.now(timezone.utc)
+
+
+# Normalize stored timestamps so age calculations always use aware UTC datetimes.
+def _ensure_utc(value: datetime) -> datetime:
+    """Return a datetime as timezone-aware UTC."""
+    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+# Parse a repository ISO timestamp as timezone-aware UTC.
+def _parse_utc_datetime(value: str) -> datetime:
+    """Return a parsed repository timestamp as timezone-aware UTC."""
+    if not value:
+        return _utc_now()
+    return _ensure_utc(datetime.fromisoformat(value))
+
+
+# Calculate elapsed whole minutes from a stored context timestamp.
+def _age_minutes_since(value: datetime) -> int:
+    """Return non-negative whole minutes elapsed since value."""
+    return max(0, int((_utc_now() - _ensure_utc(value)).total_seconds() / 60))
+
 # ── System prompts ────────────────────────────────────────────────────────────
 
 _SYSTEM_BRIEFER = (
@@ -65,7 +93,7 @@ class MarketBriefing:
     overall_sentiment: float           # -1.0 … +1.0
     key_insight: str                   # one sentence summary
     article_count: int                 # number of new articles that triggered this
-    generated_at: datetime = field(default_factory=datetime.utcnow)
+    generated_at: datetime = field(default_factory=_utc_now)
 
 
 @dataclass
@@ -90,7 +118,7 @@ class Reflection:
     pattern: str
     suggestion: str
     insight_confidence: float
-    generated_at: datetime = field(default_factory=datetime.utcnow)
+    generated_at: datetime = field(default_factory=_utc_now)
 
 
 def _neutral() -> SignalAnalysis:
@@ -239,6 +267,11 @@ class LLMAnalyser:
         self.latest_briefing:   Optional[MarketBriefing] = None
         self._repo = None  # injected after init
 
+    # Return whether the LLM client is ready for a normal or half-open attempt.
+    def _can_attempt_llm(self) -> bool:
+        """Return True when the client should be allowed to make an LLM call."""
+        return bool(getattr(self._llm, "can_attempt", getattr(self._llm, "available", False)))
+
     # ── Repo wiring ────────────────────────────────────────────────────────
 
     def set_repo(self, repo) -> None:
@@ -257,7 +290,7 @@ class LLMAnalyser:
                     overall_sentiment=b["overall_sentiment"],
                     key_insight=b["key_insight"],
                     article_count=b["article_count"],
-                    generated_at=datetime.fromisoformat(b["generated_at"]) if b["generated_at"] else datetime.now(timezone.utc),
+                    generated_at=_parse_utc_datetime(b["generated_at"]),
                 )
                 logger.info("LLM briefing restored from DB", extra={"insight": b["key_insight"]})
         except Exception as exc:
@@ -270,7 +303,7 @@ class LLMAnalyser:
                     pattern=r["pattern"],
                     suggestion=r["suggestion"],
                     insight_confidence=r["insight_confidence"],
-                    generated_at=datetime.fromisoformat(r["generated_at"]) if r["generated_at"] else datetime.now(timezone.utc),
+                    generated_at=_parse_utc_datetime(r["generated_at"]),
                 )
                 logger.info("LLM reflection restored from DB", extra={"pattern": r["pattern"]})
         except Exception as exc:
@@ -288,7 +321,7 @@ class LLMAnalyser:
         market_data example:
             {"BTC/EUR": {"price": 85420.0, "indicators": {...}}}
         """
-        if not self._llm.available or not market_data:
+        if not self._can_attempt_llm() or not market_data:
             return None
 
         # ── Price + indicator summary for each market ─────────────────────
@@ -391,7 +424,7 @@ class LLMAnalyser:
         open_positions: Optional[List[Any]] = None,
     ) -> SignalAnalysis:
         """Full-context signal analysis, optionally enriched by latest briefing."""
-        if not self._llm.available:
+        if not self._can_attempt_llm():
             return _neutral()
 
         ind       = indicators or {}
@@ -408,7 +441,7 @@ class LLMAnalyser:
         if self.latest_briefing:
             b = self.latest_briefing
             outlook = b.market_outlooks.get(market, {})
-            age_min = int((datetime.now(timezone.utc) - b.generated_at).total_seconds() / 60)
+            age_min = _age_minutes_since(b.generated_at)
             briefing_block = (
                 f"\nLatest market briefing ({age_min}m ago, {b.article_count} new article(s)):\n"
                 f"  Key insight: {b.key_insight}\n"
@@ -424,7 +457,7 @@ class LLMAnalyser:
         reflection_block = ""
         if self.latest_reflection:
             r = self.latest_reflection
-            age_min_r = int((datetime.now(timezone.utc) - r.generated_at).total_seconds() / 60)
+            age_min_r = _age_minutes_since(r.generated_at)
             reflection_block = (
                 f"\nYour most recent self-reflection ({age_min_r}m ago, "
                 f"confidence {r.insight_confidence:.0%}):\n"
@@ -491,7 +524,7 @@ class LLMAnalyser:
         open_positions: Optional[List[Any]] = None,
     ) -> LLMTradeRecommendation:
         """Ask the LLM to independently recommend long, short, or hold."""
-        if not self._llm.available:
+        if not self._can_attempt_llm():
             return _hold()
 
         ind = indicators or {}
@@ -511,7 +544,7 @@ class LLMAnalyser:
         if self.latest_briefing:
             b = self.latest_briefing
             outlook = b.market_outlooks.get(market, {})
-            age_min = int((datetime.now(timezone.utc) - b.generated_at).total_seconds() / 60)
+            age_min = _age_minutes_since(b.generated_at)
             briefing_block = (
                 f"\nLatest market briefing ({age_min}m ago, {b.article_count} new article(s)):\n"
                 f"  Key insight: {b.key_insight}\n"
@@ -526,7 +559,7 @@ class LLMAnalyser:
         reflection_block = ""
         if self.latest_reflection:
             r = self.latest_reflection
-            age_min_r = int((datetime.now(timezone.utc) - r.generated_at).total_seconds() / 60)
+            age_min_r = _age_minutes_since(r.generated_at)
             reflection_block = (
                 f"\nYour most recent self-reflection ({age_min_r}m ago, "
                 f"confidence {r.insight_confidence:.0%}):\n"
@@ -609,7 +642,7 @@ class LLMAnalyser:
         trade so the LLM can find indicator-level patterns (e.g. "losing longs
         all had RSI > 70 at entry").
         """
-        if not self._llm.available or len(outcomes) < 5:
+        if not self._can_attempt_llm() or len(outcomes) < 5:
             return None
 
         sample = outcomes[:20]

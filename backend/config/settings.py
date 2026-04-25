@@ -31,6 +31,7 @@ class BotSettings(BaseSettings):
     # Trading settings
     base_currency: str = Field(default="EUR", validation_alias="BASE_CURRENCY")
     starting_capital: float = Field(default=500.0, validation_alias="STARTING_CAPITAL")
+    target_trade_amount: float = Field(default=100.0, validation_alias="TARGET_TRADE_AMOUNT")
     max_loss_per_trade_percent: float = Field(default=5.0, validation_alias="MAX_LOSS_PER_TRADE_PERCENT")
     max_daily_loss_percent: float = Field(default=5.0, validation_alias="MAX_DAILY_LOSS_PERCENT")
     min_trade_size: float = Field(default=50.0, validation_alias="MIN_TRADE_SIZE")

@@ -321,7 +321,7 @@ If `phi3:mini` is too slow (>60s per call), either:
 - Switch to a smaller/faster model: `OLLAMA_MODEL=phi3`.
 - Disable LLM features by stopping Ollama — the bot will continue without LLM adjustment.
 
-After a timeout, the LLM client enters a 5-minute cooldown before retrying. This prevents cascading timeouts from blocking the strategy loop.
+After a timeout or transport failure, the LLM client opens a circuit breaker before retrying. The retry delay starts at 30 seconds, doubles on repeated failures, and caps at 5 minutes. A malformed JSON response from the model does not mark Ollama unavailable; it only skips that one LLM decision so the next prompt can still run.
 
 ### Stop-loss sensitivity
 

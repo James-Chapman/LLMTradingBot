@@ -323,6 +323,34 @@ class Repository:
             if row:
                 row.pnl = pnl
 
+    def get_pending_live_orders(self) -> list:
+        """Return pending live orders that have a Kraken txid awaiting reconciliation."""
+        with get_session() as s:
+            rows = (
+                s.query(OrderRecordModel)
+                .filter(
+                    OrderRecordModel.status == "pending",
+                    OrderRecordModel.environment == "live",
+                    OrderRecordModel.exchange_order_id.isnot(None),
+                )
+                .all()
+            )
+            return [
+                {"id": r.id, "exchange_order_id": r.exchange_order_id, "price": r.price or 0.0}
+                for r in rows
+            ]
+
+    def update_order_status_and_fill(
+        self, order_id: str, status: str, fill_price: float, fee: float
+    ) -> None:
+        """Update a live order's status, fill price, and fee after Kraken reconciliation."""
+        with get_session() as s:
+            row = s.get(OrderRecordModel, order_id)
+            if row:
+                row.status = status
+                row.price = fill_price
+                row.fee = fee
+
     def save_fill(self, fill: FillRecord) -> None:
         with get_session() as s:
             s.add(FillRecordModel(

@@ -26,7 +26,7 @@ class RiskEngine:
     _last_reset_date: date         # tracks UTC date for daily reset
 ```
 
-`current_equity` is updated every strategy tick with the real mark-to-market total equity. This ensures that percentage-based limits (per-trade loss, daily loss, minimum size) are always computed against the current portfolio value, not the starting capital.
+`current_equity` is updated every strategy tick with the real mark-to-market total equity. This ensures that percentage-based limits (per-trade loss and daily loss) are always computed against the current portfolio value, not the starting capital.
 
 ---
 
@@ -63,36 +63,34 @@ This check is direction-aware. A LONG signal is blocked if any long already exis
 
 If `open_positions` is `None` (not passed by the caller), this check is skipped. All current call-sites pass it.
 
-### Check 2: Cash Sufficiency (LONG only)
+### Check 2: Target Trade Amount And Cash Adjustment
 
 ```python
-if (
-    trade_idea.direction == Direction.LONG
-    and available_cash is not None
-    and market_price is not None
-    and market_price > 0
-):
-    cost = proposed_size_eur * (1 + _FEE_AND_SLIPPAGE)
-    if available_cash < cost:
-        return self._reject(trade_idea, f"Insufficient cash: need €{cost:.2f}, have €{available_cash:.2f}")
+strategy_size_eur = trade_idea.position_sizing_proposal * self.current_equity
+proposed_size_eur = TARGET_TRADE_AMOUNT_EUR if TARGET_TRADE_AMOUNT_EUR > 0 else strategy_size_eur
+
+if proposed_size_eur < MIN_TRADE_SIZE_EUR:
+    proposed_size_eur = MIN_TRADE_SIZE_EUR
 ```
 
-`proposed_size_eur = trade_idea.position_sizing_proposal * self.current_equity`
+`TARGET_TRADE_AMOUNT` is the preferred fixed notional order value in `BASE_CURRENCY` (default 100). `MIN_TRADE_SIZE` is an absolute floor (default 50), not a percentage. If `TARGET_TRADE_AMOUNT` is set to `0`, the engine falls back to the strategy's percentage sizing.
+
+When a trade requires cash and the account has less than the target plus fee/slippage, risk reduces the notional to spendable cash as long as the result remains at or above `MIN_TRADE_SIZE`:
+
+```python
+cost = proposed_size_eur * (1 + _FEE_AND_SLIPPAGE)
+if available_cash < cost:
+    cash_sized_eur = available_cash / (1 + _FEE_AND_SLIPPAGE)
+    if cash_sized_eur < MIN_TRADE_SIZE_EUR:
+        return self._reject(trade_idea, "Insufficient cash")
+    proposed_size_eur = cash_sized_eur
+```
 
 `_FEE_AND_SLIPPAGE = 0.0036` (0.26% taker fee + 0.1% slippage). This is intentionally conservative.
 
-Short signals are exempt from this check because a short that closes an existing long requires no additional cash.
+Short signals that fully close an existing long are exempt from the cash requirement. New short exposure still requires cash as margin in paper mode.
 
-### Check 3: Minimum Trade Size
-
-```python
-if proposed_size_eur < MIN_TRADE_SIZE_EUR:   # default €50
-    return self._reject(trade_idea, f"Trade size €{proposed_size_eur:.2f} below minimum")
-```
-
-Prevents micro-orders that would be consumed entirely by fees.
-
-### Check 4: Per-Trade Loss Limit
+### Check 3: Per-Trade Loss Limit
 
 ```python
 max_loss = self.current_equity * settings.max_loss_per_trade_percent / 100
@@ -103,7 +101,7 @@ if estimated_loss > max_loss:
 
 Estimated loss assumes the stop-loss fires at exactly `STOP_LOSS_PCT` (5%). This is an upper-bound estimate, not a guarantee.
 
-### Check 5: Daily Loss Limit
+### Check 4: Daily Loss Limit
 
 ```python
 daily_limit = self.current_equity * settings.max_daily_loss_percent / 100
@@ -115,17 +113,19 @@ if self.daily_loss >= daily_limit:
 
 ### Approval
 
-If all five checks pass:
+If all checks pass:
 
 ```python
 return RiskDecision(
     trade_idea_id=trade_idea.id,
     approved=True,
     reason="All risk checks passed",
-    adjusted_sizing=None,
+    adjusted_sizing=proposed_size_eur / self.current_equity if adjusted else None,
     timestamp=datetime.utcnow(),
 )
 ```
+
+`adjusted_sizing` is returned whenever risk uses the fixed target amount, clamps to the minimum, or reduces to available cash. Existing execution paths already consume this field when converting the final notional amount into base-currency order size.
 
 ---
 
@@ -197,7 +197,8 @@ The dashboard displays the last 20 rejections in the "Risk Rejections" panel.
 
 | Parameter | Setting Key | Default | Description |
 |---|---|---|---|
-| Min trade size | `MIN_TRADE_SIZE` | €50 | Absolute minimum order value |
+| Target trade amount | `TARGET_TRADE_AMOUNT` | EUR 100 | Preferred fixed notional order value |
+| Min trade size | `MIN_TRADE_SIZE` | EUR 50 | Absolute minimum final order value |
 | Stop-loss | `STOP_LOSS_PCT` | 5% | Fraction loss triggering auto-close |
 | Fee + slippage | `FEE_AND_SLIPPAGE` | 0.36% | Cost estimate for cash sufficiency check |
 | Per-trade loss | `MAX_LOSS_PER_TRADE_PERCENT` | 5% | Max estimated loss per trade vs equity |

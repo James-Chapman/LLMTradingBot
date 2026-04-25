@@ -47,9 +47,10 @@ A singleton instance `settings` is created at module level and imported everywhe
 |---|---|---|---|
 | `BASE_CURRENCY` | str | `"EUR"` | Quote currency for all markets and P&L display |
 | `STARTING_CAPITAL` | float | `500.0` | Initial paper cash balance in `BASE_CURRENCY` |
+| `TARGET_TRADE_AMOUNT` | float | `100.0` | Preferred notional order value in `BASE_CURRENCY`; risk can reduce it to available cash |
 | `MAX_LOSS_PER_TRADE_PERCENT` | float | `5.0` | Maximum allowable loss per trade as a percentage of current equity |
 | `MAX_DAILY_LOSS_PERCENT` | float | `5.0` | Maximum allowable cumulative loss in a calendar day (UTC) |
-| `MIN_TRADE_SIZE` | float | `50.0` | Minimum order value in `BASE_CURRENCY`. Orders below this are rejected by the risk engine |
+| `MIN_TRADE_SIZE` | float | `50.0` | Minimum final order value in `BASE_CURRENCY`; cash-adjusted trades below this are rejected |
 | `STOP_LOSS_PCT` | float | `0.05` | Fraction loss at which a position is automatically closed (5%) |
 | `FEE_AND_SLIPPAGE` | float | `0.0036` | Combined cost estimate: Kraken taker fee (0.26%) + one-way slippage (0.1%) |
 | `MIN_SIGNAL_CONFIDENCE` | float | `0.65` | Minimum signal confidence required to execute a trade in fully-automated mode. Signals below this threshold are skipped and logged. Has no effect in manual or semi-automated modes. |
@@ -122,6 +123,7 @@ Some values are derived from settings at module import time. They are exposed as
 ```python
 # backend/risk/engine.py
 MIN_TRADE_SIZE_EUR   = settings.min_trade_size    # alias for backward compat
+TARGET_TRADE_AMOUNT_EUR = settings.target_trade_amount
 STOP_LOSS_ASSUMPTION = settings.stop_loss_pct
 _FEE_AND_SLIPPAGE    = settings.fee_and_slippage
 ```

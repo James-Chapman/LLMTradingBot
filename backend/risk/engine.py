@@ -22,6 +22,7 @@ logger = get_logger("risk_engine")
 # These are read from settings so they can be tuned via .env without code changes.
 # The module-level aliases keep existing imports, such as main.py, working unchanged.
 MIN_TRADE_SIZE_EUR = settings.min_trade_size
+TARGET_TRADE_AMOUNT_EUR = settings.target_trade_amount
 STOP_LOSS_ASSUMPTION = settings.stop_loss_pct
 _FEE_AND_SLIPPAGE = settings.fee_and_slippage
 MIN_24H_VOLUME = settings.min_24h_volume
@@ -49,7 +50,19 @@ class RiskEngine:
     ) -> RiskDecision:
         self._check_daily_reset()
 
-        proposed_size_eur = trade_idea.position_sizing_proposal * self.current_equity
+        strategy_size_eur = trade_idea.position_sizing_proposal * self.current_equity
+        proposed_size_eur = (
+            TARGET_TRADE_AMOUNT_EUR
+            if TARGET_TRADE_AMOUNT_EUR > 0
+            else strategy_size_eur
+        )
+        # Exchange minimum is a floor, not a risk gate — clamp up silently so the
+        # remaining checks run against the actual size that will be traded.
+        _adjusted = abs(proposed_size_eur - strategy_size_eur) > 0.000001
+        if proposed_size_eur < MIN_TRADE_SIZE_EUR:
+            proposed_size_eur = MIN_TRADE_SIZE_EUR
+            _adjusted = True
+
         if (
             MIN_24H_VOLUME > 0
             and market_volume_24h is not None
@@ -95,18 +108,16 @@ class RiskEngine:
         if available_cash is not None and market_price is not None and market_price > 0 and requires_cash:
             cost = proposed_size_eur * (1 + _FEE_AND_SLIPPAGE)
             if available_cash < cost:
-                return self._reject(
-                    trade_idea,
-                    f"Insufficient cash: need {_DISPLAY_CURRENCY}{cost:.2f}, "
-                    f"have {_DISPLAY_CURRENCY}{available_cash:.2f}",
-                )
-
-        if proposed_size_eur < MIN_TRADE_SIZE_EUR:
-            return self._reject(
-                trade_idea,
-                f"Trade size {_DISPLAY_CURRENCY}{proposed_size_eur:.2f} below "
-                f"minimum {_DISPLAY_CURRENCY}{MIN_TRADE_SIZE_EUR:.2f}",
-            )
+                cash_sized_eur = available_cash / (1 + _FEE_AND_SLIPPAGE)
+                if cash_sized_eur < MIN_TRADE_SIZE_EUR:
+                    min_cost = MIN_TRADE_SIZE_EUR * (1 + _FEE_AND_SLIPPAGE)
+                    return self._reject(
+                        trade_idea,
+                        f"Insufficient cash: need at least {_DISPLAY_CURRENCY}{min_cost:.2f}, "
+                        f"have {_DISPLAY_CURRENCY}{available_cash:.2f}",
+                    )
+                proposed_size_eur = cash_sized_eur
+                _adjusted = True
 
         max_loss = self.current_equity * settings.max_loss_per_trade_percent / 100
         estimated_loss = proposed_size_eur * STOP_LOSS_ASSUMPTION
@@ -131,7 +142,7 @@ class RiskEngine:
             trade_idea_id=trade_idea.id,
             approved=True,
             reason="All risk checks passed",
-            adjusted_sizing=None,
+            adjusted_sizing=proposed_size_eur / self.current_equity if _adjusted else None,
             timestamp=datetime.now(timezone.utc),
         )
 

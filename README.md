@@ -27,7 +27,7 @@ The bot is designed to run safely in paper mode first. Live trading is supported
 | LLM | Ollama local REST API, `phi3:mini` by default |
 | HTTP client | httpx |
 | Numeric compute | numpy and pandas |
-| Frontend | Alpine.js, Tailwind CSS, Chart.js, Lightweight Charts |
+| Frontend | Alpine.js, local CSS, Chart.js, Lightweight Charts |
 | Tests and linting | unittest BDD tests, Ruff |
 
 ## Repository Layout

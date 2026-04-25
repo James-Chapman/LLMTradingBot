@@ -152,7 +152,7 @@ Raw news article from an RSS feed.
 | `source` | str | Feed source name (`"CoinDesk"`, `"CoinTelegraph"`) |
 | `title` | str | Article headline |
 | `content` | str | RSS description/body (truncated to 200 chars in memory) |
-| `published_at` | datetime | Article publication time |
+| `published_at` | datetime | Article publication time, normalised to timezone-aware UTC for safe cross-source sorting |
 | `url` | str \| None | Article URL |
 
 #### `NewsSignal`
@@ -284,7 +284,7 @@ Deduplicated news articles from RSS feeds.
 | `source` | String | Feed name |
 | `title` | String | Article headline |
 | `content` | Text | RSS description (may be HTML or plaintext) |
-| `published_at` | DateTime | Publication time |
+| `published_at` | DateTime | Publication time, stored after UTC normalisation |
 | `url` | String nullable (unique) | Article URL |
 
 ---

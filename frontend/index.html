@@ -4,91 +4,40 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Kraken Bot</title>
-    <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
-    <style>
-        :root {
-            --bg:      #0d1117;
-            --surface: #161b22;
-            --border:  #30363d;
-            --subtle:  #21262d;
-            --text:    #e6edf3;
-            --muted:   #8b949e;
-            --green:   #3fb950;
-            --red:     #f85149;
-            --blue:    #58a6ff;
-            --gold:    #d29922;
-            --orange:  #e3773a;
-        }
-        * { box-sizing: border-box; }
-        body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; margin: 0; }
-        .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
-        .mono { font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace; }
-        .label { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
-        .pill { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 9999px; font-size: 11px; font-weight: 600; border: 1px solid; }
-        .pill-blue   { color: var(--blue);   background: rgba(88,166,255,.1);  border-color: rgba(88,166,255,.3); }
-        .pill-gold   { color: var(--gold);   background: rgba(210,153,34,.1);  border-color: rgba(210,153,34,.3); }
-        .pill-green  { color: var(--green);  background: rgba(63,185,80,.1);   border-color: rgba(63,185,80,.3); }
-        .pill-red    { color: var(--red);    background: rgba(248,81,73,.1);   border-color: rgba(248,81,73,.3); }
-        .pill-orange { color: var(--orange); background: rgba(227,119,58,.1);  border-color: rgba(227,119,58,.3); }
-        .pill-muted  { color: var(--muted);  background: rgba(139,148,158,.1); border-color: rgba(139,148,158,.3); }
-        .divider { border: none; border-top: 1px solid var(--border); margin: 0; }
-        .row-sep { border-bottom: 1px solid var(--subtle); }
-        .signal-long  { border-left: 3px solid var(--green); }
-        .signal-short { border-left: 3px solid var(--red); }
-        .news-card:hover { border-color: var(--muted) !important; }
-        .toggle-btn { padding: 3px 10px; font-size: 11px; font-weight: 600; border-radius: 4px; cursor: pointer; border: 1px solid; transition: opacity .15s; }
-        .toggle-on  { color: var(--green); background: rgba(63,185,80,.1);  border-color: rgba(63,185,80,.3); }
-        .toggle-off { color: var(--muted); background: rgba(139,148,158,.08); border-color: rgba(139,148,158,.3); }
-        .estop-btn { padding: 7px 18px; font-size: 13px; font-weight: 700; border-radius: 6px; cursor: pointer; border: 1px solid; transition: all .15s; letter-spacing: .03em; }
-        .estop-active   { color: #fff; background: var(--red); border-color: var(--red); }
-        .estop-inactive { color: var(--red); background: rgba(248,81,73,.12); border-color: rgba(248,81,73,.4); }
-        .estop-active:hover   { opacity: .85; }
-        .estop-inactive:hover { background: rgba(248,81,73,.2); }
-        .resume-btn { padding: 7px 18px; font-size: 13px; font-weight: 700; border-radius: 6px; cursor: pointer; color: var(--green); background: rgba(63,185,80,.14); border: 1px solid rgba(63,185,80,.4); }
-        .resume-btn:hover { background: rgba(63,185,80,.25); }
-        ::-webkit-scrollbar { width: 5px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-        @keyframes live-pulse {
-            0%   { box-shadow: 0 0 0 0   rgba(63,185,80,.6); }
-            70%  { box-shadow: 0 0 0 6px rgba(63,185,80,.0); }
-            100% { box-shadow: 0 0 0 0   rgba(63,185,80,.0); }
-        }
-    </style>
+    <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body x-data="dashboard()">
 
 <!-- ── Header ─────────────────────────────────────────────────────────── -->
-<header style="background:var(--surface);border-bottom:1px solid var(--border);" class="sticky top-0 z-50"
-        :style="emergencyStop ? 'border-bottom: 2px solid var(--red);' : ''">
-    <div style="max-width:1280px;margin:0 auto;padding:0 24px;" class="flex items-center justify-between h-14">
-        <div class="flex items-center gap-3">
-            <span style="font-size:18px;font-weight:700;color:var(--text);">⚡ Kraken Bot</span>
-            <span style="color:var(--muted);font-size:12px;">v0.1.0</span>
+<header class="app-header sticky top-0 z-50" :class="emergencyStop ? 'is-emergency' : ''">
+    <div class="app-shell dashboard-shell header-bar">
+        <div class="header-brand">
+            <span class="brand-title">⚡ Kraken Bot</span>
+            <span class="version-label">v0.1.0</span>
             <!-- Emergency stop banner -->
             <span x-show="emergencyStop" class="pill pill-red" style="font-size:12px;font-weight:700;letter-spacing:.04em;">■ EMERGENCY STOP</span>
         </div>
-        <div class="flex items-center gap-3">
+        <div class="header-status">
             <span class="pill pill-blue"   x-show="environment === 'paper'">PAPER</span>
             <span class="pill pill-red"    x-show="environment === 'live'">LIVE</span>
             <span class="pill pill-muted"  x-show="mode === 'manual'">MANUAL</span>
             <span class="pill pill-gold"   x-show="mode === 'semi_automated'">SEMI-AUTO</span>
             <span class="pill pill-green"  x-show="mode === 'fully_automated'">AUTO</span>
-            <div style="width:1px;height:20px;background:var(--border);"></div>
-            <div>
+            <div class="metric-separator"></div>
+            <div class="metric-block">
                 <div class="label" style="margin-bottom:1px;">Total Equity</div>
                 <div class="mono" style="font-size:14px;font-weight:600;"><span x-text="currencySymbol"></span><span x-text="equity"></span></div>
             </div>
-            <div style="width:1px;height:20px;background:var(--border);"></div>
-            <div>
+            <div class="metric-separator"></div>
+            <div class="metric-block">
                 <div class="label" style="margin-bottom:1px;">Available Cash</div>
                 <div class="mono" style="font-size:14px;font-weight:600;"><span x-text="currencySymbol"></span><span x-text="cash"></span></div>
             </div>
-            <div style="width:1px;height:20px;background:var(--border);"></div>
+            <div class="metric-separator"></div>
             <a href="/approvals" class="pill pill-blue" style="text-decoration:none;cursor:pointer;">
                 Approvals <span x-show="pendingCount > 0" x-text="'(' + pendingCount + ')'" style="margin-left:3px;"></span>
             </a>
@@ -100,18 +49,17 @@
 </header>
 
 <!-- ── Emergency stop overlay ─────────────────────────────────────────── -->
-<div x-show="emergencyStop" style="background:rgba(248,81,73,.07);border-bottom:1px solid rgba(248,81,73,.3);padding:10px 24px;text-align:center;">
-    <span style="color:var(--red);font-size:13px;font-weight:600;">
+<div x-show="emergencyStop" class="emergency-banner">
+    <span>
         ⛔ Emergency stop is active. All trading is halted. The approval queue has been cleared. Click Resume to restart.
     </span>
 </div>
 
 <!-- ── Main ───────────────────────────────────────────────────────────── -->
-<main style="max-width:1280px;margin:0 auto;padding:24px;display:flex;flex-direction:column;gap:20px;">
+<main class="app-shell dashboard-shell dashboard-grid">
 
     <!-- Market Briefing banner — only shown when a briefing is available -->
-    <div x-show="llmBriefing"
-         style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 20px;display:flex;align-items:flex-start;gap:14px;">
+    <div x-show="llmBriefing" class="panel area-briefing briefing-banner">
         <!-- Icon + label -->
         <div style="flex-shrink:0;margin-top:1px;">
             <span style="font-size:16px;">🧠</span>
@@ -137,7 +85,7 @@
     </div>
 
     <!-- Mode explanation banner -->
-    <div class="card" style="padding:14px 20px;display:flex;align-items:center;justify-content:space-between;gap:16px;">
+    <div class="card panel area-mode mode-panel">
         <div class="flex items-center gap-3">
             <div>
                 <span class="label">Current mode: </span>
@@ -152,12 +100,11 @@
     </div>
 
     <!-- Equity Curve -->
-    <div class="card" style="padding:0;">
-        <div class="flex items-center justify-between"
-             style="padding:14px 20px;cursor:pointer;user-select:none;"
+    <div class="card panel area-equity">
+        <div class="panel-header"
              @click="panels.equity = !panels.equity">
             <div class="flex items-center gap-3">
-                <span class="label">Portfolio Value</span>
+                <span class="label">Equity Graph</span>
                 <!-- Live indicator: pulses green when SW is active and updates are arriving -->
                 <span x-show="_swActive" style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--green);">
                     <span style="width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 0 0 rgba(63,185,80,.6);animation:live-pulse 2s infinite;display:inline-block;flex-shrink:0;"></span>
@@ -166,23 +113,22 @@
             </div>
             <span style="color:var(--muted);font-size:13px;" x-text="panels.equity ? '▲' : '▼'"></span>
         </div>
-        <div x-show="panels.equity" style="padding:0 20px 20px;">
-            <div style="height:140px;"><canvas id="equity-chart"></canvas></div>
+        <div x-show="panels.equity" class="panel-body">
+            <div class="equity-chart-shell"><canvas id="equity-chart"></canvas></div>
         </div>
     </div>
 
-    <!-- Markets / Signals / Open Positions -->
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;">
+    <!-- Markets / Signals -->
+    <div class="core-grid area-core">
 
         <!-- Markets -->
-        <div class="card" style="padding:0;">
-            <div class="flex items-center justify-between"
-                 style="padding:14px 20px;cursor:pointer;user-select:none;"
+        <div class="card panel core-panel">
+            <div class="panel-header"
                  @click="panels.markets = !panels.markets">
                 <div class="label">Markets</div>
                 <span style="color:var(--muted);font-size:13px;" x-text="panels.markets ? '▲' : '▼'"></span>
             </div>
-            <div x-show="panels.markets" style="padding:0 20px 16px;">
+            <div x-show="panels.markets" class="panel-body core-scroll">
                 <div style="font-size:11px;color:var(--muted);margin-bottom:10px;">click toggle to disable a market</div>
                 <div id="markets-list">
                     <div style="color:var(--muted);font-size:13px;">Loading…</div>
@@ -204,24 +150,26 @@
         </div>
 
         <!-- Signals -->
-        <div class="card" style="padding:0;">
-            <div class="flex items-center justify-between"
-                 style="padding:14px 20px;cursor:pointer;user-select:none;"
+        <div class="card panel core-panel">
+            <div class="panel-header"
                  @click="panels.signals = !panels.signals">
                 <div class="label">Signals</div>
                 <span style="color:var(--muted);font-size:13px;" x-text="panels.signals ? '▲' : '▼'"></span>
             </div>
-            <div x-show="panels.signals" style="padding:0 20px 16px;">
-                <div id="signals-list" style="display:flex;flex-direction:column;gap:10px;">
+            <div x-show="panels.signals" class="panel-body core-scroll">
+                <div id="signals-list" class="card-list">
                     <div style="color:var(--muted);font-size:13px;">Waiting for price history (~5 min)…</div>
                 </div>
             </div>
         </div>
+    </div>
 
-        <!-- Positions -->
-        <div class="card" style="padding:0;">
-            <div class="flex items-center justify-between"
-                 style="padding:14px 20px;cursor:pointer;user-select:none;"
+    <!-- Open Positions / Closed Positions -->
+    <div class="positions-row">
+
+        <!-- Open Positions (1/3) -->
+        <div class="card panel core-panel">
+            <div class="panel-header"
                  @click="panels.positions = !panels.positions">
                 <div class="label">Open Positions</div>
                 <div class="flex items-center gap-2" @click.stop>
@@ -233,16 +181,53 @@
                     <span style="color:var(--muted);font-size:13px;" x-text="panels.positions ? '▲' : '▼'"></span>
                 </div>
             </div>
-            <div x-show="panels.positions" style="padding:0 20px 16px;">
+            <div x-show="panels.positions" class="panel-body core-scroll">
                 <div id="positions-list">
                     <div style="color:var(--muted);font-size:13px;">No open positions</div>
                 </div>
             </div>
         </div>
+
+        <!-- Closed Positions (2/3) — signal outcomes with P&L -->
+        <div class="card panel core-panel area-closed">
+            <div class="panel-header"
+                 @click="panels.closedTrades = !panels.closedTrades">
+                <span class="label">Closed Positions</span>
+                <div class="panel-header-meta">
+                    <span style="font-size:11px;color:var(--muted);" x-text="closedStatus"></span>
+                    <span style="color:var(--muted);font-size:13px;" x-text="panels.closedTrades ? '▲' : '▼'"></span>
+                </div>
+            </div>
+            <div x-show="panels.closedTrades" class="panel-body panel-body-scroll core-scroll">
+                <table class="responsive-table">
+                    <thead>
+                        <tr style="border-bottom:1px solid var(--border);text-align:left;">
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;white-space:nowrap;">Time Closed</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;white-space:nowrap;">Time Opened</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;" title="How long the position was open">Duration</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Market</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Direction</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">Size</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;" title="Entry price">Price</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;" title="Size × entry price">Value</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">P&amp;L</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Source</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Status</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;font-family:monospace;" title="Position ID">Pos ID</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;" title="Signal that opened this position">Open Signal</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;" title="Signal that closed this position">Close Signal</th>
+                        </tr>
+                    </thead>
+                    <tbody id="closed-body">
+                        <tr><td colspan="14" style="padding:20px 10px;color:var(--muted);text-align:center;">Loading…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
     </div>
 
     <!-- Pending Approvals (hidden when empty or stopped) -->
-    <div class="card" style="padding:20px;" x-show="pendingCount > 0 && !emergencyStop">
+    <div class="card panel area-approvals" style="padding:20px;" x-show="pendingCount > 0 && !emergencyStop">
         <div class="flex items-center justify-between" style="margin-bottom:14px;">
             <div class="label">Pending Approvals</div>
             <div class="flex items-center gap-3">
@@ -250,7 +235,7 @@
                 <a href="/approvals" style="font-size:12px;color:var(--blue);text-decoration:none;">View all →</a>
             </div>
         </div>
-        <div id="approvals-queue" style="display:flex;flex-direction:column;gap:10px;"></div>
+        <div id="approvals-queue" class="approval-list"></div>
     </div>
 
     <!-- Signal Detail Modal -->
@@ -572,108 +557,233 @@
         </div>
     </div>
 
-    <!-- Trade Ledger -->
-    <div class="card" style="padding:0;">
-        <div class="flex items-center justify-between"
-             style="padding:14px 20px;cursor:pointer;user-select:none;"
-             @click="panels.tradeLedger = !panels.tradeLedger">
-            <span class="label">Trade Ledger</span>
-            <div class="flex items-center gap-3">
-                <span style="font-size:11px;color:var(--muted);" x-text="ledgerStatus"></span>
-                <span style="color:var(--muted);font-size:13px;" x-text="panels.tradeLedger ? '▲' : '▼'"></span>
+    <!-- P&L Summary + Trade Ledger -->
+    <div class="pnl-ledger-row">
+
+        <!-- P&L Summary (1/3) -->
+        <div class="card panel area-pnl">
+            <div class="panel-header"
+                 @click="panels.pnlSummary = !panels.pnlSummary">
+                <span class="label">P&L Summary</span>
+                <div class="panel-header-meta">
+                    <span style="font-size:11px;color:var(--muted);" x-text="pnlStatus"></span>
+                    <span style="color:var(--muted);font-size:13px;" x-text="panels.pnlSummary ? '▲' : '▼'"></span>
+                </div>
+            </div>
+            <div x-show="panels.pnlSummary" class="panel-body">
+                <div class="card-list">
+                    <table class="responsive-table">
+                        <thead><tr style="border-bottom:1px solid var(--border);"><th style="padding:6px;text-align:left;color:var(--muted);">Day</th><th style="padding:6px;text-align:right;color:var(--muted);">P&L</th></tr></thead>
+                        <tbody id="pnl-day-body"></tbody>
+                    </table>
+                    <table class="responsive-table">
+                        <thead><tr style="border-bottom:1px solid var(--border);"><th style="padding:6px;text-align:left;color:var(--muted);">Market</th><th style="padding:6px;text-align:right;color:var(--muted);">P&L</th></tr></thead>
+                        <tbody id="pnl-market-body"></tbody>
+                    </table>
+                </div>
             </div>
         </div>
-        <div x-show="panels.tradeLedger" style="padding:0 20px 20px;overflow-x:auto;">
-            <table style="width:100%;border-collapse:collapse;font-size:12px;">
-                <thead>
-                    <tr style="border-bottom:1px solid var(--border);text-align:left;">
-                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;white-space:nowrap;">Time</th>
-                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Market</th>
-                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;" title="Buy = bought asset · Sell = sold asset · badge shows whether this trade opened or closed a position">Action</th>
-                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Direction</th>
-                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">Size</th>
-                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">Price</th>
-                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">Value</th>
-                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Source</th>
-                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Status</th>
-                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;font-family:monospace;" title="Position ID — Open and Close rows share the same ID">Pos ID</th>
-                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;" title="Signal that triggered this trade">Signal</th>
-                    </tr>
-                </thead>
-                <tbody id="ledger-body">
-                    <tr><td colspan="11" style="padding:20px 10px;color:var(--muted);text-align:center;">Loading…</td></tr>
-                </tbody>
-            </table>
+
+        <!-- Trade Ledger (2/3) -->
+        <div class="card panel area-ledger">
+            <div class="panel-header"
+                 @click="panels.tradeLedger = !panels.tradeLedger">
+                <span class="label">Trade Ledger</span>
+                <div class="panel-header-meta">
+                    <span style="font-size:11px;color:var(--muted);" x-text="ledgerStatus"></span>
+                    <span style="color:var(--muted);font-size:13px;" x-text="panels.tradeLedger ? '▲' : '▼'"></span>
+                </div>
+            </div>
+            <div x-show="panels.tradeLedger" class="panel-body panel-body-scroll">
+                <table class="responsive-table">
+                    <thead>
+                        <tr style="border-bottom:1px solid var(--border);text-align:left;">
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;white-space:nowrap;">Time</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Market</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;" title="Buy = bought asset · Sell = sold asset · badge shows whether this trade opened or closed a position">Action</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Direction</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">Size</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">Price</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">Value</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;" title="Realised P&L on close orders">P&amp;L</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Source</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Status</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;font-family:monospace;" title="Position ID — Open and Close rows share the same ID">Pos ID</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;" title="Signal that triggered this trade">Signal</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ledger-body">
+                        <tr><td colspan="12" style="padding:20px 10px;color:var(--muted);text-align:center;">Loading…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Price Charts (5-min & 15-min candles, collapsed by default) -->
+    <div class="card panel area-charts">
+        <div class="panel-header"
+             @click="panels.priceCharts = !panels.priceCharts">
+            <span class="label">Price Charts <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted);">· 5 min &amp; 15 min</span></span>
+            <span style="color:var(--muted);font-size:13px;" x-text="panels.priceCharts ? '▲' : '▼'"></span>
+        </div>
+        <div x-show="panels.priceCharts" class="panel-body">
+            <!-- One card per market; each card contains two charts side by side -->
+            <div id="candle-grid" class="chart-grid"></div>
         </div>
     </div>
 
-    <!-- P&L Summary -->
-    <div class="card" style="padding:0;">
-        <div class="flex items-center justify-between"
-             style="padding:14px 20px;cursor:pointer;user-select:none;"
-             @click="panels.pnlSummary = !panels.pnlSummary">
-            <span class="label">P&L Summary</span>
-            <div class="flex items-center gap-3">
-                <span style="font-size:11px;color:var(--muted);" x-text="pnlStatus"></span>
-                <span style="color:var(--muted);font-size:13px;" x-text="panels.pnlSummary ? '▲' : '▼'"></span>
+    <!-- News Feed -->
+    <div class="card panel area-news">
+        <div class="panel-header"
+             @click="panels.news = !panels.news">
+            <span class="label">Crypto News <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted);">· last 12 hours</span></span>
+            <div class="panel-header-meta">
+                <span style="font-size:11px;color:var(--muted);" x-text="newsStatus"></span>
+                <span style="color:var(--muted);font-size:13px;" x-text="panels.news ? '▲' : '▼'"></span>
             </div>
         </div>
-        <div x-show="panels.pnlSummary" style="padding:0 20px 20px;">
-            <div class="grid cols-2 gap-3">
-                <table style="width:100%;border-collapse:collapse;font-size:12px;">
-                    <thead><tr style="border-bottom:1px solid var(--border);"><th style="padding:6px;text-align:left;color:var(--muted);">Day</th><th style="padding:6px;text-align:right;color:var(--muted);">P&L</th></tr></thead>
-                    <tbody id="pnl-day-body"></tbody>
-                </table>
-                <table style="width:100%;border-collapse:collapse;font-size:12px;">
-                    <thead><tr style="border-bottom:1px solid var(--border);"><th style="padding:6px;text-align:left;color:var(--muted);">Market</th><th style="padding:6px;text-align:right;color:var(--muted);">P&L</th></tr></thead>
-                    <tbody id="pnl-market-body"></tbody>
-                </table>
+        <div x-show="panels.news" class="panel-body">
+            <div id="news-grid" class="news-grid">
+                <div class="grid-empty">Loading news…</div>
             </div>
         </div>
     </div>
 
-    <!-- Closed Positions (signal outcomes with P&L) -->
-    <div class="card" style="padding:0;">
-        <div class="flex items-center justify-between"
-             style="padding:14px 20px;cursor:pointer;user-select:none;"
-             @click="panels.closedTrades = !panels.closedTrades">
-            <span class="label">Closed Positions</span>
-            <div class="flex items-center gap-3">
-                <span style="font-size:11px;color:var(--muted);" x-text="closedStatus"></span>
-                <span style="color:var(--muted);font-size:13px;" x-text="panels.closedTrades ? '▲' : '▼'"></span>
+    <!-- Bot Activity + Local LLM -->
+    <div class="activity-llm-row">
+
+        <!-- Bot Activity (50%) -->
+        <div class="card panel area-activity">
+            <div class="panel-header"
+                 @click="panels.activity = !panels.activity">
+                <span class="label">Bot Activity</span>
+                <div class="panel-header-meta">
+                    <span style="font-size:11px;color:var(--muted);">last 60 events · updates every 5s</span>
+                    <span style="color:var(--muted);font-size:13px;" x-text="panels.activity ? '▲' : '▼'"></span>
+                </div>
+            </div>
+            <div x-show="panels.activity" class="panel-body card-list">
+                <template x-if="activityLog.length === 0">
+                    <div style="color:var(--muted);font-size:13px;padding:20px 0;text-align:center;">Waiting for first tick…</div>
+                </template>
+                <template x-for="(e, i) in activityLog" :key="i">
+                    <div class="llm-card"
+                         :style="e.level==='error'   ? 'border-left:3px solid var(--red);'   :
+                                 e.level==='warn'    ? 'border-left:3px solid var(--gold);'  :
+                                 e.level==='success' ? 'border-left:3px solid var(--green);' :
+                                                       ''">
+                        <div class="llm-row">
+                            <span style="color:var(--muted);font-size:11px;white-space:nowrap;flex-shrink:0;"
+                                  x-text="new Date(e.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})"></span>
+                            <span style="font-size:12px;"
+                                  :style="e.level==='error'   ? 'color:var(--red)'    :
+                                          e.level==='warn'    ? 'color:var(--gold)'   :
+                                          e.level==='success' ? 'color:var(--green)'  :
+                                                                'color:var(--text)'"
+                                  x-text="e.message"></span>
+                        </div>
+                        <div x-show="e.detail" class="llm-row">
+                            <span style="color:var(--muted);font-size:11px;" x-text="e.detail"></span>
+                        </div>
+                    </div>
+                </template>
             </div>
         </div>
-        <div x-show="panels.closedTrades" style="padding:0 20px 20px;overflow-x:auto;">
-            <table style="width:100%;border-collapse:collapse;font-size:12px;">
-                <thead>
-                    <tr style="border-bottom:1px solid var(--border);text-align:left;">
-                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;white-space:nowrap;">Time Closed</th>
-                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;white-space:nowrap;">Time Opened</th>
-                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;" title="How long the position was open">Duration</th>
-                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Market</th>
-                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Direction</th>
-                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">Size</th>
-                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;" title="Entry price">Price</th>
-                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;" title="Size × entry price">Value</th>
-                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">P&amp;L</th>
-                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Source</th>
-                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Status</th>
-                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;font-family:monospace;" title="Position ID">Pos ID</th>
-                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;" title="Signal that opened this position">Open Signal</th>
-                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;" title="Signal that closed this position">Close Signal</th>
-                    </tr>
-                </thead>
-                <tbody id="closed-body">
-                    <tr><td colspan="14" style="padding:20px 10px;color:var(--muted);text-align:center;">Loading…</td></tr>
-                </tbody>
-            </table>
+
+        <!-- Local LLM (50%) -->
+        <div class="card panel area-llm">
+            <div class="panel-header"
+                 @click="panels.llm = !panels.llm">
+                <div class="llm-status">
+                    <div class="llm-row llm-heading">
+                        <span class="llm-dot"
+                              :style="llmAvailable ? 'background:var(--green);box-shadow:0 0 6px var(--green);' : 'background:var(--muted);'"></span>
+                        <span class="label">Local LLM</span>
+                    </div>
+                    <div class="llm-row">
+                        <span class="llm-key">Model</span>
+                        <span style="font-size:12px;color:var(--muted);" x-text="llmModel || 'Not configured'"></span>
+                    </div>
+                    <div class="llm-row">
+                        <span class="llm-key">Status</span>
+                        <span style="font-size:12px;font-weight:600;"
+                              :style="llmAvailable ? 'color:var(--green)' : 'color:var(--muted)'"
+                              x-text="llmAvailable ? 'Available' : 'Unavailable'"></span>
+                    </div>
+                </div>
+                <span style="color:var(--muted);font-size:13px;" x-text="panels.llm ? '▲' : '▼'"></span>
+            </div>
+            <div x-show="panels.llm" class="panel-body card-list">
+                <!-- Market briefing (news-triggered) -->
+                <div x-show="llmBriefing" class="llm-card">
+                    <div class="llm-row">
+                        <span class="llm-card-title">Market Briefing</span>
+                        <span style="font-size:10px;color:var(--muted);"
+                              x-text="llmBriefing ? timeAgo(new Date(llmBriefing.generated_at)) : ''"></span>
+                    </div>
+                    <div class="llm-row">
+                        <span class="llm-key">Articles</span>
+                        <span x-text="llmBriefing ? llmBriefing.article_count + ' new article(s)' : ''"></span>
+                    </div>
+                    <div class="llm-row">
+                        <span class="llm-key">Insight</span>
+                        <span style="font-weight:600;" x-text="llmBriefing?.key_insight"></span>
+                    </div>
+                    <div class="llm-row">
+                        <span class="llm-key">Sentiment</span>
+                        <span style="margin-left:8px;font-size:11px;"
+                              :style="(llmBriefing?.overall_sentiment ?? 0) >= 0.1 ? 'color:var(--green)' : (llmBriefing?.overall_sentiment ?? 0) <= -0.1 ? 'color:var(--red)' : 'color:var(--muted)'"
+                              x-text="llmBriefing ? 'Overall ' + ((llmBriefing.overall_sentiment >= 0.1) ? '▲ bullish' : (llmBriefing.overall_sentiment <= -0.1) ? '▼ bearish' : '— neutral') : ''"></span>
+                    </div>
+                    <div class="llm-row llm-outlook-list">
+                        <span class="llm-key">Outlooks</span>
+                        <template x-for="[mkt, out] in Object.entries(llmBriefing?.market_outlooks ?? {})">
+                            <div class="llm-outlook"
+                                 :style="out.bias === 'bullish' ? 'color:var(--green);background:rgba(63,185,80,.08);border-color:rgba(63,185,80,.3)' :
+                                         out.bias === 'bearish' ? 'color:var(--red);background:rgba(248,81,73,.08);border-color:rgba(248,81,73,.3)' :
+                                                                  'color:var(--muted);background:rgba(139,148,158,.08);border-color:rgba(139,148,158,.3)'">
+                                <span x-text="mkt"></span>
+                                <span x-text="out.bias === 'bullish' ? ' ▲' : out.bias === 'bearish' ? ' ▼' : ' —'"></span>
+                                <span x-show="out.note" style="margin-left:4px;opacity:.7;" x-text="'· ' + out.note"></span>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+                <div x-show="!llmBriefing && llmAvailable" style="font-size:12px;color:var(--muted);">
+                    Waiting for first news fetch to trigger market briefing…
+                </div>
+                <!-- Reflection (hourly) -->
+                <div x-show="llmReflection" class="llm-card">
+                    <div class="llm-row">
+                        <span class="llm-card-title">Hourly Reflection</span>
+                    </div>
+                    <div class="llm-row">
+                        <span class="llm-key">Pattern</span>
+                        <span x-text="llmReflection?.pattern"></span>
+                    </div>
+                    <div class="llm-row">
+                        <span class="llm-key">Suggestion</span>
+                        <span style="color:var(--blue);" x-text="llmReflection?.suggestion"></span>
+                    </div>
+                    <div class="llm-row">
+                        <span class="llm-key">Confidence</span>
+                        <span style="font-size:10px;color:var(--muted);"
+                              x-text="llmReflection ? Math.round(llmReflection.confidence * 100) + '% confident' : ''"></span>
+                    </div>
+                </div>
+                <div x-show="!llmReflection && llmAvailable" style="font-size:12px;color:var(--muted);">
+                    No reflection yet — needs ≥5 closed trades
+                </div>
+            </div>
         </div>
+
     </div>
 
     <!-- Risk Rejections (collapsible, default collapsed) -->
-    <div class="card" style="padding:0;" x-show="riskRejections.length > 0">
-        <div class="flex items-center justify-between"
-             style="padding:14px 20px;cursor:pointer;user-select:none;"
+    <div class="card panel area-risk" x-show="riskRejections.length > 0">
+        <div class="panel-header"
              @click="panels.riskRejections = !panels.riskRejections">
             <div class="flex items-center gap-2">
                 <span class="label">Risk Rejections</span>
@@ -681,7 +791,7 @@
             </div>
             <span style="color:var(--muted);font-size:13px;" x-text="panels.riskRejections ? '▲' : '▼'"></span>
         </div>
-        <div x-show="panels.riskRejections" style="padding:0 20px 20px;display:flex;flex-direction:column;gap:8px;">
+        <div x-show="panels.riskRejections" class="panel-body card-list">
             <template x-for="(r, i) in riskRejections" :key="i">
                 <div style="display:grid;grid-template-columns:1fr auto;gap:12px;align-items:start;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-left:3px solid var(--orange);border-radius:0 6px 6px 0;">
                     <div>
@@ -700,146 +810,6 @@
                                 style="font-size:10px;padding:3px 9px;border-radius:4px;background:rgba(139,148,158,.12);border:1px solid rgba(139,148,158,.25);color:var(--muted);cursor:pointer;white-space:nowrap;">
                             📊 Detail
                         </button>
-                    </div>
-                </div>
-            </template>
-        </div>
-    </div>
-
-    <!-- Price Charts (5-min & 15-min candles, collapsed by default) -->
-    <div class="card" style="padding:0;">
-        <div class="flex items-center justify-between"
-             style="padding:14px 20px;cursor:pointer;user-select:none;"
-             @click="panels.priceCharts = !panels.priceCharts">
-            <span class="label">Price Charts <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted);">· 5 min &amp; 15 min</span></span>
-            <span style="color:var(--muted);font-size:13px;" x-text="panels.priceCharts ? '▲' : '▼'"></span>
-        </div>
-        <div x-show="panels.priceCharts" style="padding:0 20px 20px;">
-            <!-- One card per market; each card contains two charts side by side -->
-            <div id="candle-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(700px,1fr));gap:16px;"></div>
-        </div>
-    </div>
-
-    <!-- News Feed -->
-    <div class="card" style="padding:0;">
-        <div class="flex items-center justify-between"
-             style="padding:14px 20px;cursor:pointer;user-select:none;"
-             @click="panels.news = !panels.news">
-            <span class="label">Crypto News <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted);">· last 12 hours</span></span>
-            <div class="flex items-center gap-3">
-                <span style="font-size:11px;color:var(--muted);" x-text="newsStatus"></span>
-                <span style="color:var(--muted);font-size:13px;" x-text="panels.news ? '▲' : '▼'"></span>
-            </div>
-        </div>
-        <div x-show="panels.news" style="padding:0 20px 20px;">
-            <div id="news-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;">
-                <div style="color:var(--muted);font-size:13px;grid-column:span 3;">Loading news…</div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Local LLM -->
-    <div class="card" style="padding:0;">
-        <div class="flex items-center justify-between"
-             style="padding:14px 20px;cursor:pointer;user-select:none;"
-             @click="panels.llm = !panels.llm">
-            <div class="flex items-center gap-3">
-                <div style="width:8px;height:8px;border-radius:50%;flex-shrink:0;"
-                     :style="llmAvailable ? 'background:var(--green);box-shadow:0 0 6px var(--green);' : 'background:var(--muted);'"></div>
-                <span class="label">Local LLM</span>
-                <span style="font-size:12px;color:var(--muted);" x-text="llmModel"></span>
-                <span style="font-size:12px;font-weight:600;"
-                      :style="llmAvailable ? 'color:var(--green)' : 'color:var(--muted)'"
-                      x-text="llmAvailable ? 'Available' : 'Unavailable'"></span>
-            </div>
-            <span style="color:var(--muted);font-size:13px;" x-text="panels.llm ? '▲' : '▼'"></span>
-        </div>
-        <div x-show="panels.llm" style="padding:0 20px 20px;display:flex;flex-direction:column;gap:12px;">
-            <!-- Market briefing (news-triggered) -->
-            <div x-show="llmBriefing" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 14px;">
-                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
-                    <span style="font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;">Market Briefing</span>
-                    <span style="font-size:10px;color:var(--muted);"
-                          x-text="llmBriefing ? timeAgo(new Date(llmBriefing.generated_at)) + ' · ' + llmBriefing.article_count + ' new article(s)' : ''"></span>
-                </div>
-                <div style="font-size:12px;color:var(--text);margin-bottom:6px;">
-                    <span style="color:var(--muted);">Insight: </span>
-                    <span style="font-weight:600;" x-text="llmBriefing?.key_insight"></span>
-                    <span style="margin-left:8px;font-size:11px;"
-                          :style="(llmBriefing?.overall_sentiment ?? 0) >= 0.1 ? 'color:var(--green)' : (llmBriefing?.overall_sentiment ?? 0) <= -0.1 ? 'color:var(--red)' : 'color:var(--muted)'"
-                          x-text="llmBriefing ? 'Overall ' + ((llmBriefing.overall_sentiment >= 0.1) ? '▲ bullish' : (llmBriefing.overall_sentiment <= -0.1) ? '▼ bearish' : '— neutral') : ''"></span>
-                </div>
-                <div style="display:flex;flex-wrap:wrap;gap:6px;">
-                    <template x-for="[mkt, out] in Object.entries(llmBriefing?.market_outlooks ?? {})">
-                        <div style="font-size:11px;padding:3px 10px;border-radius:9999px;border:1px solid;"
-                             :style="out.bias === 'bullish' ? 'color:var(--green);background:rgba(63,185,80,.08);border-color:rgba(63,185,80,.3)' :
-                                     out.bias === 'bearish' ? 'color:var(--red);background:rgba(248,81,73,.08);border-color:rgba(248,81,73,.3)' :
-                                                              'color:var(--muted);background:rgba(139,148,158,.08);border-color:rgba(139,148,158,.3)'">
-                            <span x-text="mkt"></span>
-                            <span x-text="out.bias === 'bullish' ? ' ▲' : out.bias === 'bearish' ? ' ▼' : ' —'"></span>
-                            <span x-show="out.note" style="margin-left:4px;opacity:.7;" x-text="'· ' + out.note"></span>
-                        </div>
-                    </template>
-                </div>
-            </div>
-            <div x-show="!llmBriefing && llmAvailable" style="font-size:12px;color:var(--muted);">
-                Waiting for first news fetch to trigger market briefing…
-            </div>
-            <!-- Reflection (hourly) -->
-            <div x-show="llmReflection" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 14px;">
-                <div style="font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;margin-bottom:5px;">Hourly Reflection</div>
-                <div style="font-size:12px;color:var(--text);margin-bottom:4px;">
-                    <span style="color:var(--muted);">Pattern: </span><span x-text="llmReflection?.pattern"></span>
-                </div>
-                <div style="font-size:12px;">
-                    <span style="color:var(--muted);">Suggestion: </span>
-                    <span style="color:var(--blue);" x-text="llmReflection?.suggestion"></span>
-                    <span style="font-size:10px;color:var(--muted);margin-left:6px;"
-                          x-text="llmReflection ? Math.round(llmReflection.confidence * 100) + '% confident' : ''"></span>
-                </div>
-            </div>
-            <div x-show="!llmReflection && llmAvailable" style="font-size:12px;color:var(--muted);">
-                No reflection yet — needs ≥5 closed trades
-            </div>
-        </div>
-    </div>
-
-    <!-- Bot Activity -->
-    <div class="card" style="padding:0;">
-        <div class="flex items-center justify-between"
-             style="padding:14px 20px;cursor:pointer;user-select:none;"
-             @click="panels.activity = !panels.activity">
-            <span class="label">Bot Activity</span>
-            <div class="flex items-center gap-3">
-                <span style="font-size:11px;color:var(--muted);">last 60 events · updates every 5s</span>
-                <span style="color:var(--muted);font-size:13px;" x-text="panels.activity ? '▲' : '▼'"></span>
-            </div>
-        </div>
-        <div x-show="panels.activity" style="padding:0 20px 20px;display:flex;flex-direction:column;gap:4px;max-height:320px;overflow-y:auto;">
-            <template x-if="activityLog.length === 0">
-                <div style="color:var(--muted);font-size:13px;padding:20px 0;text-align:center;">Waiting for first tick…</div>
-            </template>
-            <template x-for="(e, i) in activityLog" :key="i">
-                <div style="display:grid;grid-template-columns:auto 1fr;gap:10px;padding:6px 10px;border-radius:5px;font-size:13px;line-height:1.4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;"
-                     :style="e.level==='error'   ? 'background:rgba(248,81,73,.06);'   :
-                             e.level==='warn'    ? 'background:rgba(210,153,34,.05);'  :
-                             e.level==='success' ? 'background:rgba(63,185,80,.05);'   :
-                                                   'background:var(--subtle);'">
-                    <div style="display:flex;align-items:flex-start;gap:6px;white-space:nowrap;">
-                        <span :style="e.level==='error'   ? 'color:var(--red)'    :
-                                      e.level==='warn'    ? 'color:var(--gold)'   :
-                                      e.level==='success' ? 'color:var(--green)'  :
-                                                            'color:var(--muted)'"
-                              x-text="e.level==='error' ? '✗' : e.level==='warn' ? '!' : e.level==='success' ? '✓' : '·'"></span>
-                        <span style="color:var(--muted);font-size:11px;" x-text="new Date(e.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})"></span>
-                    </div>
-                    <div>
-                        <span :style="e.level==='error'   ? 'color:var(--red)'    :
-                                      e.level==='warn'    ? 'color:var(--gold)'   :
-                                      e.level==='success' ? 'color:var(--green)'  :
-                                                            'color:var(--text)'"
-                              x-text="e.message"></span>
-                        <span x-show="e.detail" style="color:var(--muted);margin-left:8px;" x-text="e.detail"></span>
                     </div>
                 </div>
             </template>
@@ -873,6 +843,7 @@ function dashboard() {
         closedStatus: 'Loading…',
         pnlStatus: 'Loading...',
         _chart: null,
+        _equityTimestamps: [],
         _candleCharts: {},   // market → { chart5, series5, chart15, series15 }
         _chartMarkets: [],   // markets rendered so far
         _openPositionIds: new Set(),
@@ -1147,10 +1118,17 @@ function dashboard() {
                     </div>
                     <div class="flex items-center justify-between">
                         <div style="font-size:10px;color:var(--muted);font-family:monospace;">#${p.position_id}</div>
-                        <button onclick="window._closePos('${p.position_id_full}')"
-                                style="font-size:10px;font-weight:600;padding:3px 10px;border-radius:4px;cursor:pointer;color:var(--red);background:rgba(248,81,73,.1);border:1px solid rgba(248,81,73,.3);">
-                            ✕ Close
-                        </button>
+                        <div class="flex items-center gap-2">
+                            ${p.trade_idea_id
+                                ? `<button class="sig-btn" data-signal-id="${p.trade_idea_id}"
+                                           style="font-size:10px;padding:2px 8px;border-radius:4px;background:rgba(139,148,158,.12);border:1px solid rgba(139,148,158,.25);color:var(--muted);cursor:pointer;white-space:nowrap;"
+                                           title="View the signal that opened this position">📊 Signal</button>`
+                                : ''}
+                            <button onclick="window._closePos('${p.position_id_full}')"
+                                    style="font-size:10px;font-weight:600;padding:3px 10px;border-radius:4px;cursor:pointer;color:var(--red);background:rgba(248,81,73,.1);border:1px solid rgba(248,81,73,.3);">
+                                ✕ Close
+                            </button>
+                        </div>
                     </div>
                 </div>`;
             }).join('');
@@ -1202,21 +1180,27 @@ function dashboard() {
 
         renderChart(history) {
             if (!history.length) return;
-            const labels = history.map(h =>
-                new Date(h.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})
-            );
-            const values = history.map(h => h.equity);
+            const points = history
+                .map(h => ({ timestamp: h.timestamp, equity: Number(h.equity) }))
+                .filter(h => Number.isFinite(h.equity));
+            if (!points.length) return;
 
-            if (this._chart) {
-                // Replace data in-place; 'none' skips the animation queue for instant repaint
-                this._chart.data.labels           = labels;
-                this._chart.data.datasets[0].data = values;
-                this._chart.update('none');
+            const labels = points.map(h => this._formatEquityTick(h.timestamp));
+            const values = points.map(h => h.equity);
+            this._equityTimestamps = points.map(h => h.timestamp);
+
+            const canvas = document.getElementById('equity-chart');
+            if (!canvas) return;   // panel may not be mounted yet - will render on next poll
+
+            const existingChart = Chart.getChart(canvas);
+            if (existingChart) {
+                // Replace data in-place; chart has animation:false so this is instant
+                existingChart.data.labels = labels;
+                existingChart.data.datasets[0].data = values;
+                existingChart.update('none');
                 return;
             }
 
-            const canvas = document.getElementById('equity-chart');
-            if (!canvas) return;   // panel may not be mounted yet — will render on next poll
             const ctx = canvas.getContext('2d');
 
             this._chart = new Chart(ctx, {
@@ -1230,25 +1214,38 @@ function dashboard() {
                         fill: true,
                         tension: 0.35,
                         pointRadius: 0,
+                        pointHoverRadius: 4,
+                        pointHitRadius: 12,
                         borderWidth: 2,
                     }]
                 },
+                plugins: [this._equityCursorLine()],
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
                     animation: false,
+                    interaction: { mode: 'index', intersect: false },
                     plugins: {
                         legend: { display: false },
                         tooltip: {
                             backgroundColor: '#1c2128',
                             borderColor: '#30363d',
                             borderWidth: 1,
-                            callbacks: { label: c => this.currencySymbol + c.parsed.y.toFixed(2) }
+                            mode: 'index',
+                            intersect: false,
+                            callbacks: {
+                                title: items => items.length ? this._formatEquityTimestamp(items[0].dataIndex) : '',
+                                label: c => this.currencySymbol + c.parsed.y.toFixed(2),
+                            },
                         }
                     },
                     scales: {
                         x: { grid: { color: '#21262d' }, ticks: { color: '#8b949e', maxTicksLimit: 8, font: { size: 10 } } },
-                        y: { grid: { color: '#21262d' }, ticks: { color: '#8b949e', font: { size: 10 }, callback: v => this.currencySymbol + v.toFixed(2) } }
+                        y: {
+                            grace: '35%',
+                            grid: { color: '#21262d' },
+                            ticks: { color: '#8b949e', font: { size: 10 }, callback: v => this.currencySymbol + v.toFixed(2) }
+                        }
                     }
                 }
             });
@@ -1256,8 +1253,50 @@ function dashboard() {
             // Resize the chart whenever the panel container changes size
             // (e.g. when the collapsible panel is opened after being collapsed)
             new ResizeObserver(() => {
-                if (this._chart) this._chart.resize();
+                Chart.getChart(canvas)?.resize();
             }).observe(canvas.parentElement);
+        },
+
+        _formatEquityTick(timestamp) {
+            const date = new Date(timestamp);
+            if (Number.isNaN(date.getTime())) return '';
+            return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        },
+
+        _formatEquityTimestamp(index) {
+            const timestamp = this._equityTimestamps[index];
+            const date = new Date(timestamp);
+            if (Number.isNaN(date.getTime())) return '';
+            return date.toLocaleString([], {
+                day: '2-digit',
+                month: 'short',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+            });
+        },
+
+        _equityCursorLine() {
+            return {
+                id: 'equityCursorLine',
+                afterDraw: chart => {
+                    const active = chart.tooltip?.getActiveElements?.() || [];
+                    if (!active.length) return;
+
+                    const x = active[0].element.x;
+                    const yAxis = chart.scales.y;
+                    const ctx = chart.ctx;
+                    ctx.save();
+                    ctx.beginPath();
+                    ctx.moveTo(x, yAxis.top);
+                    ctx.lineTo(x, yAxis.bottom);
+                    ctx.lineWidth = 1;
+                    ctx.strokeStyle = 'rgba(139,148,158,0.65)';
+                    ctx.setLineDash([4, 4]);
+                    ctx.stroke();
+                    ctx.restore();
+                },
+            };
         },
 
         _sourceBadge(source) {
@@ -1277,7 +1316,7 @@ function dashboard() {
         renderNews(items) {
             const el = document.getElementById('news-grid');
             if (!items.length) {
-                el.innerHTML = '<div style="color:var(--muted);font-size:13px;grid-column:span 3;">No news available yet — fetching…</div>';
+                el.innerHTML = '<div class="grid-empty">No news available yet — fetching…</div>';
                 return;
             }
             el.innerHTML = items.map(n => {
@@ -1352,8 +1391,7 @@ function dashboard() {
                 const id15   = `candle15-${safeId}`;
 
                 const card = document.createElement('div');
-                card.className = 'card';
-                card.style.cssText = 'padding:16px;';
+                card.className = 'card chart-card';
                 card.innerHTML = `
                     <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px;">
                         <span style="font-size:14px;font-weight:700;">${market}</span>
@@ -1362,14 +1400,14 @@ function dashboard() {
                             <span style="font-size:11px;color:${chgColor}">${chg>=0?'+':''}${chg.toFixed(2)}%</span>
                         </span>
                     </div>
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                    <div class="chart-pair-grid">
                         <div>
                             <div style="font-size:10px;color:var(--muted);margin-bottom:6px;text-align:center;letter-spacing:.05em;">5 MIN</div>
-                            <div id="${id5}" style="height:210px;"></div>
+                            <div id="${id5}" class="chart-pane"></div>
                         </div>
                         <div>
                             <div style="font-size:10px;color:var(--muted);margin-bottom:6px;text-align:center;letter-spacing:.05em;">15 MIN</div>
-                            <div id="${id15}" style="height:210px;"></div>
+                            <div id="${id15}" class="chart-pane"></div>
                         </div>
                     </div>`;
                 grid.appendChild(card);
@@ -1423,7 +1461,7 @@ function dashboard() {
         renderLedger(trades) {
             const tbody = document.getElementById('ledger-body');
             if (!trades.length) {
-                tbody.innerHTML = '<tr><td colspan="11" style="padding:20px 10px;color:var(--muted);text-align:center;">No trades recorded yet</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="12" style="padding:20px 10px;color:var(--muted);text-align:center;">No trades recorded yet</td></tr>';
                 return;
             }
             const fmt2 = v => parseFloat(v).toLocaleString('en-GB', {minimumFractionDigits:2,maximumFractionDigits:2});
@@ -1465,6 +1503,22 @@ function dashboard() {
                                style="font-size:10px;padding:2px 8px;border-radius:4px;background:rgba(139,148,158,.12);border:1px solid rgba(139,148,158,.25);color:var(--muted);cursor:pointer;white-space:nowrap;"
                                title="View the signal that triggered this trade">📊 Signal</button>`
                     : `<span style="font-size:11px;color:var(--muted);">—</span>`;
+                // P&L cell — only populated on close orders where backend has stamped pnl
+                let pnlCell;
+                if (t.pnl !== null && t.pnl !== undefined) {
+                    const pnl = parseFloat(t.pnl);
+                    const pnlCol = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+                    // entry_value = close_value − pnl  (since pnl = close_value − entry_value)
+                    const closeValue = parseFloat(t.value);
+                    const entryValue = closeValue - pnl;
+                    const pnlPct = entryValue > 0.001 ? pnl / entryValue * 100 : 0;
+                    pnlCell = `<td style="padding:7px 10px;text-align:right;font-family:monospace;font-weight:700;color:${pnlCol};">
+                        ${pnl >= 0 ? '+' : ''}${this.currencySymbol}${fmt2(Math.abs(pnl))}
+                        <span style="font-size:10px;font-weight:400;margin-left:3px;">(${pnl >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%)</span>
+                    </td>`;
+                } else {
+                    pnlCell = `<td style="padding:7px 10px;text-align:right;color:var(--muted);">—</td>`;
+                }
                 return `<tr style="border-bottom:1px solid var(--subtle);${rowBg}">
                     <td style="padding:7px 10px;color:var(--muted);white-space:nowrap;font-size:11px;">${timeStr}</td>
                     <td style="padding:7px 10px;font-weight:700;">${t.market}</td>
@@ -1473,6 +1527,7 @@ function dashboard() {
                     <td style="padding:7px 10px;text-align:right;font-family:monospace;">${fmt6(t.size)}</td>
                     <td style="padding:7px 10px;text-align:right;font-family:monospace;">${this.currencySymbol}${fmt2(t.price)}</td>
                     <td style="padding:7px 10px;text-align:right;font-family:monospace;">${this.currencySymbol}${fmt2(t.value)}</td>
+                    ${pnlCell}
                     <td style="padding:7px 10px;font-weight:600;color:${srcCol};">${t.source}</td>
                     <td style="padding:7px 10px;">${statusCell}</td>
                     <td style="padding:7px 10px;">${posId}</td>

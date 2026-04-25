@@ -17,7 +17,7 @@
  * { type: 'API_OFFLINE', endpoint: '/api/dashboard',              ts: 1234567890 }
  */
 
-const CACHE  = 'kraken-bot-v1';
+const CACHE  = 'kraken-bot-v6';
 
 /**
  * GET endpoints whose responses should be cached AND broadcast to clients.
@@ -34,11 +34,7 @@ const LIVE_ENDPOINTS = new Set([
 
 self.addEventListener('install', event => {
     // Activate immediately — don't wait for old tabs to close
-    event.waitUntil(
-        caches.open(CACHE)
-            .then(c => c.addAll(['/']))
-            .then(() => self.skipWaiting())
-    );
+    event.waitUntil(self.skipWaiting());
 });
 
 self.addEventListener('activate', event => {
@@ -62,6 +58,14 @@ self.addEventListener('fetch', event => {
     if (!req.url.startsWith(self.location.origin)) return;
 
     const path = new URL(req.url).pathname;
+    const acceptsHtml = req.headers.get('accept')?.includes('text/html') ?? false;
+
+    if (req.mode === 'navigate' || acceptsHtml) {
+        // Dashboard documents must be network-first so old HTML does not keep
+        // running stale inline scripts after frontend fixes are deployed.
+        event.respondWith(networkFirst(req));
+        return;
+    }
 
     if (LIVE_ENDPOINTS.has(path)) {
         // Network first → cache → broadcast result to all tabs
@@ -103,6 +107,17 @@ async function networkFirstBroadcast(request, path) {
             status: 503,
             headers: { 'Content-Type': 'application/json' },
         });
+    }
+}
+
+async function networkFirst(request) {
+    const cache = await caches.open(CACHE);
+    try {
+        const response = await fetch(request);
+        if (response.ok) cache.put(request, response.clone());
+        return response;
+    } catch (_networkError) {
+        return await cache.match(request) ?? Response.error();
     }
 }
 

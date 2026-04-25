@@ -9,6 +9,8 @@ Live execution is handled by `backend/execution/kraken.py` / `KrakenExecutionEng
 
 Per-market routing is controlled by `ControlState.live_markets`: paper markets use `PaperExecutionEngine`; live markets use `KrakenExecutionEngine`.
 
+Kraken private REST calls use `kraken_retry.call_with_kraken_backoff()`. `AddOrder` and `QueryOrders` retry transient rate-limit, temporary-lockout, service-unavailable, and too-many-requests responses with exponential backoff before rejecting/logging the operation.
+
 ---
 
 ## Constants

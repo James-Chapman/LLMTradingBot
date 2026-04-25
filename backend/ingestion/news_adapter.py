@@ -8,6 +8,7 @@ All network calls run in a thread pool to avoid blocking the asyncio event loop.
 Article IDs are derived from sha256(title + url) so they are stable across restarts
 and the _briefed_news_ids deduplication set works correctly.
 """
+
 import asyncio
 import hashlib
 import json
@@ -27,6 +28,20 @@ logger = get_logger("news_adapter")
 def _stable_id(title: str, url: str) -> str:
     """Stable 16-char hex ID derived from content — consistent across restarts."""
     return hashlib.sha256((title + url).encode()).hexdigest()[:16]
+
+
+# Normalize feed timestamps so mixed RSS/JSON sources can be sorted safely.
+def normalise_published_at(value: datetime) -> datetime:
+    """Return a timezone-aware UTC publication timestamp."""
+    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+# Return a copy of a news item with a timezone-aware UTC publication timestamp.
+def normalise_news_item(item: NewsItem) -> NewsItem:
+    """Return a news item whose published_at is timezone-aware UTC."""
+    return item.model_copy(update={"published_at": normalise_published_at(item.published_at)})
 
 
 def _fetch_rss(url: str, source_name: str, max_items: int = 20) -> List[NewsItem]:
@@ -56,22 +71,24 @@ def _fetch_rss(url: str, source_name: str, max_items: int = 20) -> List[NewsItem
         title = (item.findtext("title") or "").strip()
         if not title:
             continue
-        link  = (item.findtext("link") or "").strip()
+        link = (item.findtext("link") or "").strip()
         description = (item.findtext("description") or "").strip()
-        pub_date    = (item.findtext("pubDate") or "").strip()
+        pub_date = (item.findtext("pubDate") or "").strip()
         try:
-            published_at = parsedate_to_datetime(pub_date).astimezone(timezone.utc).replace(tzinfo=None)
+            published_at = normalise_published_at(parsedate_to_datetime(pub_date))
         except Exception:
             published_at = datetime.now(timezone.utc)
 
-        items.append(NewsItem(
-            id=_stable_id(title, link),
-            source=source_name,
-            title=title,
-            content=description,
-            published_at=published_at,
-            url=link,
-        ))
+        items.append(
+            NewsItem(
+                id=_stable_id(title, link),
+                source=source_name,
+                title=title,
+                content=description,
+                published_at=published_at,
+                url=link,
+            )
+        )
 
     logger.info(f"Fetched {len(items)} items from {source_name}")
     return items
@@ -100,6 +117,7 @@ class NewsAdapter:
 
 class RSSAdapter(NewsAdapter):
     """Generic RSS adapter — subclass and set RSS_URL."""
+
     RSS_URL: str = ""
 
     async def fetch_news(self) -> List[NewsItem]:
@@ -123,6 +141,7 @@ class CoinTelegraphAdapter(RSSAdapter):
 
 class TheBlockAdapter(RSSAdapter):
     """The Block — institutional-grade crypto news, strong on exchange and regulatory stories."""
+
     RSS_URL = "https://www.theblock.co/rss.xml"
 
     def __init__(self):
@@ -131,6 +150,7 @@ class TheBlockAdapter(RSSAdapter):
 
 class DecryptAdapter(RSSAdapter):
     """Decrypt — accessible language, fast cadence, good DeFi coverage."""
+
     RSS_URL = "https://decrypt.co/feed"
 
     def __init__(self):
@@ -139,6 +159,7 @@ class DecryptAdapter(RSSAdapter):
 
 class BitcoinMagazineAdapter(RSSAdapter):
     """Bitcoin Magazine — BTC-specific depth: halving cycles, ETF flows, miner economics."""
+
     RSS_URL = "https://bitcoinmagazine.com/.rss/full/"
 
     def __init__(self):
@@ -147,22 +168,16 @@ class BitcoinMagazineAdapter(RSSAdapter):
 
 class CryptoSlateAdapter(RSSAdapter):
     """CryptoSlate — broad crypto coverage: altcoins, DeFi, exchange news."""
+
     RSS_URL = "https://cryptoslate.com/feed/"
 
     def __init__(self):
         super().__init__("CryptoSlate")
 
 
-class CoinTelegraphMagazineAdapter(RSSAdapter):
-    """Cointelegraph Magazine — long-form features and in-depth analysis."""
-    RSS_URL = "https://magazine.cointelegraph.com/feed/"
-
-    def __init__(self):
-        super().__init__("CT Magazine")
-
-
 class TheDefiantAdapter(RSSAdapter):
     """The Defiant — DeFi-focused reporting: protocols, yields, on-chain activity."""
+
     RSS_URL = "https://thedefiant.io/feed/"
 
     def __init__(self):
@@ -171,22 +186,16 @@ class TheDefiantAdapter(RSSAdapter):
 
 class CryptoPotaroAdapter(RSSAdapter):
     """CryptoPotato — high-frequency crypto news and price analysis."""
+
     RSS_URL = "https://cryptopotato.com/feed/"
 
     def __init__(self):
         super().__init__("CryptoPotato")
 
 
-class CryptoNewsAdapter(RSSAdapter):
-    """CryptoNews — broad market news, ICO and regulatory updates."""
-    RSS_URL = "https://cryptonews.com/news/feed/"
-
-    def __init__(self):
-        super().__init__("CryptoNews")
-
-
 class NewsBTCAdapter(RSSAdapter):
     """NewsBTC — technical price analysis and breaking crypto news."""
+
     RSS_URL = "https://www.newsbtc.com/feed/"
 
     def __init__(self):
@@ -196,7 +205,8 @@ class NewsBTCAdapter(RSSAdapter):
 class ReutersBusinessAdapter(RSSAdapter):
     """Reuters Business — macro news: Fed/ECB decisions, dollar strength, geopolitical risk.
     Most impactful non-crypto source for EUR-quoted pairs."""
-    RSS_URL = "https://feeds.reuters.com/reuters/businessNews"
+
+    RSS_URL = "https://ir.thomsonreuters.com/rss/news-releases.xml?items=15"
 
     def __init__(self):
         super().__init__("Reuters")
@@ -209,7 +219,8 @@ class FearGreedAdapter(NewsAdapter):
     changes from the previously seen value (the index updates once per day).
     Synthesises a NewsItem so the existing pipeline handles it without changes.
     """
-    API_URL  = "https://api.alternative.me/fng/?limit=1"
+
+    API_URL = "https://api.alternative.me/fng/?limit=1"
     PAGE_URL = "https://alternative.me/crypto/fear-and-greed-index/"
 
     def __init__(self):
@@ -234,7 +245,7 @@ class FearGreedAdapter(NewsAdapter):
             return None
 
         value = int(data["value"])
-        label = data["value_classification"]   # e.g. "Extreme Fear", "Greed"
+        label = data["value_classification"]  # e.g. "Extreme Fear", "Greed"
 
         # Only emit a new item when the value changes — it updates once per day
         if value == self._last_value:
@@ -243,17 +254,17 @@ class FearGreedAdapter(NewsAdapter):
 
         zone = (
             "Extreme Fear — market participants are very worried; historically a buying opportunity."
-            if value <= 25 else
-            "Fear — sentiment is cautious; prices may be suppressed below fair value."
-            if value <= 45 else
-            "Neutral — balanced market sentiment with no strong directional bias."
-            if value <= 55 else
-            "Greed — market is optimistic; risk of overshoot or near-term correction is elevated."
-            if value <= 75 else
-            "Extreme Greed — euphoric sentiment; historically precedes significant corrections."
+            if value <= 25
+            else "Fear — sentiment is cautious; prices may be suppressed below fair value."
+            if value <= 45
+            else "Neutral — balanced market sentiment with no strong directional bias."
+            if value <= 55
+            else "Greed — market is optimistic; risk of overshoot or near-term correction is elevated."
+            if value <= 75
+            else "Extreme Greed — euphoric sentiment; historically precedes significant corrections."
         )
 
-        title   = f"Crypto Fear & Greed Index: {label} ({value}/100)"
+        title = f"Crypto Fear & Greed Index: {label} ({value}/100)"
         content = (
             f"The Crypto Fear & Greed Index is currently {value}/100 — {label}. "
             f"{zone} "
@@ -276,13 +287,21 @@ class FearGreedAdapter(NewsAdapter):
 
 # ── Legacy stubs (kept to avoid import breakage) ──────────────────────────────
 
+
 class CoinNewsAdapter(NewsAdapter):
     """CoinNews stub — ingestion method TBD (Phase 0)."""
 
     def __init__(self):
         super().__init__("CoinNews")
+        self._stub_warned = False
 
     async def fetch_news(self) -> List[NewsItem]:
+        if not self._stub_warned:
+            logger.warning(
+                "CoinNews adapter is a stub and returns no news. "
+                "Implement fetch_news() or remove this adapter from the news loop."
+            )
+            self._stub_warned = True
         return []
 
 
@@ -291,6 +310,13 @@ class CoinWeekAdapter(NewsAdapter):
 
     def __init__(self):
         super().__init__("CoinWeek")
+        self._stub_warned = False
 
     async def fetch_news(self) -> List[NewsItem]:
+        if not self._stub_warned:
+            logger.warning(
+                "CoinWeek adapter is a stub and returns no news. "
+                "Implement fetch_news() or remove this adapter from the news loop."
+            )
+            self._stub_warned = True
         return []

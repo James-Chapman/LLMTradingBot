@@ -32,12 +32,15 @@ class OllamaClientBDDTests(unittest.TestCase):
         client._mark_failed("connection refused")
 
         self.assertEqual(client.circuit_state, "open")
+        self.assertFalse(client.can_attempt)
         self.assertFalse(client._should_attempt())
 
         clock.advance(29)
+        self.assertFalse(client.can_attempt)
         self.assertFalse(client._should_attempt())
 
         clock.advance(1)
+        self.assertTrue(client.can_attempt)
         self.assertTrue(client._should_attempt())
         self.assertEqual(client.circuit_state, "half_open")
 
@@ -68,6 +71,71 @@ class OllamaClientBDDTests(unittest.TestCase):
         self.assertEqual(client.circuit_state, "closed")
         self.assertEqual(client.retry_delay_seconds, 30)
         self.assertTrue(client._should_attempt())
+
+
+class FakeOllamaHTTPResponse:
+    """Small httpx.Response stand-in for chat tests."""
+
+    def __init__(self, content: str) -> None:
+        self._content = content
+
+    # No-op because the fake response is always HTTP 200.
+    def raise_for_status(self) -> None:
+        pass
+
+    # Return the Ollama chat response shape with configurable text content.
+    def json(self) -> dict:
+        return {"message": {"content": self._content}}
+
+
+class FakeOllamaHTTPClient:
+    """Async HTTP client stand-in used by OllamaClient.chat tests."""
+
+    def __init__(self, response_content: str) -> None:
+        self.response_content = response_content
+
+    # Return a fake successful Ollama chat response.
+    async def post(self, *_args, **_kwargs):
+        return FakeOllamaHTTPResponse(self.response_content)
+
+
+class OllamaClientAsyncBDDTests(unittest.IsolatedAsyncioTestCase):
+    # GIVEN Ollama returns JSON-like content with a missing comma WHEN JSON is expected
+    # THEN the client repairs the response and keeps the service available.
+    async def test_given_json_response_missing_comma_when_chat_runs_then_response_is_repaired(self) -> None:
+        clock = FakeClock()
+        client = OllamaClient("http://localhost:11434", "phi3:mini", clock=clock.utcnow)
+        client._mark_success()
+        client._client = FakeOllamaHTTPClient(
+            '{\n'
+            '  "action": "hold"\n'
+            '  "confidence": 0.0,\n'
+            '  "sentiment": 0.0,\n'
+            '  "reasoning": "No trade"\n'
+            '}'
+        )
+
+        result = await client.chat([{"role": "user", "content": "Return JSON"}], expect_json=True)
+
+        self.assertEqual(result["action"], "hold")
+        self.assertEqual(result["confidence"], 0.0)
+        self.assertTrue(client.available)
+        self.assertEqual(client.circuit_state, "closed")
+
+    # GIVEN Ollama returns HTTP 200 with malformed JSON WHEN JSON is expected
+    # THEN the task fails but the Ollama service is not marked unavailable.
+    async def test_given_non_json_model_response_when_chat_runs_then_service_stays_available(self) -> None:
+        clock = FakeClock()
+        client = OllamaClient("http://localhost:11434", "phi3:mini", clock=clock.utcnow)
+        client._mark_success()
+        client._client = FakeOllamaHTTPClient("not valid json")
+
+        result = await client.chat([{"role": "user", "content": "Return JSON"}], expect_json=True)
+
+        self.assertIsNone(result)
+        self.assertTrue(client.available)
+        self.assertTrue(client.can_attempt)
+        self.assertEqual(client.circuit_state, "closed")
 
 
 if __name__ == "__main__":

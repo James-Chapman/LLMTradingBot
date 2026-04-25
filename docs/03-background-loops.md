@@ -10,7 +10,7 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(_news_loop())
     asyncio.create_task(_ohlc_loop())
     asyncio.create_task(_reflection_loop())
-    asyncio.create_task(_equity_ticker_loop())      # 10-s equity snapshots for realtime chart
+    asyncio.create_task(_equity_ticker_loop())      # supplemental 10-s equity snapshots
     yield
 ```
 
@@ -26,11 +26,11 @@ async def lifespan(app: FastAPI):
 ```
 1.  Emergency stop check           → sleep 30s and skip if active
 2.  Market filter                  → only process enabled markets
-3.  Kraken batch ticker fetch      → prices for all active markets
-4.  Update price history           → append to per-market deque (max 60 ticks)
-5.  Warm-up guard                  → skip strategy evaluation until 10+ ticks collected
+3.  Kraken ticker snapshot         → WebSocket cache first, REST batch fallback for missing markets
+4.  Update price history           → append to per-market deque (max 200 ticks)
+5.  Warm-up guard                  → skip strategy evaluation until 35 ticks collected
 6.  Persist price ticks            → repo.save_price_tick() per symbol
-7.  Persist equity snapshot        → repo.save_equity_snapshot() using _current_equity
+7.  Record portfolio value         → cash + marked value of open positions at tick prices
 8.  Trim old price ticks           → every 10 ticks (~5 min)
 9.  Stop-loss check                → close any position at ≥5% loss
 10. Strategy evaluation            → selected strategy only
@@ -42,11 +42,13 @@ async def lifespan(app: FastAPI):
 14. Dashboard state update         → _latest_signals, _current_prices
 ```
 
-> **Note:** Equity computation and the `_equity_history` append have been moved to `_equity_ticker_loop` (every 10 s) so that the Portfolio Value chart updates ~3× more frequently than the strategy tick.
+> **Note:** `_record_equity_snapshot(prices)` runs during every strategy tick immediately after fresh market prices arrive. It computes `paper_engine.get_total_equity(prices)`, updates `_current_equity`, updates the risk engine, appends the point to `_equity_history`, and persists `total_equity`, `cash`, and `positions_value` to SQLite. The Equity Graph therefore records cash plus current holdings value on each market-data tick, and `/api/dashboard` aligns the final graph point with the same `Total Equity` value shown in the header.
+
+`kraken_adapter.start_subscription(_active_markets, _cache_market_snapshot)` starts Kraken WebSocket ticker streaming after the active market list is validated. The 30-second strategy tick consumes cached WebSocket snapshots and only calls `get_tickers_batch()` for symbols that have not produced a stream update yet, preserving REST polling as a fallback.
 
 ### Warm-Up Period
 
-The strategy will not generate signals until `_LOOKBACK_TICKS = 10` price samples have been collected. This prevents momentum calculations on insufficient data. The first signal can fire approximately 5 minutes after startup (10 ticks × 30 seconds).
+The strategy will not generate signals until `_LOOKBACK_TICKS = 34` historical samples plus the latest tick have been collected. This prevents MACD and other indicators from running on insufficient data. The first signal can fire after approximately 17.5 minutes on a cold start (35 ticks × 30 seconds).
 
 On restart, up to 60 price ticks are restored from the database, so warm-up may complete immediately.
 
@@ -143,10 +145,8 @@ After risk evaluation (and only if `risk_decision.approved`):
 | DecryptAdapter | Decrypt RSS |
 | BitcoinMagazineAdapter | Bitcoin Magazine RSS |
 | CryptoSlateAdapter | CryptoSlate RSS |
-| CoinTelegraphMagazineAdapter | Cointelegraph Magazine RSS |
 | TheDefiantAdapter | The Defiant RSS |
 | CryptoPotaroAdapter | CryptoPotato RSS |
-| CryptoNewsAdapter | CryptoNews RSS |
 | NewsBTCAdapter | NewsBTC RSS |
 | ReutersBusinessAdapter | Reuters Business RSS |
 | FearGreedAdapter | Alternative.me Fear & Greed JSON API |
@@ -155,7 +155,7 @@ After risk evaluation (and only if `risk_decision.approved`):
 
 ```
 1.  Fetch from all adapters       → each runs in thread pool (urllib, synchronous)
-2.  Merge and sort by published_at descending
+2.  Normalise all `published_at` values to timezone-aware UTC, then sort descending
 3.  Upsert each item to DB        → repo.upsert_news_item() (ignores duplicates)
 4.  Rebuild _latest_news cache    → 60 most recent articles across all sources (no time cutoff)
 5.  Compute new_ids               → current IDs minus _briefed_news_ids
@@ -245,21 +245,22 @@ The `GET /api/ohlc/{market}?interval=5` and `?interval=15` endpoint reads from `
 ## Equity Ticker Loop (`_equity_ticker_loop`)
 
 **Interval:** 10 seconds  
-**Purpose:** Recompute total portfolio equity from live prices and push a snapshot to `_equity_history` so the Portfolio Value chart updates smoothly between 30-second strategy ticks.
+**Purpose:** Recompute total portfolio equity from the latest known prices and push a supplemental snapshot to `_equity_history` between 30-second strategy ticks.
 
 ### Execution Sequence
 
 ```
 1.  Sleep 10s
 2.  If _current_prices is empty → skip (prices not yet fetched)
-3.  Compute equity              → paper_engine.get_total_equity(_current_prices)
-4.  Update _current_equity      → shared global read by strategy loop for DB persist
-5.  Update risk engine          → risk_engine.update_equity(equity)
-6.  Append to _equity_history   → {"timestamp": ..., "equity": equity}
-7.  Repeat
+3.  Record portfolio value      → _record_equity_snapshot(_current_prices)
+4.  Compute equity              → paper_engine.get_total_equity(_current_prices)
+5.  Update _current_equity      → shared global read by strategy sizing
+6.  Update risk engine          → risk_engine.update_equity(equity)
+7.  Append and persist snapshot → _equity_history + repo.save_equity_snapshot(...)
+8.  Repeat
 ```
 
-`_equity_history` has `maxlen=1440`, giving 4 hours of rolling history at 10-second resolution. DB persistence still happens every 30 seconds in the strategy loop (reads `_current_equity`).
+`_equity_history` has `maxlen=1440`, giving up to 4 hours of rolling history at 10-second supplemental resolution. Startup loads the same 1,440-point window from SQLite, rather than only the most recent short slice, so a restarted dashboard keeps the wider graph range. Authoritative market-tick snapshots are recorded by `_strategy_loop` as soon as fresh prices arrive, so the graph does not wait for the ticker loop to catch up.
 
 ---
 
@@ -280,7 +281,7 @@ When Uvicorn starts `main.py`, the following executes at module level (before an
                                      control.set_repo(repo)
                                      _analyser.set_repo(repo)
 10. Restore risk rejections       → _risk_rejections deque pre-loaded from DB (last 50)
-11. Load equity history from DB   → restore _equity_history deque
+11. Load equity history from DB   → restore _equity_history deque (limit 1,440)
 12. Restore cash from DB          → paper_engine.cash = repo.get_latest_cash()
 13. Restore open positions from DB → paper_engine.restore_from_db()
 14. Seed news cache from DB       → _latest_news = repo.get_recent_news(limit=60)

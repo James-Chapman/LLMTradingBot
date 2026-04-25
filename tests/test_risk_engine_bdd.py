@@ -126,6 +126,52 @@ class RiskEngineBDDTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(decision.approved)
         self.assertIn("daily loss", decision.reason.lower())
 
+    # GIVEN a position sizing proposal that computes below the minimum EUR trade size
+    # WHEN the risk engine evaluates it
+    # THEN the trade is approved at the minimum size with adjusted_sizing set,
+    # rather than being rejected for a condition the bot itself created.
+    async def test_given_position_size_below_minimum_when_risk_evaluates_then_trade_approved_at_minimum(self) -> None:
+        original_target = risk_module.TARGET_TRADE_AMOUNT_EUR
+        risk_module.TARGET_TRADE_AMOUNT_EUR = 0.0
+        engine = RiskEngine()
+        engine.current_equity = 500.0  # 5% of 500 = 25, below the 50 minimum
+        idea = make_trade_idea(direction=Direction.LONG, sizing=0.05)
+
+        try:
+            decision = await engine.evaluate_trade(
+                idea,
+                open_positions=[],
+                available_cash=500.0,
+                market_price=100.0,
+            )
+        finally:
+            risk_module.TARGET_TRADE_AMOUNT_EUR = original_target
+
+        self.assertTrue(decision.approved, f"Expected approval at minimum size, got: {decision.reason}")
+        self.assertIsNotNone(decision.adjusted_sizing, "adjusted_sizing must be set when size was clamped to minimum")
+        expected_pct = risk_module.MIN_TRADE_SIZE_EUR / engine.current_equity  # 50/500 = 0.10
+        self.assertAlmostEqual(decision.adjusted_sizing, expected_pct, places=6)
+
+    # GIVEN cash is below the target trade amount but above the minimum
+    # WHEN risk evaluates a long trade
+    # THEN the trade is approved with sizing adjusted to spendable cash.
+    async def test_given_cash_below_target_but_above_minimum_when_risk_evaluates_then_sizing_is_reduced(self) -> None:
+        engine = RiskEngine()
+        engine.current_equity = 500.0
+        idea = make_trade_idea(direction=Direction.LONG, sizing=0.20)
+
+        decision = await engine.evaluate_trade(
+            idea,
+            open_positions=[],
+            available_cash=96.87,
+            market_price=100.0,
+        )
+
+        self.assertTrue(decision.approved, f"Expected reduced-size approval, got: {decision.reason}")
+        self.assertIsNotNone(decision.adjusted_sizing)
+        spendable_cash = 96.87 / (1 + risk_module._FEE_AND_SLIPPAGE)
+        self.assertAlmostEqual(decision.adjusted_sizing, spendable_cash / engine.current_equity, places=6)
+
     # GIVEN a minimum liquidity rule WHEN supplied 24h volume is below the threshold
     # THEN risk rejects the trade before approval.
     async def test_given_low_market_volume_when_risk_evaluates_then_trade_is_rejected(self) -> None:
