@@ -18,9 +18,11 @@ logger = get_logger("llm_only_strategy")
 class LLMOnlyStrategy:
     """LLM-led strategy with no local indicator gating."""
 
-    def __init__(self, strategy_id: str = "llm") -> None:
+    def __init__(self, strategy_id: str = "llm", max_concurrency: Optional[int] = None) -> None:
         self.strategy_id = strategy_id
         self.uses_llm_recommendation = True
+        configured = max_concurrency or settings.llm_only_max_concurrency
+        self.max_concurrency = max(1, configured)
 
     # Evaluate markets by asking the LLM for an explicit long/short/hold action.
     async def evaluate(
@@ -44,16 +46,23 @@ class LLMOnlyStrategy:
             return []
 
         positions = open_positions or []
+        semaphore = asyncio.Semaphore(self.max_concurrency)
+
+        async def _bounded_evaluate(symbol: str, data: Dict[str, Any]):
+            """Evaluate one market while respecting the configured concurrency limit."""
+            async with semaphore:
+                return await self._evaluate_market(
+                    symbol,
+                    data,
+                    news_signals,
+                    analyser=analyser,
+                    equity=equity,
+                    cash=cash,
+                    open_positions=positions,
+                )
+
         coros = [
-            self._evaluate_market(
-                symbol,
-                data,
-                news_signals,
-                analyser=analyser,
-                equity=equity,
-                cash=cash,
-                open_positions=positions,
-            )
+            _bounded_evaluate(symbol, data)
             for symbol, data in market_data.items()
         ]
         results = await asyncio.gather(*coros, return_exceptions=True)

@@ -316,6 +316,8 @@ After a timeout, the LLM client enters a 5-minute cooldown before retrying. This
 
 `STOP_LOSS_PCT=0.05` (5%). Reduce to `0.03` for tighter stop-losses (more frequent closures, smaller losses). Increase to `0.08` for wider stops (less frequent, larger losses).
 
+Stop-losses are measured against the entry price and only close positions that are losing by at least this percentage. They do not close profitable positions that have merely retraced from a previous high or low.
+
 This setting also affects the risk engine's per-trade loss estimate — changing it will affect how many signals pass the per-trade loss limit check.
 
 ---

@@ -1,6 +1,6 @@
 """Shared BDD-style test helpers for the trading bot."""
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 BACKEND_DIR = Path(__file__).resolve().parents[1] / "backend"
@@ -55,7 +55,7 @@ def make_risk_decision(
         trade_idea_id=trade_idea.id,
         approved=approved,
         reason=reason,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
 
 
@@ -71,7 +71,7 @@ def make_position(
         size=size,
         avg_price=avg_price,
         unrealized_pnl=0.0,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
 
 

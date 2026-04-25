@@ -2,7 +2,7 @@
 Approval service — shared by browser UI and CLI.
 """
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from domain.models import ApprovalRequest, RiskDecision, TradeIdea
@@ -46,7 +46,7 @@ class ApprovalService:
             id=str(uuid.uuid4()),
             trade_idea=trade_idea,
             risk_decision=risk_decision,
-            expires_at=datetime.utcnow() + self._ttl,
+            expires_at=datetime.now(timezone.utc) + self._ttl,
             status="pending",
         )
         self._pending[request.id] = request
@@ -85,7 +85,7 @@ class ApprovalService:
 
     def reject(self, approval_id: str) -> Optional[ApprovalRequest]:
         """Mark an approval as rejected and remove it from the queue."""
-        req = self._pending.get(approval_id)
+        req = self._get_if_valid(approval_id)
         if req is None:
             return None
         req.status = "rejected"
@@ -114,7 +114,7 @@ class ApprovalService:
         """
         if not self._repository:
             return 0
-        loaded = self._repository.load_pending_approval_requests(datetime.utcnow())
+        loaded = self._repository.load_pending_approval_requests(datetime.now(timezone.utc))
         self._pending = {request.id: request for request in loaded}
         return len(self._pending)
 
@@ -126,7 +126,7 @@ class ApprovalService:
         req = self._pending.get(approval_id)
         if req is None:
             return None
-        if req.expires_at < datetime.utcnow():
+        if req.expires_at < datetime.now(timezone.utc):
             req.status = "expired"
             del self._pending[approval_id]
             if self._repository:
@@ -136,7 +136,7 @@ class ApprovalService:
         return req
 
     def _purge_expired(self) -> None:
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         expired = [id for id, req in self._pending.items() if req.expires_at < now]
         for id in expired:
             self._pending[id].status = "expired"

@@ -70,6 +70,22 @@ class RiskEngineBDDTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(decision.approved)
         self.assertIn("insufficient cash", decision.reason.lower())
 
+    # GIVEN no closable long and insufficient cash WHEN a short is risk-checked
+    # THEN risk rejects before execution attempts an unsupported short.
+    async def test_given_no_long_and_insufficient_cash_when_short_evaluates_then_trade_is_rejected(self) -> None:
+        engine = RiskEngine()
+        idea = make_trade_idea(direction=Direction.SHORT)
+
+        decision = await engine.evaluate_trade(
+            idea,
+            open_positions=[],
+            available_cash=10.0,
+            market_price=100.0,
+        )
+
+        self.assertFalse(decision.approved)
+        self.assertIn("insufficient cash", decision.reason.lower())
+
     # GIVEN daily losses at the configured limit WHEN risk evaluates THEN new trades are blocked.
     async def test_given_daily_loss_limit_reached_when_risk_evaluates_then_trade_is_rejected(self) -> None:
         engine = RiskEngine()

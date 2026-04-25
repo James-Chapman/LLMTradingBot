@@ -1,7 +1,7 @@
 """Live Kraken execution engine."""
 import asyncio
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import partial
 from typing import Optional, Tuple
 
@@ -71,7 +71,7 @@ class KrakenExecutionEngine:
             size=intent.size,
             price=intent.price or market_price,
             status="pending",
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
 
         if self._api is None:

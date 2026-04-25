@@ -36,6 +36,27 @@ class SlowFakeAnalyser:
         )
 
 
+class TrackingFakeAnalyser:
+    """Tracks how many LLM calls are in flight at once."""
+
+    def __init__(self, delay: float = 0.02) -> None:
+        self.delay = delay
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    async def recommend_trade(self, **_kwargs):
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            await asyncio.sleep(self.delay)
+            return LLMTradeRecommendation(
+                action="hold", confidence=0.70, sentiment=0.0,
+                reasoning="concurrency test", llm_used=True,
+            )
+        finally:
+            self.in_flight -= 1
+
+
 class LLMOnlyStrategyBDDTests(unittest.IsolatedAsyncioTestCase):
     # GIVEN an LLM long recommendation WHEN the strategy evaluates THEN it emits a long trade idea.
     async def test_given_llm_long_recommendation_when_strategy_evaluates_then_long_signal_is_generated(self) -> None:
@@ -143,6 +164,26 @@ class LLMOnlyStrategyBDDTests(unittest.IsolatedAsyncioTestCase):
         # Concurrent execution: 5 × 50 ms sequential = 250 ms; concurrent < 150 ms
         self.assertLess(elapsed, 0.15,
                         f"Concurrent gather took {elapsed:.3f}s — likely still sequential")
+
+    # GIVEN many markets WHEN LLM-only evaluates THEN recommendation calls are concurrency-limited.
+    async def test_given_many_markets_when_strategy_evaluates_then_llm_calls_are_limited(self) -> None:
+        markets = {
+            f"COIN{i}/EUR": {"price": 100.0, "previous_price": 99.0, "indicators": {}}
+            for i in range(8)
+        }
+        analyser = TrackingFakeAnalyser()
+        strategy = LLMOnlyStrategy(max_concurrency=3)
+
+        await strategy.evaluate(
+            markets,
+            news_signals=[],
+            analyser=analyser,
+            equity=500.0,
+            cash=500.0,
+            open_positions=[],
+        )
+
+        self.assertLessEqual(analyser.max_in_flight, 3)
 
 
 if __name__ == "__main__":

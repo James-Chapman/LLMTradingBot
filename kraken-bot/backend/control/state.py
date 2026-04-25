@@ -5,7 +5,7 @@ State is written to the control_state DB table on every change so it
 survives restarts.  Call `control.set_repo(repo)` and
 `control.load_from_db()` once during startup.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from threading import Lock
 from typing import Set
 
@@ -85,7 +85,7 @@ class ControlState:
     def activate_stop(self) -> None:
         with self._lock:
             self._emergency_stop = True
-            self._stop_timestamp = datetime.utcnow()
+            self._stop_timestamp = datetime.now(timezone.utc)
         logger.warning("Emergency stop ACTIVATED")
         self._persist()
 

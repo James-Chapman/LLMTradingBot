@@ -1,0 +1,20 @@
+{
+  "metadata": {
+    "market": "BTC/EUR",
+    "interval_minutes": 5,
+    "start": "2026-04-23T00:00:00",
+    "end": "2026-04-25T00:00:00",
+    "source": "deterministic_fixture",
+    "expected_strategy": "llm",
+    "expected_outcome": "profitable_after_fees_and_slippage"
+  },
+  "generator": {
+    "type": "linear_ohlc",
+    "count": 576,
+    "start_price": 100.0,
+    "close_step": 0.04,
+    "high_offset": 0.02,
+    "low_offset": 0.02,
+    "volume": 10000.0
+  }
+}

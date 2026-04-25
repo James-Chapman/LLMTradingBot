@@ -58,7 +58,7 @@ Before strategy evaluation every tick:
 for pos in paper_engine.open_positions():
     market_price = prices.get(pos.market)
     loss_pct = (pos.avg_price - market_price) / pos.avg_price   # for longs
-    if loss_pct >= STOP_LOSS_ASSUMPTION:   # default 5%
+    if paper_engine.stop_loss_triggered(pos.position_id, market_price, STOP_LOSS_ASSUMPTION):
         order = await paper_engine.close_position(pos.position_id, market_price)
         pnl = pos.size * (market_price - pos.avg_price)
         risk_engine.record_trade_result(pnl)
@@ -67,13 +67,15 @@ for pos in paper_engine.open_positions():
         learner.record_outcome(...)
 ```
 
+The stop-loss monitor is entry-price based and only fires when the position is losing by at least `STOP_LOSS_PCT`. A profitable retrace from a previous high/low is not recorded as `stop_loss`.
+
 The iteration is over a list snapshot (`open_positions()` returns `list(self.positions.values())`), so concurrent modification of the positions dict during iteration is safe.
 
 ### Strategy Evaluation
 
 The loop evaluates the single strategy selected in control state:
 
-- `indicator_only` uses technical indicators only and requires at least six non-neutral indicators plus positive consensus.
+- `indicator_only` uses technical indicators only and requires at least six indicators to support the trade direction.
 - `combined` uses `BasicStrategy.evaluate()` with indicator consensus, news sentiment, LLM briefing sentiment, and the LLM signal-analysis/veto pass.
 - `llm` uses `LLMOnlyStrategy.evaluate()` and asks the LLM directly for `long`, `short`, or `hold`; indicators are passed into the LLM prompt but do not gate the trade locally.
 

@@ -62,7 +62,7 @@ def _fetch_rss(url: str, source_name: str, max_items: int = 20) -> List[NewsItem
         try:
             published_at = parsedate_to_datetime(pub_date).astimezone(timezone.utc).replace(tzinfo=None)
         except Exception:
-            published_at = datetime.utcnow()
+            published_at = datetime.now(timezone.utc)
 
         items.append(NewsItem(
             id=_stable_id(title, link),
@@ -269,7 +269,7 @@ class FearGreedAdapter(NewsAdapter):
             source="Fear & Greed",
             title=title,
             content=content,
-            published_at=datetime.utcnow(),
+            published_at=datetime.now(timezone.utc),
             url=self.PAGE_URL,
         )
 

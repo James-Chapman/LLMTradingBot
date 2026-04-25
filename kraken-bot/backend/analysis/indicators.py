@@ -142,7 +142,7 @@ def macd(
         return None
 
     macd_line_series = [
-        f - s for f, s in zip(fast_series[offset:], slow_series)
+        f - s for f, s in zip(fast_series[offset:], slow_series, strict=True)
     ]
 
     if len(macd_line_series) < signal:

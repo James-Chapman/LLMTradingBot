@@ -1,7 +1,7 @@
 """
 Universe resolver for tradable markets
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional, Set
 
 import httpx
@@ -62,7 +62,7 @@ class UniverseResolver:
             fixed_markets=self.fixed_markets,
             dynamic_markets=deduped_dynamic,
             resolver_source=self.dynamic_source,
-            resolved_at=datetime.utcnow(),
+            resolved_at=datetime.now(timezone.utc),
             mapping=mapping
         )
 

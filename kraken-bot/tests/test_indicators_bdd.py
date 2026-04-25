@@ -2,7 +2,7 @@
 import unittest
 
 from bdd_helpers import BACKEND_DIR  # noqa: F401
-from analysis.indicators import atr_ohlc, compute_all, price_changes, rsi, stochastic_ohlc
+from analysis.indicators import _ema_series, atr_ohlc, compute_all, macd, price_changes, rsi, stochastic_ohlc
 
 
 class IndicatorBDDTests(unittest.TestCase):
@@ -84,6 +84,38 @@ class IndicatorBDDTests(unittest.TestCase):
 
         self.assertGreater(result["atr"], 5.0)
         self.assertGreater(result["stoch"]["k"], 90.0)
+
+
+    # GIVEN a valid price series WHEN MACD is computed THEN the fast and slow EMA series
+    # align exactly so the zip produces no silent truncation (BUG-014).
+    def test_given_valid_prices_when_macd_computed_then_fast_slow_series_lengths_match(self) -> None:
+        # 50 prices gives fast_series len=39 (50-12+1), slow_series len=25 (50-26+1)
+        # offset = slow-fast = 14; fast_series[14:] len = 39-14 = 25 == slow_series len
+        prices = [100.0 + i * 0.5 for i in range(50)]
+        fast = 12
+        slow = 26
+
+        fast_series = _ema_series(prices, fast)
+        slow_series = _ema_series(prices, slow)
+        offset = slow - fast
+        aligned_fast = fast_series[offset:]
+
+        self.assertEqual(
+            len(aligned_fast), len(slow_series),
+            "fast_series[offset:] and slow_series must have equal length so zip is lossless",
+        )
+
+    # GIVEN a price series long enough for MACD WHEN macd() is called
+    # THEN a valid result is returned with no silent value truncation.
+    def test_given_sufficient_prices_when_macd_called_then_result_is_complete(self) -> None:
+        prices = [100.0 + i * 0.3 for i in range(40)]
+
+        result = macd(prices)
+
+        self.assertIsNotNone(result)
+        self.assertIn("line", result)
+        self.assertIn("signal", result)
+        self.assertIn("histogram", result)
 
 
 if __name__ == "__main__":

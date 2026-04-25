@@ -2,7 +2,7 @@
 Repository — all database read/write operations in one place.
 Every method opens its own session, commits, and closes.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from sqlalchemy import text
@@ -209,13 +209,18 @@ class Repository:
                     approved=risk_row.approved,
                     reason=risk_row.reason,
                     adjusted_sizing=risk_row.adjusted_sizing,
-                    timestamp=risk_row.timestamp or datetime.utcnow(),
+                    timestamp=risk_row.timestamp or datetime.now(timezone.utc),
                 )
+                # SQLite returns naive datetimes; attach UTC so comparisons with
+                # timezone-aware datetime.now(timezone.utc) don't raise TypeError.
+                expires_at = row.expires_at
+                if expires_at is not None and expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
                 result.append(ApprovalRequest(
                     id=row.id,
                     trade_idea=idea,
                     risk_decision=risk,
-                    expires_at=row.expires_at,
+                    expires_at=expires_at,
                     status=row.status,
                 ))
             return result
@@ -241,7 +246,7 @@ class Repository:
             ))
 
     def get_trade_ledger(self, limit: int = 200) -> list:
-        """Return filled orders only, newest first, for the trade ledger.
+        """Return visible order records, newest first, for the trade ledger.
 
         trade_type is derived by identifying which order opened each position:
         rows are fetched newest-first, so iterating and overwriting the mapping
@@ -251,19 +256,25 @@ class Repository:
         with get_session() as s:
             rows = (
                 s.query(OrderRecordModel)
-                .filter(OrderRecordModel.status == "filled")
+                .filter(OrderRecordModel.status.in_(["filled", "pending", "submitted", "rejected"]))
                 .order_by(OrderRecordModel.timestamp.desc())
                 .limit(limit)
                 .all()
             )
 
-            # First pass: find the opening order for each position.
-            # Rows are newest-first, so continuously overwriting leaves the
+            # First pass: find each returned position's opening order across full history.
             # oldest order's id as the value — that is the position opener.
+            position_ids = {r.position_id for r in rows if r.position_id}
             position_opener: dict = {}
-            for r in rows:
-                if r.position_id:
-                    position_opener[r.position_id] = r.id
+            for position_id in position_ids:
+                opener = (
+                    s.query(OrderRecordModel)
+                    .filter(OrderRecordModel.position_id == position_id)
+                    .order_by(OrderRecordModel.timestamp.asc())
+                    .first()
+                )
+                if opener:
+                    position_opener[position_id] = opener.id
 
             result = []
             for r in rows:
@@ -335,7 +346,7 @@ class Repository:
             if existing:
                 existing.size = size
                 existing.avg_price = avg_price
-                existing.updated_at = datetime.utcnow()
+                existing.updated_at = datetime.now(timezone.utc)
                 # Update trade_idea_id only if we now have one (don't overwrite with empty)
                 if trade_idea_id:
                     existing.trade_idea_id = trade_idea_id
@@ -349,8 +360,8 @@ class Repository:
                     strategy_id=strategy_id,
                     signal_confidence=signal_confidence,
                     trade_idea_id=trade_idea_id or None,
-                    opened_at=datetime.utcnow(),
-                    updated_at=datetime.utcnow(),
+                    opened_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(timezone.utc),
                 ))
 
     def delete_open_position(self, position_id: str) -> None:
@@ -393,7 +404,7 @@ class Repository:
                 confidence_at_entry=confidence,
                 exit_reason=exit_reason,
                 entry_at=entry_at,
-                exit_at=datetime.utcnow(),
+                exit_at=datetime.now(timezone.utc),
                 position_id=position_id or None,
                 trade_idea_id=trade_idea_id or None,
                 closing_trade_idea_id=closing_trade_idea_id or None,
@@ -415,7 +426,7 @@ class Repository:
         with get_session() as s:
             s.add(MarketSnapshotModel(
                 symbol=symbol,
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
                 price=price,
                 volume=volume,
             ))
@@ -495,7 +506,7 @@ class Repository:
                 total_equity=total_equity,
                 cash=cash,
                 positions_value=positions_value,
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
             ))
 
     def get_equity_history(self, limit: int = 288) -> List[Dict]:
@@ -607,7 +618,7 @@ class Repository:
     def save_activity_log(self, level: str, message: str, detail: str = "") -> None:
         with get_session() as s:
             s.add(ActivityLogModel(level=level, message=message, detail=detail,
-                                   timestamp=datetime.utcnow()))
+                                   timestamp=datetime.now(timezone.utc)))
 
     def get_recent_activity(self, limit: int = 200) -> List[Dict]:
         """Return most-recent activity entries, newest-first (matches in-memory deque order)."""
@@ -653,7 +664,7 @@ class Repository:
                 thesis=thesis,
                 reason=reason,
                 trade_idea_id=trade_idea_id or None,
-                timestamp=timestamp or datetime.utcnow(),
+                timestamp=timestamp or datetime.now(timezone.utc),
             ))
 
     def get_recent_risk_rejections(self, limit: int = 50) -> List[Dict]:
@@ -689,7 +700,7 @@ class Repository:
                 row.disabled_strategies = disabled_strategies
                 row.live_markets = live_markets or []
                 row.selected_strategy = selected_strategy
-                row.updated_at = datetime.utcnow()
+                row.updated_at = datetime.now(timezone.utc)
             else:
                 s.add(ControlStateModel(
                     id=1,
@@ -698,7 +709,7 @@ class Repository:
                     disabled_strategies=disabled_strategies,
                     live_markets=live_markets or [],
                     selected_strategy=selected_strategy,
-                    updated_at=datetime.utcnow(),
+                    updated_at=datetime.now(timezone.utc),
                 ))
 
     def load_control_state(self) -> Optional[Dict]:
@@ -728,7 +739,7 @@ class Repository:
                 market_outlooks=market_outlooks,
                 article_count=article_count,
                 briefed_news_ids=briefed_news_ids,
-                generated_at=generated_at or datetime.utcnow(),
+                generated_at=generated_at or datetime.now(timezone.utc),
             ))
 
     def load_latest_llm_briefing(self) -> Optional[Dict]:
@@ -759,7 +770,7 @@ class Repository:
                 pattern=pattern,
                 suggestion=suggestion,
                 insight_confidence=insight_confidence,
-                generated_at=generated_at or datetime.utcnow(),
+                generated_at=generated_at or datetime.now(timezone.utc),
             ))
 
     def load_latest_llm_reflection(self) -> Optional[Dict]:
@@ -795,7 +806,7 @@ class Repository:
                 daily_loss=daily_loss,
                 daily_start_equity=daily_start_equity,
                 last_reset_date=date_str,
-                updated_at=datetime.utcnow(),
+                updated_at=datetime.now(timezone.utc),
             ))
 
     def load_risk_state(self) -> Optional[Dict]:

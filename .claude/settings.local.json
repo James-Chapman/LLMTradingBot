@@ -1,0 +1,42 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import uvicorn\")",
+      "Bash(pip install *)",
+      "Bash(python -c ' *)",
+      "Bash(.venv\\\\Scripts\\\\pip install *)",
+      "Bash(cmd /c \".venv\\\\Scripts\\\\pip.exe install httpx\")",
+      "Bash(python -m py_compile analysis/indicators.py)",
+      "Bash(python -m py_compile strategy/basic_strategy.py)",
+      "Bash(python -m py_compile llm/analyser.py)",
+      "Bash(python -m py_compile main.py)",
+      "Bash(node --input-type=module)",
+      "Bash(dir \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\kraken-bot\\\\docs\" /b)",
+      "PowerShell(\\(Get-Content \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\kraken-bot\\\\frontend\\\\index.html\"\\).Count)",
+      "Bash(python -m pytest tests/test_database_migration_bdd.py -v)",
+      "Bash(.venv\\\\Scripts\\\\python.exe -m pytest tests/test_database_migration_bdd.py -v)",
+      "PowerShell($py = \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\.venv\\\\Scripts\\\\python.exe\"; Set-Location \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\kraken-bot\"; & $py -m pytest tests/test_database_migration_bdd.py -v 2>&1)",
+      "PowerShell($py = \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\.venv\\\\Scripts\\\\python.exe\"; Set-Location \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\kraken-bot\"; & $py -m ruff check backend/storage/database.py tests/test_database_migration_bdd.py 2>&1)",
+      "PowerShell($py = \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\.venv\\\\Scripts\\\\python.exe\"; Set-Location \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\kraken-bot\"; & $py -m pytest tests/test_llm_only_strategy_bdd.py -v 2>&1)",
+      "PowerShell($py = \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\.venv\\\\Scripts\\\\python.exe\"; Set-Location \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\kraken-bot\\\\tests\"; & $py -m pytest test_llm_only_strategy_bdd.py -v 2>&1)",
+      "PowerShell($py = \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\.venv\\\\Scripts\\\\python.exe\"; Set-Location \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\kraken-bot\"; & $py -m ruff check backend/strategy/llm_only_strategy.py tests/test_llm_only_strategy_bdd.py 2>&1)",
+      "PowerShell($py = \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\.venv\\\\Scripts\\\\python.exe\"; Set-Location \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\kraken-bot\"; & $py -m ruff check backend/main.py 2>&1 | Select-Object -First 20)",
+      "PowerShell($py = \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\.venv\\\\Scripts\\\\python.exe\"; Set-Location \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\kraken-bot\\\\tests\"; & $py -m pytest test_risk_state_persistence_bdd.py -v 2>&1)",
+      "PowerShell($py = \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\.venv\\\\Scripts\\\\python.exe\"; Set-Location \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\kraken-bot\"; & $py -m ruff check backend/storage/models.py backend/storage/repository.py backend/main.py 2>&1 | Select-Object -First 30)",
+      "PowerShell($py = \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\.venv\\\\Scripts\\\\python.exe\"; Set-Location \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\kraken-bot\\\\tests\"; & $py -m pytest test_risk_engine_bdd.py -v 2>&1)",
+      "PowerShell($py = \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\.venv\\\\Scripts\\\\python.exe\"; Set-Location \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\kraken-bot\\\\tests\"; & $py -m pytest test_risk_engine_bdd.py -v 2>&1 | Select-Object -Last 15)",
+      "PowerShell($py = \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\.venv\\\\Scripts\\\\python.exe\"; Set-Location \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\kraken-bot\"; & $py -m ruff check backend/risk/engine.py 2>&1)",
+      "PowerShell($py = \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\.venv\\\\Scripts\\\\python.exe\"; Set-Location \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\kraken-bot\\\\tests\"; & $py -m pytest test_indicators_bdd.py -v 2>&1)",
+      "PowerShell($py = \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\.venv\\\\Scripts\\\\python.exe\"; Set-Location \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\kraken-bot\\\\tests\"; & $py -m pytest test_indicators_bdd.py -v 2>&1 | Select-Object -Last 10)",
+      "PowerShell($py = \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\.venv\\\\Scripts\\\\python.exe\"; Set-Location \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\kraken-bot\"; & $py -m ruff check backend/analysis/indicators.py 2>&1)",
+      "PowerShell($py = \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\.venv\\\\Scripts\\\\python.exe\"; Set-Location \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\kraken-bot\\\\tests\"; & $py -m pytest test_approval_service_bdd.py -v 2>&1 | Select-Object -Last 10)",
+      "PowerShell($py = \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\.venv\\\\Scripts\\\\python.exe\"; Set-Location \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\kraken-bot\"; & $py -m ruff check backend/approval/service.py 2>&1)",
+      "PowerShell($py = \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\.venv\\\\Scripts\\\\python.exe\"; Set-Location \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\kraken-bot\\\\tests\"; & $py -m pytest test_universe_resolver_bdd.py -v 2>&1 | Select-Object -Last 10)",
+      "PowerShell($py = \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\.venv\\\\Scripts\\\\python.exe\"; Set-Location \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\kraken-bot\"; & $py -m ruff check backend/universe/resolver.py tests/test_universe_resolver_bdd.py 2>&1)",
+      "PowerShell($py = \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\.venv\\\\Scripts\\\\python.exe\"; Set-Location \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\kraken-bot\\\\tests\"; & $py -m pytest test_indicators_bdd.py::IndicatorBDDTests::test_given_ohlc_candles_when_atr_ohlc_computed_then_result_uses_true_range test_indicators_bdd.py::IndicatorBDDTests::test_given_close_at_high_when_stochastic_ohlc_computed_then_k_near_100 -v 2>&1 | Select-Object -Last 10)",
+      "PowerShell($py = \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\.venv\\\\Scripts\\\\python.exe\"; Set-Location \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\kraken-bot\\\\tests\"; & $py -m pytest test_indicators_bdd.py -v 2>&1 | Select-Object -Last 12)",
+      "PowerShell($py = \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\.venv\\\\Scripts\\\\python.exe\"; Set-Location \"C:\\\\Users\\\\retro\\\\Documents\\\\TradingBot\\\\kraken-bot\"; & $py -m ruff check backend/analysis/indicators.py backend/main.py 2>&1 | Select-Object -First 20)",
+      "Bash(git add *)"
+    ]
+  }
+}

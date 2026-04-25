@@ -1,11 +1,26 @@
 """BDD coverage for the approval queue."""
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from bdd_helpers import make_risk_decision, make_trade_idea
 from approval.service import ApprovalService
 from storage.database import init_database
 from storage.repository import Repository
+
+
+class CapturingApprovalRepository:
+    """Capture approval persistence updates."""
+
+    def __init__(self) -> None:
+        self.status_updates = []
+
+    # GIVEN an approval is submitted WHEN persisted THEN ignore the full payload.
+    def save_approval_request(self, _request) -> None:
+        return None
+
+    # GIVEN approval status changes WHEN updated THEN capture the new status.
+    def update_approval_status(self, approval_id: str, status: str) -> None:
+        self.status_updates.append((approval_id, status))
 
 
 class ApprovalServiceBDDTests(unittest.TestCase):
@@ -49,13 +64,26 @@ class ApprovalServiceBDDTests(unittest.TestCase):
         service = ApprovalService(ttl_minutes=30)
         idea = make_trade_idea()
         request = service.submit(idea, make_risk_decision(idea))
-        request.expires_at = datetime.utcnow() - timedelta(seconds=1)
+        request.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
 
         pending = service.get_pending()
 
         self.assertEqual(pending, [])
         self.assertIsNone(service.get(request.id))
 
+    # GIVEN an expired approval WHEN reject is called THEN it expires instead of being rejected.
+    def test_given_expired_request_when_rejected_then_request_is_marked_expired(self) -> None:
+        repository = CapturingApprovalRepository()
+        service = ApprovalService(ttl_minutes=30, repository=repository)
+        idea = make_trade_idea()
+        request = service.submit(idea, make_risk_decision(idea))
+        request.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+        rejected = service.reject(request.id)
+
+        self.assertIsNone(rejected)
+        self.assertIsNone(service.get(request.id))
+        self.assertEqual(repository.status_updates[-1], (request.id, "expired"))
 
     # GIVEN multiple pending approvals WHEN clear_pending is called THEN all are removed
     # and the count of cleared items is returned.

@@ -7,7 +7,7 @@ so multiple trades on the same pair are all visible independently.
 Positions are persisted to SQLite via Repository and survive restarts.
 """
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 from domain.models import (
@@ -57,13 +57,13 @@ class PaperExecutionEngine:
                 size=row.size,
                 avg_price=row.avg_price,
                 unrealized_pnl=row.unrealized_pnl or 0.0,
-                timestamp=row.opened_at or datetime.utcnow(),
+                timestamp=row.opened_at or datetime.now(timezone.utc),
             )
             self._position_meta[row.position_id] = {
                 "strategy_id": row.strategy_id or "",
                 "direction": row.direction or "",
                 "confidence": row.signal_confidence,
-                "opened_at": row.opened_at or datetime.utcnow(),
+                "opened_at": row.opened_at or datetime.now(timezone.utc),
                 "market": row.market,
                 # Restored so record_closed_trade() can link the outcome to the opening signal
                 "trade_idea_id": row.trade_idea_id or "",
@@ -99,7 +99,7 @@ class PaperExecutionEngine:
             size=intent.size,
             price=fill_price,
             status="pending",
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
 
         if not self._has_sufficient_funds(intent, fill_value, fee):
@@ -122,7 +122,7 @@ class PaperExecutionEngine:
             fill_price=fill_price,
             fill_size=intent.size,
             fee=fee,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
         self.fills.append(fill)
 
@@ -159,8 +159,13 @@ class PaperExecutionEngine:
         })
         return order, position_id
 
-    async def close_position(self, position_id: str, market_price: float,
-                             environment: str = "paper") -> Optional[OrderRecord]:
+    async def close_position(
+        self,
+        position_id: str,
+        market_price: float,
+        environment: str = "paper",
+        approval_request_id: str = "stop_loss",
+    ) -> Optional[OrderRecord]:
         """Close a specific position by ID (used by the stop-loss loop).
 
         Unlike execute(), this targets a named position rather than doing
@@ -177,21 +182,27 @@ class PaperExecutionEngine:
         fee = fill_value * TAKER_FEE_RATE
 
         if exit_direction == Direction.SHORT:
+            # Closing a long: receive sale proceeds
             self.cash += fill_value - fee
         else:
-            self.cash -= fill_value + fee
+            # Closing a short: release the locked proceeds and settle P&L.
+            # short_proceeds = original sell value locked at open; fall back to entry price × size
+            # for positions restored from DB (which pre-date this fix).
+            meta_preview = self._position_meta.get(position_id, {})
+            short_proceeds = meta_preview.get("short_proceeds", pos.avg_price * fill_size)
+            self.cash += short_proceeds - fill_value - fee
 
         order_id = str(uuid.uuid4())
         order = OrderRecord(
             id=order_id, market=pos.market, direction=exit_direction,
             size=fill_size, price=fill_price, status="filled",
-            timestamp=datetime.utcnow(), position_id=position_id,
+            timestamp=datetime.now(timezone.utc), position_id=position_id,
         )
         self.orders.append(order)
 
         fill = FillRecord(
             order_id=order_id, fill_price=fill_price,
-            fill_size=fill_size, fee=fee, timestamp=datetime.utcnow(),
+            fill_size=fill_size, fee=fee, timestamp=datetime.now(timezone.utc),
         )
         self.fills.append(fill)
 
@@ -199,16 +210,18 @@ class PaperExecutionEngine:
         meta = self._position_meta.get(position_id, {})
         meta["avg_price_at_close"] = pos.avg_price
         meta["size_at_close"] = fill_size
+        meta["exit_price_at_close"] = fill_price
+        meta["exit_fee_at_close"] = fee
         self._position_meta[position_id] = meta
 
         del self.positions[position_id]
 
         if self._repo:
-            self._repo.save_order(order, "stop_loss", fee, environment)
+            self._repo.save_order(order, approval_request_id, fee, environment)
             self._repo.save_fill(fill)
             self._repo.delete_open_position(position_id)
 
-        logger.info("Position closed (stop-loss)", extra={
+        logger.info("Position closed (%s)", approval_request_id, extra={
             "position_id": position_id, "market": pos.market,
             "fill_price": fill_price, "fee": fee,
         })
@@ -216,22 +229,25 @@ class PaperExecutionEngine:
 
     def record_closed_trade(self, position_id: str, exit_price: float,
                             exit_reason: str = "manual",
-                            closing_trade_idea_id: str = "") -> None:
+                            closing_trade_idea_id: str = "") -> Optional[float]:
         """Persist a SignalOutcome for a closed position. Call after execute()/close_position().
 
         closing_trade_idea_id: the ID of the signal that triggered this close, where applicable
         (auto-close via SHORT signal or manual_approve). Empty for stop-loss and manual UI close.
         """
         if self._repo is None:
-            return
+            return None
         meta = self._position_meta.get(position_id, {})
         avg_price = meta.get("avg_price_at_close")
         size = meta.get("size_at_close")
         direction = meta.get("direction", "")
         if avg_price is None or size is None:
-            return
+            return None
+        actual_exit_price = meta.get("exit_price_at_close", exit_price)
+        entry_fee = float(meta.get("entry_fee") or 0.0)
+        exit_fee = float(meta.get("exit_fee_at_close") or 0.0)
         signed_size = size if direction == "long" else -size
-        pnl = signed_size * (exit_price - avg_price)
+        pnl = signed_size * (actual_exit_price - avg_price) - entry_fee - exit_fee
         # Look up market from meta or fall back to scanning orders
         market = meta.get("market", "")
         if not market:
@@ -244,16 +260,17 @@ class PaperExecutionEngine:
             market=market,
             direction=direction,
             entry_price=avg_price,
-            exit_price=exit_price,
+            exit_price=actual_exit_price,
             size=abs(size),
             pnl=pnl,
             confidence=meta.get("confidence"),
             exit_reason=exit_reason,
-            entry_at=meta.get("opened_at", datetime.utcnow()),
+            entry_at=meta.get("opened_at", datetime.now(timezone.utc)),
             position_id=position_id,
             trade_idea_id=meta.get("trade_idea_id", ""),
             closing_trade_idea_id=closing_trade_idea_id,
         )
+        return pnl
 
     def update_mark_prices(self, prices: Dict[str, float]) -> None:
         """Recompute unrealised P&L for all open positions."""
@@ -286,6 +303,20 @@ class PaperExecutionEngine:
             return market_price <= high * (1.0 - trail_pct)
         low = meta.get("trailing_low", pos.avg_price)
         return market_price >= low * (1.0 + trail_pct)
+
+    # Return True only when the current price is losing versus the entry price.
+    def stop_loss_triggered(self, position_id: str, market_price: float, stop_loss_pct: float) -> bool:
+        """Return True when a position is down by at least stop_loss_pct."""
+        pos = self.positions.get(position_id)
+        if pos is None:
+            return False
+        if pos.avg_price <= 0:
+            return False
+        if pos.size > 0:
+            loss_pct = (pos.avg_price - market_price) / pos.avg_price
+        else:
+            loss_pct = (market_price - pos.avg_price) / pos.avg_price
+        return loss_pct >= stop_loss_pct
 
     def get_total_equity(self, prices: Dict[str, float]) -> float:
         positions_value = sum(
@@ -342,23 +373,22 @@ class PaperExecutionEngine:
                 size=intent.size,
                 avg_price=fill_price,
                 unrealized_pnl=0.0,
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
             )
             self._position_meta[position_id] = {
                 "strategy_id": strategy_id,
                 "direction": "long",
                 "confidence": signal_confidence,
-                "opened_at": datetime.utcnow(),
+                "opened_at": datetime.now(timezone.utc),
                 "market": market,
                 "trade_idea_id": trade_idea_id,
+                "entry_fee": fee,
                 "trailing_high": fill_price,
                 "trailing_low": None,
             }
             return position_id
 
         # SHORT — close oldest matching long (FIFO), or open a paper short
-        self.cash += fill_value - fee
-
         market_longs = sorted(
             [(pid, p) for pid, p in self.positions.items()
              if p.market == market and p.size > 0],
@@ -366,16 +396,22 @@ class PaperExecutionEngine:
         )
 
         if market_longs:
+            # Closing a long: receive the sale proceeds minus fee
+            self.cash += fill_value - fee
             pid, pos = market_longs[0]
             meta = self._position_meta.get(pid, {})
             meta["avg_price_at_close"] = pos.avg_price
             meta["size_at_close"] = pos.size
+            meta["exit_price_at_close"] = fill_price
+            meta["exit_fee_at_close"] = fee
             meta["market"] = market
             self._position_meta[pid] = meta
             del self.positions[pid]
             return pid
 
-        # No long to close — open a paper short position
+        # No long to close — open a paper short position.
+        # Deduct only the entry fee; lock proceeds as margin so free cash cannot increase.
+        self.cash -= fee
         position_id = str(uuid.uuid4())
         self.positions[position_id] = PositionRecord(
             position_id=position_id,
@@ -383,15 +419,17 @@ class PaperExecutionEngine:
             size=-intent.size,
             avg_price=fill_price,
             unrealized_pnl=0.0,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
         self._position_meta[position_id] = {
             "strategy_id": strategy_id,
             "direction": "short",
             "confidence": signal_confidence,
-            "opened_at": datetime.utcnow(),
+            "opened_at": datetime.now(timezone.utc),
             "market": market,
             "trade_idea_id": trade_idea_id,
+            "entry_fee": fee,
+            "short_proceeds": fill_value,   # locked margin — released on close
             "trailing_high": None,
             "trailing_low": fill_price,
         }

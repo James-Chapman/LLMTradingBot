@@ -263,10 +263,20 @@
                     <!-- ── Header ──────────────────────────────────────────────── -->
                     <div class="flex items-center justify-between" style="margin-bottom:20px;">
                         <div>
+                            <!-- Strategy badge — maps raw strategy_id to a readable label with a colour pill -->
+                            <div style="margin-bottom:7px;">
+                                <span x-text="{combined:'Combined · Indicator + LLM', indicator_only:'Indicator Only', llm:'LLM Only'}[signalModal.strategy_id] || signalModal.strategy_id"
+                                      :style="{
+                                          combined: 'background:#1d4ed8;color:#bfdbfe;',
+                                          indicator_only: 'background:#0f766e;color:#99f6e4;',
+                                          llm: 'background:#92400e;color:#fde68a;'
+                                      }[signalModal.strategy_id] || 'background:var(--border);color:var(--muted);'"
+                                      style="display:inline-block;font-size:11px;font-weight:600;letter-spacing:.04em;padding:3px 10px;border-radius:20px;text-transform:uppercase;"></span>
+                            </div>
                             <div style="font-size:19px;font-weight:700;"
                                  x-text="signalModal.market + ' ' + (signalModal.direction==='long' ? '▲ LONG' : '▼ SHORT')"></div>
                             <div style="font-size:12px;color:var(--muted);margin-top:3px;"
-                                 x-text="signalModal.strategy_id + ' · ' + (signalModal.created_at ? new Date(signalModal.created_at+'Z').toLocaleString() : '')"></div>
+                                 x-text="signalModal.created_at ? new Date(signalModal.created_at+'Z').toLocaleString() : ''"></div>
                         </div>
                         <div class="flex items-center gap-4">
                             <div style="text-align:right;">
@@ -316,10 +326,10 @@
                                 <div>
                                     <span style="font-weight:600;">Indicator consensus</span>
                                     <span style="font-size:11px;color:var(--muted);margin-left:8px;"
-                                          x-text="signalBreakdown.votes+(signalBreakdown.votes===1?' net vote':' net votes')+' × 5%, capped ±20/+40'"></span>
+                                          x-text="signalBreakdown.supporting+' supporting indicator'+(signalBreakdown.supporting!==1?'s':'')+' required minimum 6'"></span>
                                 </div>
                                 <span class="mono" style="font-size:12px;color:var(--muted);"
-                                      x-text="(signalBreakdown.votes>=0?'+':'')+signalBreakdown.votes+' / '+signalBreakdown.available"></span>
+                                      x-text="signalBreakdown.supporting+' / '+signalBreakdown.available"></span>
                                 <span class="mono" style="text-align:right;font-weight:700;"
                                       :style="signalBreakdown.indicatorBonus>0?'color:var(--green)':signalBreakdown.indicatorBonus<0?'color:var(--red)':'color:var(--muted)'"
                                       x-text="(signalBreakdown.indicatorBonus>=0?'+':'')+(signalBreakdown.indicatorBonus*100).toFixed(1)+'%'"></span>
@@ -337,6 +347,20 @@
                                 <span class="mono" style="text-align:right;font-weight:700;"
                                       :style="signalBreakdown.newsBonus>0?'color:var(--green)':signalBreakdown.newsBonus<0?'color:var(--red)':'color:var(--muted)'"
                                       x-text="(signalBreakdown.newsBonus>=0?'+':'')+(signalBreakdown.newsBonus*100).toFixed(1)+'%'"></span>
+                            </div>
+
+                            <!-- LLM briefing sentiment -->
+                            <div style="display:grid;grid-template-columns:1fr 110px 90px;gap:0;padding:9px 14px;border-bottom:1px solid var(--subtle);align-items:center;">
+                                <div>
+                                    <span style="font-weight:600;">LLM briefing sentiment</span>
+                                    <span style="font-size:11px;color:var(--muted);margin-left:8px;"
+                                          x-text="signalBreakdown.llmSentimentBonus>0 ? 'aligned with signal direction' : signalBreakdown.llmSentimentBonus<0 ? 'opposing signal direction' : 'neutral / unused'"></span>
+                                </div>
+                                <span class="mono" style="font-size:12px;color:var(--muted);"
+                                      x-text="(signalBreakdown.llmSentiment>=0?'+':'')+signalBreakdown.llmSentiment.toFixed(2)"></span>
+                                <span class="mono" style="text-align:right;font-weight:700;"
+                                      :style="signalBreakdown.llmSentimentBonus>0?'color:var(--green)':signalBreakdown.llmSentimentBonus<0?'color:var(--red)':'color:var(--muted)'"
+                                      x-text="(signalBreakdown.llmSentimentBonus>=0?'+':'')+(signalBreakdown.llmSentimentBonus*100).toFixed(1)+'%'"></span>
                             </div>
 
                             <!-- ATR volatility -->
@@ -1608,6 +1632,7 @@ function dashboard() {
             // ── Indicator consensus bonus ──────────────────────────────────
             const votes     = ss.indicator_votes      ?? 0;
             const available = ss.indicators_available ?? 0;
+            const supporting = ss.indicators_supporting ?? Math.max(0, (available + votes) / 2);
             const indicatorBonus = available > 0
                 ? Math.max(-0.20, Math.min(0.40, votes * 0.05))
                 : 0;
@@ -1618,13 +1643,20 @@ function dashboard() {
             if      ((isLong && newsSent > 0) || (!isLong && newsSent < 0)) newsBonus =  0.10;
             else if ((isLong && newsSent < 0) || (!isLong && newsSent > 0)) newsBonus = -0.10;
 
+            // LLM briefing sentiment bonus, distinct from the later LLM analysis multiplier.
+            const usesLlmSentiment = ss.uses_llm_sentiment ?? true;
+            const llmSentiment = usesLlmSentiment ? (ss.llm_sentiment || 0) : 0;
+            let llmSentimentBonus = 0;
+            if      ((isLong && llmSentiment > 0) || (!isLong && llmSentiment < 0)) llmSentimentBonus =  0.05;
+            else if ((isLong && llmSentiment < 0) || (!isLong && llmSentiment > 0)) llmSentimentBonus = -0.05;
+
             // ── ATR volatility penalty ─────────────────────────────────────
             const atrPct    = ss.atr_pct || 0;
             const atrPenalty = atrPct > 1.0 ? -Math.min(0.10, (atrPct - 1.0) * 0.05) : 0;
 
             // ── Strategy subtotal ──────────────────────────────────────────
             const stratConf = Math.max(0.10, Math.min(0.95,
-                base + indicatorBonus + newsBonus + atrPenalty));
+                base + indicatorBonus + newsBonus + llmSentimentBonus + atrPenalty));
 
             // ── Learner adjustment ─────────────────────────────────────────
             // pre_llm_confidence is after the learner; stratConf is what we computed above.
@@ -1640,8 +1672,8 @@ function dashboard() {
 
             return {
                 momentum: momentum * 100, base,
-                indicatorBonus, votes, available,
-                newsBonus, newsSent,
+                indicatorBonus, votes, available, supporting,
+                newsBonus, newsSent, llmSentiment, llmSentimentBonus,
                 atrPct, atrPenalty,
                 stratConf, preLlm,
                 learnerDiff, learnerScale,

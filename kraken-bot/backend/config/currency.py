@@ -1,8 +1,8 @@
 """Currency display helpers."""
 
 CURRENCY_SYMBOLS = {
-    "EUR": "€",
-    "GBP": "£",
+    "EUR": "\u20ac",
+    "GBP": "\u00a3",
     "USD": "$",
 }
 

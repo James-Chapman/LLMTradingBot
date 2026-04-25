@@ -1,7 +1,7 @@
 """BDD coverage for risk engine daily_loss persistence across restarts."""
 import sys
 import unittest
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 BACKEND_DIR = Path(__file__).resolve().parents[1] / "backend"
@@ -11,6 +11,7 @@ if str(BACKEND_DIR) not in sys.path:
 from storage.database import init_database  # noqa: E402
 from storage.repository import Repository   # noqa: E402
 from risk.engine import RiskEngine          # noqa: E402
+from risk.persistence import record_trade_result_and_persist  # noqa: E402
 
 
 def _fresh_repo() -> Repository:
@@ -37,7 +38,7 @@ class RiskStatePersistenceBDDTests(unittest.TestCase):
         # Simulate restart — new engine loads from DB
         new_engine = RiskEngine()
         state = repo.load_risk_state()
-        if state and state["last_reset_date"] == datetime.utcnow().date():
+        if state and state["last_reset_date"] == datetime.now(timezone.utc).date():
             new_engine.daily_loss = state["daily_loss"]
             new_engine.daily_start_equity = state["daily_start_equity"]
 
@@ -61,7 +62,7 @@ class RiskStatePersistenceBDDTests(unittest.TestCase):
         )
 
         state = repo.load_risk_state()
-        today = datetime.utcnow().date()
+        today = datetime.now(timezone.utc).date()
         restored = state and state["last_reset_date"] == today
 
         self.assertFalse(restored, "Stale state from a previous day must not be restored")
@@ -70,14 +71,27 @@ class RiskStatePersistenceBDDTests(unittest.TestCase):
     def test_given_multiple_saves_when_loaded_then_latest_values_returned(self) -> None:
         repo = _fresh_repo()
         repo.save_risk_state(daily_loss=10.0, daily_start_equity=500.0,
-                             last_reset_date=datetime.utcnow().date())
+                             last_reset_date=datetime.now(timezone.utc).date())
         repo.save_risk_state(daily_loss=25.0, daily_start_equity=500.0,
-                             last_reset_date=datetime.utcnow().date())
+                             last_reset_date=datetime.now(timezone.utc).date())
 
         state = repo.load_risk_state()
 
         self.assertIsNotNone(state)
         self.assertAlmostEqual(state["daily_loss"], 25.0, places=6)
+
+    # GIVEN a losing realised trade WHEN the bot records the result
+    # THEN the updated daily risk state is persisted immediately.
+    def test_given_losing_trade_when_result_recorded_then_risk_state_is_saved(self) -> None:
+        repo = _fresh_repo()
+        engine = RiskEngine()
+
+        record_trade_result_and_persist(engine, repo, -12.5)
+
+        state = repo.load_risk_state()
+        self.assertIsNotNone(state)
+        self.assertAlmostEqual(state["daily_loss"], 12.5, places=6)
+        self.assertAlmostEqual(state["daily_start_equity"], engine.daily_start_equity, places=6)
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 Kraken market data adapter
 """
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import partial
 from typing import Callable, Dict, List, Optional
 
@@ -97,7 +97,7 @@ class KrakenMarketAdapter:
                 if sym:
                     results[sym] = MarketSnapshot(
                         symbol=sym,
-                        timestamp=datetime.utcnow(),
+                        timestamp=datetime.now(timezone.utc),
                         price=float(row["c"][0]),
                         volume=float(row["v"][1]),
                     )

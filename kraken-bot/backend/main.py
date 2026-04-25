@@ -1,4 +1,4 @@
-﻿"""
+"""
 Kraken News-Aware Trading Bot - FastAPI Backend
 """
 import asyncio
@@ -6,7 +6,7 @@ import csv
 import io
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -24,6 +24,7 @@ from config.settings import settings
 from control.state import LEGACY_STRATEGY_IDS, ControlState
 from domain.models import ExecutionIntent
 from execution.kraken import KrakenExecutionEngine
+from execution.operator_reset import close_positions_for_operator_reset
 from execution.paper import PaperExecutionEngine
 from ingestion.kraken_adapter import KrakenMarketAdapter
 from ingestion.news_adapter import (
@@ -46,6 +47,7 @@ from llm.client import OllamaClient
 from observability.activity import activity
 from observability.logging import get_logger, setup_logging
 from risk.engine import STOP_LOSS_ASSUMPTION, RiskEngine
+from risk.persistence import record_trade_result_and_persist
 from storage.database import init_database
 from storage.repository import Repository
 from strategy.basic_strategy import BasicStrategy
@@ -120,7 +122,7 @@ def _strategy_by_id(strategy_id: str):
     canonical_id = LEGACY_STRATEGY_IDS.get(strategy_id, strategy_id)
     return next((strategy for strategy in strategies if strategy.strategy_id == canonical_id), None)
 
-# â”€â”€ Wire repo into singletons that need DB persistence â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Wire repo into singletons that need DB persistence.
 activity.set_repo(repo)
 control.set_repo(repo)
 _analyser.set_repo(repo)
@@ -133,12 +135,12 @@ _active_markets: List[str] = []
 
 _SIGNAL_BUFFER_MAX = 12   # maximum signals kept in the panel
 
-# Rolling risk rejections â€” last 50, newest first; pre-loaded from DB.
+# Rolling risk rejections - last 50, newest first; pre-loaded from DB.
 # get_recent_risk_rejections returns newest-first; extend from oldest so the
 # deque ends up with index-0 = newest (same order appendleft produces at runtime).
 _risk_rejections: deque = deque(maxlen=50)
 _db_rejections = repo.get_recent_risk_rejections(limit=50)
-for _r in reversed(_db_rejections):        # reversed = oldest first â†’ appendleft order
+for _r in reversed(_db_rejections):        # reversed = oldest first into appendleft order
     _risk_rejections.appendleft(_r)
 
 # News IDs that have already been sent to the LLM for a market briefing.
@@ -146,7 +148,7 @@ for _r in reversed(_db_rejections):        # reversed = oldest first â†’ ap
 # cycle doesn't re-brief on articles that were already processed before restart.
 _briefed_news_ids: set = set()
 
-# OHLC caches per timeframe: symbol â†’ payload dict (refreshed by background task)
+# OHLC caches per timeframe: symbol to payload dict (refreshed by background task)
 _ohlc_cache_5:  Dict[str, dict] = {}   # 5-min candles
 _ohlc_cache_15: Dict[str, dict] = {}   # 15-min candles
 _OHLC_REFRESH_INTERVAL  = 120   # seconds between full refresh cycles
@@ -157,32 +159,32 @@ _OHLC_INTER_INTERVAL_GAP = 1.0  # seconds between the two interval fetches for t
 _LOOKBACK_TICKS = 10
 _price_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=60))
 
-# Equity snapshots for chart (max 1 440 = 4 h at 10-s resolution) â€” pre-loaded from DB
+# Equity snapshots for chart (max 1 440 = 4 h at 10-s resolution) - pre-loaded from DB
 _equity_history: deque = deque(maxlen=1440)
 _current_equity: float = settings.starting_capital   # updated every 10 s by equity ticker
 _db_equity = repo.get_equity_history(limit=288)
 if _db_equity:
     _equity_history.extend(_db_equity)
     _current_equity = _db_equity[-1]["equity"]   # seed from most recent DB snapshot
-    # Restore the cash balance (not total equity â€” positions are restored separately)
+    # Restore the cash balance; positions are restored separately.
     _last_cash = repo.get_latest_cash()
     if _last_cash is not None:
         paper_engine.cash = _last_cash
 else:
     _equity_history.append(
-        {"timestamp": datetime.utcnow().isoformat(), "equity": settings.starting_capital}
+        {"timestamp": datetime.now(timezone.utc).isoformat(), "equity": settings.starting_capital}
     )
 
 # Restore open positions from DB
 paper_engine.restore_from_db()
 
-# Restore risk engine daily tracking â€” prevents bypass of daily loss limit after a restart
+# Restore risk engine daily tracking to keep the daily loss limit after restart.
 _risk_state = repo.load_risk_state()
-if _risk_state and _risk_state["last_reset_date"] == __import__("datetime").date.today():
+if _risk_state and _risk_state["last_reset_date"] == datetime.now(timezone.utc).date():
     risk_engine.daily_loss = _risk_state["daily_loss"]
     risk_engine.daily_start_equity = _risk_state["daily_start_equity"]
 
-# Seed news cache from DB â€” 60 most recent articles regardless of age
+# Seed news cache from DB - 60 most recent articles regardless of age.
 _latest_news: List[Dict[str, Any]] = repo.get_recent_news(limit=60)
 # Mark all existing news as already-briefed so the first news-loop cycle doesn't
 # re-brief on articles processed before this restart.
@@ -202,15 +204,10 @@ activity.seed_from_db()
 def _record_trade_result(pnl: float) -> None:
     """Record a completed trade's P&L and persist the risk state to DB.
 
-    Persistence ensures the daily loss limit survives a restart â€” without it
+    Persistence ensures the daily loss limit survives a restart; without it
     the bot could exceed the configured limit by restarting mid-day.
     """
-    risk_engine.record_trade_result(pnl)
-    repo.save_risk_state(
-        daily_loss=risk_engine.daily_loss,
-        daily_start_equity=risk_engine.daily_start_equity,
-        last_reset_date=risk_engine._last_reset_date,
-    )
+    record_trade_result_and_persist(risk_engine, repo, pnl)
 
 
 async def _send_alert(event_type: str, payload: Dict[str, Any]) -> None:
@@ -223,7 +220,7 @@ async def _send_alert(event_type: str, payload: Dict[str, Any]) -> None:
                 settings.alert_webhook_url,
                 json={
                     "event_type": event_type,
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                     **payload,
                 },
             )
@@ -249,7 +246,7 @@ async def _strategy_loop() -> None:
                       " | ".join(f"{m}: {len(_price_history[m])} ticks" for m in _active_markets))
 
     activity.info(
-        f"Bot started â€” {len(_active_markets)} markets active",
+        f"Bot started - {len(_active_markets)} markets active",
         f"Markets: {', '.join(_active_markets)} | Mode: {settings.trading_mode}",
     )
     await _send_alert("bot_started", {"markets": _active_markets, "mode": settings.trading_mode})
@@ -259,14 +256,14 @@ async def _strategy_loop() -> None:
     while True:
         try:
             if control.emergency_stop:
-                activity.warn("Emergency stop active â€” tick skipped")
+                activity.warn("Emergency stop active - tick skipped")
                 await asyncio.sleep(30)
                 continue
 
             # Only poll enabled markets
             active = [m for m in _active_markets if control.is_market_enabled(m)]
             if not active:
-                activity.warn("All markets disabled â€” tick skipped")
+                activity.warn("All markets disabled - tick skipped")
                 await asyncio.sleep(30)
                 continue
 
@@ -283,11 +280,11 @@ async def _strategy_loop() -> None:
             price_summary = "  ".join(f"{s} {CURRENCY_SYMBOL}{p:,.2f}" for s, p in prices.items())
             if warming_up:
                 activity.info(
-                    f"Tick #{tick} â€” prices fetched (warming up {ticks_collected}/{_LOOKBACK_TICKS + 1} ticks)",
+                    f"Tick #{tick} - prices fetched (warming up {ticks_collected}/{_LOOKBACK_TICKS + 1} ticks)",
                     price_summary,
                 )
             else:
-                activity.info(f"Tick #{tick} â€” prices fetched", price_summary)
+                activity.info(f"Tick #{tick} - prices fetched", price_summary)
 
             market_data: Dict[str, Any] = {}
             for sym, snap in snapshots.items():
@@ -333,7 +330,7 @@ async def _strategy_loop() -> None:
                     repo.trim_old_price_ticks(sym)
                 repo.trim_old_activity(keep=2_000)
 
-            # â”€â”€ Stop-loss check: auto-close any position down â‰¥5% â”€â”€â”€â”€â”€â”€â”€â”€
+            # Stop-loss check: auto-close any position down at least 5%.
             for pos in paper_engine.open_positions():
                 market_price = prices.get(pos.market)
                 if market_price is None:
@@ -342,18 +339,22 @@ async def _strategy_loop() -> None:
                     (pos.avg_price - market_price) / pos.avg_price if pos.size > 0
                     else (market_price - pos.avg_price) / pos.avg_price
                 )
-                trailing_triggered = paper_engine.trailing_stop_triggered(
+                if paper_engine.stop_loss_triggered(
                     pos.position_id,
                     market_price,
-                    settings.stop_loss_pct,
-                )
-                if loss_pct >= STOP_LOSS_ASSUMPTION or trailing_triggered:
+                    STOP_LOSS_ASSUMPTION,
+                ):
                     order = await paper_engine.close_position(pos.position_id, market_price)
                     if order:
-                        pnl = pos.size * (market_price - pos.avg_price)
+                        pnl = paper_engine.record_closed_trade(
+                            pos.position_id,
+                            order.price,
+                            "stop_loss",
+                        )
+                        if pnl is None:
+                            continue
                         _record_trade_result(pnl)
                         repo.update_order_pnl(order.id, pnl)
-                        paper_engine.record_closed_trade(pos.position_id, market_price, "stop_loss")
                         meta = paper_engine._position_meta.get(pos.position_id, {})
                         learner.record_outcome(
                             meta.get("strategy_id", "unknown"),
@@ -363,7 +364,7 @@ async def _strategy_loop() -> None:
                         )
                         activity.warn(
                             f"STOP-LOSS: {pos.market} [{pos.position_id[:8]}] closed at "
-                            f"{CURRENCY_SYMBOL}{market_price:,.2f} ({loss_pct:.1%} loss)",
+                            f"{CURRENCY_SYMBOL}{order.price:,.2f} ({loss_pct:.1%} loss)",
                             f"Entry {CURRENCY_SYMBOL}{pos.avg_price:,.2f}  "
                             f"PnL {CURRENCY_SYMBOL}{pnl:+,.2f}",
                         )
@@ -400,7 +401,7 @@ async def _strategy_loop() -> None:
                 ideas.extend(strategy_ideas)
 
             if not ideas:
-                activity.info("Strategies evaluated â€” no signals this tick")
+                activity.info("Strategies evaluated - no signals this tick")
 
             signals = []
             for idea in ideas:
@@ -443,16 +444,16 @@ async def _strategy_loop() -> None:
                     # Veto: if LLM strongly opposes this signal, skip it entirely
                     if (settings.llm_veto_threshold > 0 and
                             llm_analysis.confidence_scale < settings.llm_veto_threshold):
-                        direction_label = "â–² LONG" if idea.direction.value == "long" else "â–¼ SHORT"
+                        direction_label = "LONG" if idea.direction.value == "long" else "SHORT"
                         activity.warn(
                             f"Signal {idea.market} {direction_label} vetoed by LLM",
                             f"Scale {llm_analysis.confidence_scale:.2f} < threshold "
-                            f"{settings.llm_veto_threshold:.2f} â€” {llm_analysis.reasoning}",
+                            f"{settings.llm_veto_threshold:.2f} - {llm_analysis.reasoning}",
                         )
                         continue
                     idea.confidence = min(0.95, idea.confidence * llm_analysis.confidence_scale)
                     if llm_analysis.reasoning:
-                        idea.thesis = f"{idea.thesis} Â· LLM: {llm_analysis.reasoning}"
+                        idea.thesis = f"{idea.thesis} | LLM: {llm_analysis.reasoning}"
 
                 risk_decision = await risk_engine.evaluate_trade(
                     idea,
@@ -492,14 +493,14 @@ async def _strategy_loop() -> None:
                     risk_decision=risk_decision,
                 )
 
-                direction_label = "â–² LONG" if idea.direction.value == "long" else "â–¼ SHORT"
+                direction_label = "LONG" if idea.direction.value == "long" else "SHORT"
 
                 if not risk_decision.approved:
                     activity.warn(
-                        f"Signal {idea.market} {direction_label} {idea.confidence:.0%} â€” risk blocked",
+                        f"Signal {idea.market} {direction_label} {idea.confidence:.0%} - risk blocked",
                         risk_decision.reason,
                     )
-                    _now = datetime.utcnow()
+                    _now = datetime.now(timezone.utc)
                     _rejection = {
                         "market": idea.market,
                         "direction": idea.direction.value,
@@ -527,7 +528,7 @@ async def _strategy_loop() -> None:
 
                 elif settings.trading_mode == "manual":
                     activity.info(
-                        f"Signal {idea.market} {direction_label} {idea.confidence:.0%} â€” visible in dashboard (manual mode, no action taken)",
+                        f"Signal {idea.market} {direction_label} {idea.confidence:.0%} - visible in dashboard (manual mode, no action taken)",
                         idea.thesis,
                     )
 
@@ -542,26 +543,26 @@ async def _strategy_loop() -> None:
                     )
                     if _blocked:
                         activity.info(
-                            f"Signal {idea.market} {direction_label} â€” skipped (position already open)",
+                            f"Signal {idea.market} {direction_label} - skipped (position already open)",
                             idea.thesis,
                         )
                     elif approval_service.submit(idea, risk_decision) is not None:
                         activity.success(
-                            f"Signal {idea.market} {direction_label} {idea.confidence:.0%} â€” submitted for approval",
+                            f"Signal {idea.market} {direction_label} {idea.confidence:.0%} - submitted for approval",
                             idea.thesis,
                         )
                     else:
                         activity.info(
-                            f"Signal {idea.market} {direction_label} â€” skipped (approval already pending)",
+                            f"Signal {idea.market} {direction_label} - skipped (approval already pending)",
                             idea.thesis,
                         )
 
                 elif settings.trading_mode == "fully_automated":
-                    # Executes immediately â€” no approval step.
+                    # Executes immediately, with no approval step.
                     # Gate 1: confidence threshold (configurable via MIN_SIGNAL_CONFIDENCE env var)
                     if idea.confidence < settings.min_signal_confidence:
                         activity.info(
-                            f"Signal {idea.market} {direction_label} skipped â€” confidence "
+                            f"Signal {idea.market} {direction_label} skipped - confidence "
                             f"{idea.confidence:.0%} below threshold {settings.min_signal_confidence:.0%}",
                         )
                         continue
@@ -577,7 +578,7 @@ async def _strategy_loop() -> None:
                         pass  # already in this trade, skip silently
                     elif not market_price:
                         activity.warn(
-                            f"Signal {idea.market} {direction_label} â€” auto-execution skipped (no live price)",
+                            f"Signal {idea.market} {direction_label} - auto-execution skipped (no live price)",
                         )
                     else:
                         # Capture the FIFO long before execute() removes it (needed for PnL)
@@ -613,10 +614,13 @@ async def _strategy_loop() -> None:
                             and idea.direction.value == "short"
                             and pos_id
                         ):
-                            paper_engine.record_closed_trade(pos_id, market_price, "auto",
-                                                             closing_trade_idea_id=idea.id)
-                            if _closing_long:
-                                pnl = _closing_long.size * (market_price - _closing_long.avg_price)
+                            pnl = paper_engine.record_closed_trade(
+                                pos_id,
+                                order.price,
+                                "auto",
+                                closing_trade_idea_id=idea.id,
+                            )
+                            if pnl is not None:
                                 _record_trade_result(pnl)
                                 repo.update_order_pnl(order.id, pnl)
                                 learner.record_outcome(
@@ -629,7 +633,7 @@ async def _strategy_loop() -> None:
                             repo.save_equity_snapshot(_eq, paper_engine.cash, _eq - paper_engine.cash)
 
                         activity.success(
-                            f"Signal {idea.market} {direction_label} {idea.confidence:.0%} â€” auto-executed ({order.status})",
+                            f"Signal {idea.market} {direction_label} {idea.confidence:.0%} - auto-executed ({order.status})",
                             f"Size: {size_base:.6f} @ {CURRENCY_SYMBOL}{market_price:,.2f}  "
                             f"Order: {order.id[:8]}",
                         )
@@ -718,7 +722,7 @@ async def _news_loop() -> None:
                         published_at=item.published_at, url=item.url,
                     )
                 except Exception:
-                    pass  # duplicate or constraint â€” ignore
+                    pass  # duplicate or constraint; ignore
 
             # Keep the 60 most recent articles across all sources (no time cutoff)
             _latest_news = [
@@ -735,16 +739,16 @@ async def _news_loop() -> None:
 
             # Detect genuinely new articles and trigger a market briefing.
             # Always replace (not union) _briefed_news_ids so that IDs aged out of
-            # _latest_news are removed immediately â€” keeps the set bounded to â‰¤ 60 items.
+            # _latest_news are removed immediately; keeps the set bounded to <= 60 items.
             current_ids  = {n["id"] for n in _latest_news}
             new_ids      = current_ids - _briefed_news_ids
-            _briefed_news_ids = current_ids   # replace, not grow â€” O(1) bound
+            _briefed_news_ids = current_ids   # replace, not grow; O(1) bound
             if new_ids:
                 new_articles = [n for n in _latest_news if n["id"] in new_ids]
                 asyncio.create_task(_market_briefing_task(new_articles))
                 logger.info("Market briefing triggered", extra={"new_articles": len(new_articles)})
 
-            activity.info(f"News fetched â€” {len(_latest_news)} articles",
+            activity.info(f"News fetched - {len(_latest_news)} articles",
                           ", ".join(sorted({i["source"] for i in _latest_news})))
             logger.info("News feed updated", extra={"count": len(_latest_news)})
         except Exception as e:
@@ -758,7 +762,7 @@ async def _reflection_loop() -> None:
     await asyncio.sleep(120)  # wait for first trades before first reflection
     while True:
         try:
-            # get_closed_trades returns plain dicts â€” required by reflect_on_outcomes
+            # get_closed_trades returns plain dicts required by reflect_on_outcomes.
             outcomes = repo.get_closed_trades(limit=50)
             reflection = await _analyser.reflect_on_outcomes(outcomes)
             if reflection:
@@ -775,7 +779,7 @@ async def _ohlc_loop() -> None:
     """Fetch 5-min and 15-min OHLC for each active market sequentially.
 
     Runs on a slow cycle so we never exceed Kraken's public rate limit regardless
-    of how many browser tabs are open â€” the endpoint only reads from these caches.
+    of how many browser tabs are open; the endpoint only reads from these caches.
     """
     # Wait until the strategy loop has confirmed the active market list
     while not _active_markets:
@@ -804,7 +808,7 @@ async def _ohlc_loop() -> None:
             except Exception as e:
                 logger.error("OHLC 15m fetch failed", extra={"market": market, "error": str(e)})
 
-            # Gap between markets â€” prevents hitting Kraken's rate limit
+            # Gap between markets prevents hitting Kraken's rate limit.
             await asyncio.sleep(_OHLC_INTER_MARKET_GAP)
 
         await asyncio.sleep(_OHLC_REFRESH_INTERVAL)
@@ -825,7 +829,10 @@ async def _equity_ticker_loop() -> None:
             equity = paper_engine.get_total_equity(_current_prices)
             _current_equity = equity
             risk_engine.update_equity(equity)
-            _equity_history.append({"timestamp": datetime.utcnow().isoformat(), "equity": equity})
+            _equity_history.append({"timestamp": datetime.now(timezone.utc).isoformat(), "equity": equity})
+            # Persist every ticker tick so a crash never loses more than 10 s of equity history
+            positions_value = equity - paper_engine.cash
+            repo.save_equity_snapshot(equity, paper_engine.cash, positions_value)
         except Exception as e:
             logger.warning("Equity ticker error", extra={"error": str(e)})
 
@@ -859,7 +866,7 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR / "static")), name="static")
 
 
-# â”€â”€ Page routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Page routes
 
 @app.get("/")
 async def root():
@@ -889,7 +896,7 @@ async def service_worker():
     )
 
 
-# â”€â”€ Dashboard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Dashboard
 
 @app.get("/api/dashboard")
 async def get_dashboard():
@@ -913,7 +920,7 @@ async def get_dashboard():
             if m not in priced:
                 markets.append({
                     "symbol": m,
-                    "price": "â€”",
+                    "price": "-",
                     "enabled": m not in disabled_markets,
                     "live": m in live_markets,
                 })
@@ -997,7 +1004,7 @@ async def get_dashboard():
             "signals": [],
             "positions": [],
             "approvals": [],
-            "equity_history": [{"timestamp": datetime.utcnow().isoformat(), "equity": settings.starting_capital}],
+            "equity_history": [{"timestamp": datetime.now(timezone.utc).isoformat(), "equity": settings.starting_capital}],
             "risk_rejections": [],
             "activity": activity.recent(60),
             "control": control.snapshot(),
@@ -1005,7 +1012,7 @@ async def get_dashboard():
         }
 
 
-# â”€â”€ Approvals â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Approvals
 
 @app.get("/api/approvals")
 async def get_approvals():
@@ -1016,7 +1023,7 @@ async def get_approvals():
 @app.post("/api/approvals/{approval_id}/approve")
 async def approve_trade(approval_id: str):
     if control.emergency_stop:
-        raise HTTPException(status_code=503, detail="Emergency stop is active â€” cannot execute trades")
+        raise HTTPException(status_code=503, detail="Emergency stop is active - cannot execute trades")
 
     pending = approval_service.get(approval_id)
     if pending is None:
@@ -1070,10 +1077,10 @@ async def approve_trade(approval_id: str):
         "environment": "live" if is_live_market else "paper",
         "position_id": pos_id,
     })
-    direction_label = "â–² LONG" if idea.direction.value == "long" else "â–¼ SHORT"
+    direction_label = "LONG" if idea.direction.value == "long" else "SHORT"
     if order.status == "rejected":
         activity.error(
-            f"Manual approval: {idea.market} {direction_label} â€” order REJECTED (insufficient funds)",
+            f"Manual approval: {idea.market} {direction_label} - order REJECTED (insufficient funds)",
             f"Equity {CURRENCY_SYMBOL}{equity:.2f}  Cash {CURRENCY_SYMBOL}{paper_engine.cash:.2f}  "
             f"Needed {CURRENCY_SYMBOL}{size_base * market_price:.2f}",
         )
@@ -1085,18 +1092,21 @@ async def approve_trade(approval_id: str):
 
         # Record outcome and PnL if this approval closed an existing long
         if not is_live_market and idea.direction.value == "short" and pos_id:
-            paper_engine.record_closed_trade(pos_id, market_price, "manual_approve",
-                                             closing_trade_idea_id=idea.id)
-            if _closing_long:
-                pnl = _closing_long.size * (market_price - _closing_long.avg_price)
-                risk_engine.record_trade_result(pnl)
+            pnl = paper_engine.record_closed_trade(
+                pos_id,
+                order.price,
+                "manual_approve",
+                closing_trade_idea_id=idea.id,
+            )
+            if pnl is not None:
+                _record_trade_result(pnl)
                 repo.update_order_pnl(order.id, pnl)
                 learner.record_outcome(idea.strategy_id, idea.market, "long", pnl)
         activity.success(
-            f"Manual approval: {idea.market} {direction_label} â€” "
+            f"Manual approval: {idea.market} {direction_label} - "
             f"{'live' if is_live_market else 'paper'} order {order.status}",
             f"Size: {size_base:.6f} @ {CURRENCY_SYMBOL}{market_price:,.2f}  "
-            f"Order: {order.id[:8]}  [{pos_id[:8] if pos_id else 'â€”'}]",
+            f"Order: {order.id[:8]}  [{pos_id[:8] if pos_id else '-'}]",
         )
     return {"status": "approved", "id": approval_id, "order_id": order.id, "order_status": order.status}
 
@@ -1108,12 +1118,12 @@ async def reject_trade(approval_id: str):
         raise HTTPException(status_code=404, detail="Approval not found")
     logger.info("Trade rejected via API", extra={"approval_id": approval_id})
     idea = req.trade_idea
-    direction_label = "â–² LONG" if idea.direction.value == "long" else "â–¼ SHORT"
-    activity.warn(f"Manual rejection: {idea.market} {direction_label} â€” operator declined")
+    direction_label = "LONG" if idea.direction.value == "long" else "SHORT"
+    activity.warn(f"Manual rejection: {idea.market} {direction_label} - operator declined")
     return {"status": "rejected", "id": approval_id}
 
 
-# â”€â”€ Control endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Control endpoints
 
 @app.get("/api/control")
 async def get_control():
@@ -1124,16 +1134,16 @@ async def get_control():
 async def activate_emergency_stop():
     control.activate_stop()
     cleared = approval_service.clear_pending()
-    logger.warning("Emergency stop activated â€” approval queue cleared",
+    logger.warning("Emergency stop activated - approval queue cleared",
                    extra={"cleared": cleared})
     await _send_alert("emergency_stop_activated", {"cleared_approvals": cleared})
-    return {"status": "stopped", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "stopped", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
 @app.post("/api/control/resume")
 async def resume_bot():
     control.resume()
-    return {"status": "resumed", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "resumed", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
 @app.post("/api/control/markets/{market:path}/toggle")
@@ -1179,7 +1189,7 @@ async def reload_strategies():
     return {"status": "reloaded", "strategies": ids}
 
 
-# â”€â”€ Misc â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Misc
 
 @app.get("/api/learning")
 async def get_learning():
@@ -1196,19 +1206,19 @@ async def get_ohlc(market: str, interval: int = Query(5, description="Candle int
     cached = cache.get(market)
     if cached:
         return cached
-    # Not yet populated â€” return empty so the chart waits gracefully
+    # Not yet populated; return empty so the chart waits gracefully.
     return {"symbol": market, "interval": interval, "candles": []}
 
 
 @app.get("/api/trades")
 async def get_trades():
-    """Full trade ledger â€” all filled and rejected orders, newest first."""
+    """Full trade ledger: all filled and rejected orders, newest first."""
     return repo.get_trade_ledger(limit=200)
 
 
 @app.get("/api/closed-trades")
 async def get_closed_trades():
-    """Signal outcomes â€” every fully-closed position, newest first."""
+    """Signal outcomes: every fully-closed position, newest first."""
     return repo.get_closed_trades(limit=200)
 
 
@@ -1253,7 +1263,7 @@ async def close_position(position_id: str):
     if control.emergency_stop:
         raise HTTPException(status_code=503, detail="Emergency stop is active")
 
-    # The dashboard truncates position IDs to 8 chars â€” accept both full and short forms
+    # The dashboard truncates position IDs to 8 chars; accept both full and short forms.
     pos = paper_engine.positions.get(position_id)
     if pos is None:
         # Try matching by prefix (UI passes 8-char truncated IDs)
@@ -1269,19 +1279,19 @@ async def close_position(position_id: str):
     if not market_price:
         raise HTTPException(status_code=503, detail=f"No live price for {pos.market}")
 
-    # Capture the position values before close_position() removes it
-    entry_price = pos.avg_price
-    pos_size = pos.size
-
-    order = await paper_engine.close_position(position_id, market_price)
+    order = await paper_engine.close_position(
+        position_id,
+        market_price,
+        approval_request_id="manual_close",
+    )
     if order is None:
         raise HTTPException(status_code=404, detail="Position not found or already closed")
 
-    pnl = pos_size * (market_price - entry_price)
-
     # Write a signal_outcome row for history and LLM learning
-    paper_engine.record_closed_trade(position_id, market_price, "manual_close")
-    risk_engine.record_trade_result(pnl)
+    pnl = paper_engine.record_closed_trade(position_id, order.price, "manual_close")
+    if pnl is None:
+        raise HTTPException(status_code=500, detail="Closed position outcome could not be recorded")
+    _record_trade_result(pnl)
     repo.update_order_pnl(order.id, pnl)
     meta = paper_engine._position_meta.get(position_id, {})
     learner.record_outcome(
@@ -1294,18 +1304,18 @@ async def close_position(position_id: str):
     _eq = paper_engine.get_total_equity(_current_prices)
     repo.save_equity_snapshot(_eq, paper_engine.cash, _eq - paper_engine.cash)
 
-    direction_label = "â–² LONG" if order.direction.value == "long" else "â–¼ SHORT"
+    direction_label = "LONG" if order.direction.value == "long" else "SHORT"
     activity.success(
         f"Position manually closed: {pos.market} {direction_label}",
-        f"@ {CURRENCY_SYMBOL}{market_price:,.2f}  PnL {CURRENCY_SYMBOL}{pnl:+,.2f}  "
+        f"@ {CURRENCY_SYMBOL}{order.price:,.2f}  PnL {CURRENCY_SYMBOL}{pnl:+,.2f}  "
         f"Cash now {CURRENCY_SYMBOL}{paper_engine.cash:,.2f}",
     )
     logger.info("Position manually closed", extra={
         "position_id": position_id, "market": pos.market,
-        "fill_price": market_price, "order_id": order.id, "pnl": pnl,
+        "fill_price": order.price, "order_id": order.id, "pnl": pnl,
     })
     return {"status": "closed", "position_id": position_id, "order_id": order.id,
-            "fill_price": market_price, "pnl": pnl, "cash": paper_engine.cash}
+            "fill_price": order.price, "pnl": pnl, "cash": paper_engine.cash}
 
 
 @app.post("/api/positions/reset")
@@ -1319,33 +1329,21 @@ async def reset_positions():
     if settings.trading_environment == "live":
         raise HTTPException(status_code=403, detail="Position reset is not allowed in live mode")
 
-    # Capture current state before any clearing â€” use last known price, fall back to avg_price
-    positions_snapshot = list(paper_engine.open_positions())
-    for pos in positions_snapshot:
-        exit_price = _current_prices.get(pos.market, pos.avg_price)
-        meta = paper_engine._position_meta.get(pos.position_id, {})
-        # Inject close-time fields so record_closed_trade() doesn't bail silently
-        meta["avg_price_at_close"] = pos.avg_price
-        meta["size_at_close"] = abs(pos.size)
-        paper_engine._position_meta[pos.position_id] = meta
-        # Write signal_outcome row
-        paper_engine.record_closed_trade(pos.position_id, exit_price, "operator_reset")
-        # Feed PnL into the in-memory learner and risk engine
-        pnl = pos.size * (exit_price - pos.avg_price)
-        risk_engine.record_trade_result(pnl)
-        learner.record_outcome(
-            meta.get("strategy_id", "unknown"),
-            pos.market,
-            meta.get("direction", "long"),
-            pnl,
-        )
-
-    count = repo.clear_all_open_positions()
+    count = await close_positions_for_operator_reset(
+        paper_engine=paper_engine,
+        prices=_current_prices,
+        record_trade_result=_record_trade_result,
+        repository=repo,
+        learner=learner,
+    )
+    repo.clear_all_open_positions()
     paper_engine.positions.clear()
     paper_engine._position_meta.clear()
+    _eq = paper_engine.get_total_equity(_current_prices)
+    repo.save_equity_snapshot(_eq, paper_engine.cash, _eq - paper_engine.cash)
 
     logger.warning("Open positions reset by operator", extra={"cleared": count})
-    activity.warn(f"Positions reset by operator â€” {count} position(s) cleared and logged")
+    activity.warn(f"Positions reset by operator - {count} position(s) cleared and logged")
     return {"cleared": count}
 
 

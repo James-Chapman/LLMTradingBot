@@ -61,6 +61,56 @@ class BasicStrategyBDDTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(ideas, [])
 
+    # GIVEN fewer than six indicators agree WHEN more indicators are available THEN no signal is generated.
+    async def test_given_only_five_supporting_indicators_when_strategy_evaluates_then_signal_is_blocked(self) -> None:
+        strategy = BasicStrategy()
+        market_data = {
+            "AXS/EUR": {
+                "price": 102.0,
+                "previous_price": 100.0,
+                "indicators": {
+                    "rsi_14": 76.6,
+                    "ema_cross": "bullish",
+                    "bb": {"position": 80.0},
+                    "macd": {"bias": "bullish", "signal_bias": "bullish", "histogram": 0.5},
+                    "stoch": {"k": 93.2, "d": 90.0},
+                    "williams_r": -0.0,
+                    "price_changes": {"5m": 1.2, "15m": 2.4},
+                    "atr_pct": 0.5,
+                },
+            }
+        }
+
+        ideas = await strategy.evaluate(market_data, news_signals=[])
+
+        self.assertEqual(ideas, [])
+
+    # GIVEN exactly six indicators agree WHEN more indicators oppose THEN the signal still passes.
+    async def test_given_exactly_six_supporting_indicators_when_strategy_evaluates_then_signal_can_pass(self) -> None:
+        strategy = BasicStrategy()
+        market_data = {
+            "AXS/EUR": {
+                "price": 102.0,
+                "previous_price": 100.0,
+                "indicators": {
+                    "rsi_14": 38.0,
+                    "ema_cross": "bullish",
+                    "bb": {"position": 80.0},
+                    "macd": {"bias": "bullish", "signal_bias": "bullish", "histogram": 0.5},
+                    "stoch": {"k": 90.0, "d": 88.0},
+                    "williams_r": -10.0,
+                    "price_changes": {"5m": 1.2, "15m": 2.4},
+                    "atr_pct": 0.5,
+                },
+            }
+        }
+
+        ideas = await strategy.evaluate(market_data, news_signals=[])
+
+        self.assertEqual(len(ideas), 1)
+        self.assertEqual(ideas[0].supporting_signals["indicators_supporting"], 6)
+        self.assertEqual(ideas[0].supporting_signals["indicators_opposing"], 3)
+
     # GIVEN positive momentum and supportive indicators WHEN strategy evaluates THEN it emits a long idea.
     async def test_given_supportive_bullish_context_when_strategy_evaluates_then_long_signal_is_generated(self) -> None:
         strategy = BasicStrategy()
@@ -89,6 +139,7 @@ class BasicStrategyBDDTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(idea.market, "BTC/EUR")
         self.assertEqual(idea.direction, Direction.LONG)
         self.assertGreaterEqual(idea.supporting_signals["indicator_votes"], 1)
+        self.assertGreaterEqual(idea.supporting_signals["indicators_supporting"], 6)
         self.assertGreaterEqual(idea.confidence, 0.20)
         self.assertLessEqual(idea.confidence, 0.95)
 

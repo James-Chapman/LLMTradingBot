@@ -75,6 +75,7 @@ class BotSettings(BaseSettings):
     ollama_url: str = Field(default="http://localhost:11434", validation_alias="OLLAMA_URL")
     ollama_model: str = Field(default="phi3:mini", validation_alias="OLLAMA_MODEL")
     ollama_timeout: int = Field(default=60, validation_alias="OLLAMA_TIMEOUT")
+    llm_only_max_concurrency: int = Field(default=3, validation_alias="LLM_ONLY_MAX_CONCURRENCY")
 
     # Logging
     log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")

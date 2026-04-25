@@ -11,7 +11,7 @@ reflect_on_outcomes()  — called hourly; finds patterns in closed trades.
 """
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from config.currency import currency_symbol
@@ -257,7 +257,7 @@ class LLMAnalyser:
                     overall_sentiment=b["overall_sentiment"],
                     key_insight=b["key_insight"],
                     article_count=b["article_count"],
-                    generated_at=datetime.fromisoformat(b["generated_at"]) if b["generated_at"] else datetime.utcnow(),
+                    generated_at=datetime.fromisoformat(b["generated_at"]) if b["generated_at"] else datetime.now(timezone.utc),
                 )
                 logger.info("LLM briefing restored from DB", extra={"insight": b["key_insight"]})
         except Exception as exc:
@@ -270,7 +270,7 @@ class LLMAnalyser:
                     pattern=r["pattern"],
                     suggestion=r["suggestion"],
                     insight_confidence=r["insight_confidence"],
-                    generated_at=datetime.fromisoformat(r["generated_at"]) if r["generated_at"] else datetime.utcnow(),
+                    generated_at=datetime.fromisoformat(r["generated_at"]) if r["generated_at"] else datetime.now(timezone.utc),
                 )
                 logger.info("LLM reflection restored from DB", extra={"pattern": r["pattern"]})
         except Exception as exc:
@@ -408,7 +408,7 @@ class LLMAnalyser:
         if self.latest_briefing:
             b = self.latest_briefing
             outlook = b.market_outlooks.get(market, {})
-            age_min = int((datetime.utcnow() - b.generated_at).total_seconds() / 60)
+            age_min = int((datetime.now(timezone.utc) - b.generated_at).total_seconds() / 60)
             briefing_block = (
                 f"\nLatest market briefing ({age_min}m ago, {b.article_count} new article(s)):\n"
                 f"  Key insight: {b.key_insight}\n"
@@ -424,7 +424,7 @@ class LLMAnalyser:
         reflection_block = ""
         if self.latest_reflection:
             r = self.latest_reflection
-            age_min_r = int((datetime.utcnow() - r.generated_at).total_seconds() / 60)
+            age_min_r = int((datetime.now(timezone.utc) - r.generated_at).total_seconds() / 60)
             reflection_block = (
                 f"\nYour most recent self-reflection ({age_min_r}m ago, "
                 f"confidence {r.insight_confidence:.0%}):\n"
@@ -511,7 +511,7 @@ class LLMAnalyser:
         if self.latest_briefing:
             b = self.latest_briefing
             outlook = b.market_outlooks.get(market, {})
-            age_min = int((datetime.utcnow() - b.generated_at).total_seconds() / 60)
+            age_min = int((datetime.now(timezone.utc) - b.generated_at).total_seconds() / 60)
             briefing_block = (
                 f"\nLatest market briefing ({age_min}m ago, {b.article_count} new article(s)):\n"
                 f"  Key insight: {b.key_insight}\n"
@@ -526,7 +526,7 @@ class LLMAnalyser:
         reflection_block = ""
         if self.latest_reflection:
             r = self.latest_reflection
-            age_min_r = int((datetime.utcnow() - r.generated_at).total_seconds() / 60)
+            age_min_r = int((datetime.now(timezone.utc) - r.generated_at).total_seconds() / 60)
             reflection_block = (
                 f"\nYour most recent self-reflection ({age_min_r}m ago, "
                 f"confidence {r.insight_confidence:.0%}):\n"

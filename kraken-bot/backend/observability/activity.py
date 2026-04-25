@@ -7,7 +7,7 @@ survives restarts.  Call `activity.set_repo(repo)` once at startup
 after the repository is available.
 """
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List
 
 
@@ -34,7 +34,7 @@ class ActivityLog:
 
     def _add(self, level: str, message: str, detail: str = "") -> None:
         entry = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "level": level,
             "message": message,
             "detail": detail,

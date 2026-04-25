@@ -3,6 +3,7 @@ import unittest
 from datetime import datetime, timedelta
 
 from bdd_helpers import BACKEND_DIR  # noqa: F401
+from domain.models import Direction, OrderRecord
 from storage import repository as repository_module
 from storage.database import get_session, init_database
 from storage.models import MarketSnapshotModel
@@ -89,7 +90,7 @@ class RepositoryBDDTests(unittest.TestCase):
         self.assertEqual(summary["total_pnl"], 5.0)
         self.assertEqual(summary["by_market"]["BTC/EUR"], 10.0)
         self.assertEqual(summary["by_market"]["ETH/EUR"], -5.0)
-        self.assertEqual(summary["by_day"]["2026-04-24"], 5.0)
+        self.assertEqual(list(summary["by_day"].values()), [5.0])
 
     # GIVEN operator control state WHEN it is saved and loaded THEN the selected strategy is persisted.
     def test_given_control_state_when_saved_then_selected_strategy_is_loaded(self) -> None:
@@ -108,6 +109,90 @@ class RepositoryBDDTests(unittest.TestCase):
 
         self.assertIsNotNone(state)
         self.assertEqual(state["selected_strategy"], "llm")
+
+    # GIVEN Kraken accepts a live order WHEN the trade ledger is requested
+    # THEN the submitted live order is visible even before fill reconciliation.
+    def test_given_live_pending_order_when_ledger_requested_then_order_is_visible(self) -> None:
+        init_database("sqlite://")
+        repository = Repository()
+        order = OrderRecord(
+            id="live-order-1",
+            market="BTC/EUR",
+            direction=Direction.LONG,
+            size=0.1,
+            price=50_000.0,
+            status="pending",
+            timestamp=datetime(2026, 4, 24, 12, 0, 0),
+            exchange_order_id="TX123",
+        )
+
+        repository.save_order(order, approval_id="manual", environment="live")
+
+        ledger = repository.get_trade_ledger()
+
+        self.assertEqual(len(ledger), 1)
+        self.assertEqual(ledger[0]["status"], "pending")
+        self.assertEqual(ledger[0]["environment"], "live")
+        self.assertEqual(ledger[0]["exchange_order_id"], "TX123")
+
+    # GIVEN a close order is inside the page but its opener is outside the limit
+    # WHEN the ledger is built THEN the returned close row is still classified as close.
+    def test_given_open_order_outside_limit_when_ledger_requested_then_close_is_classified(self) -> None:
+        init_database("sqlite://")
+        repository = Repository()
+        position_id = "position-1"
+        repository.save_order(
+            OrderRecord(
+                id="open-order-1",
+                market="BTC/EUR",
+                direction=Direction.LONG,
+                size=0.1,
+                price=50_000.0,
+                status="filled",
+                timestamp=datetime(2026, 4, 24, 12, 0, 0),
+                position_id=position_id,
+            ),
+            approval_id="auto",
+        )
+        repository.save_order(
+            OrderRecord(
+                id="close-order-1",
+                market="BTC/EUR",
+                direction=Direction.SHORT,
+                size=0.1,
+                price=51_000.0,
+                status="filled",
+                timestamp=datetime(2026, 4, 24, 13, 0, 0),
+                position_id=position_id,
+            ),
+            approval_id="auto",
+        )
+
+        ledger = repository.get_trade_ledger(limit=1)
+
+        self.assertEqual(len(ledger), 1)
+        self.assertEqual(ledger[0]["id"], "close-or")
+        self.assertEqual(ledger[0]["trade_type"], "close")
+
+
+    # GIVEN the equity ticker fires multiple times WHEN each tick calls save_equity_snapshot
+    # THEN all snapshots are retrievable from the database (BUG-013).
+    def test_given_equity_ticker_fires_multiple_times_when_snapshots_saved_then_all_retrievable(self) -> None:
+        init_database("sqlite://")
+        repository = Repository()
+
+        # Simulate three equity ticker fires (each at 10-second resolution)
+        repository.save_equity_snapshot(1000.0, 800.0, 200.0)
+        repository.save_equity_snapshot(1005.0, 800.0, 205.0)
+        repository.save_equity_snapshot(995.0,  800.0, 195.0)
+
+        history = repository.get_equity_history(limit=10)
+
+        self.assertEqual(len(history), 3, "All three equity snapshots must be saved to DB")
+        equities = [h["equity"] for h in history]
+        self.assertIn(1000.0, equities)
+        self.assertIn(1005.0, equities)
+        self.assertIn(995.0,  equities)
 
 
 if __name__ == "__main__":

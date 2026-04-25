@@ -170,6 +170,7 @@ async def close_position(
     position_id: str,
     market_price: float,
     environment: str = "paper",
+    approval_request_id: str = "stop_loss",
 ) -> Optional[OrderRecord]:
 ```
 
@@ -190,6 +191,10 @@ Unlike `execute()`, this targets a specific position by ID. Used by the stop-los
 ---
 
 ## `record_closed_trade()`
+
+`close_position()` is called only after the stop-loss loop has checked `stop_loss_triggered(position_id, market_price, stop_loss_pct)`. That helper compares the current price with the entry price and returns `True` only when the position is losing by at least the configured percentage. Trailing high/low metadata is not used for `stop_loss` exits.
+
+Manual UI closes also use `close_position()`, but pass `approval_request_id="manual_close"` so the trade ledger is not labelled as a stop-loss.
 
 Called after `execute()` or `close_position()` to write a `SignalOutcomeModel` row. This is the source of truth for the learning system and LLM reflection.
 

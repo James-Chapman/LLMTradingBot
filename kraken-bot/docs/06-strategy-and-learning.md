@@ -77,14 +77,14 @@ Each indicator casts a vote: `+1` (agrees with signal direction), `−1` (oppose
 `votes` = sum of all individual votes (range: −9 to +9)  
 `available` = count of indicators that cast a non-neutral opinion
 
-#### 4. Indicator Coverage Gate
+#### 4. Indicator Support Gate
 
 ```python
-if available < 6:
-    continue    # not enough independent confirmation
+if supporting < 6:
+    continue    # not enough indicators agree with the signal direction
 ```
 
-At least 6 indicators must cast a non-neutral vote before the strategy can emit a trade idea. This prevents momentum-only or thinly confirmed signals from reaching risk review or execution.
+At least 6 indicators must agree with the proposed trade direction before the strategy can emit a trade idea. A signal with 9 available indicators but only 5 supporting and 4 opposing is blocked.
 
 #### 5. Consensus Gate
 
@@ -93,7 +93,7 @@ if votes < 1:
     continue    # more indicators oppose than support
 ```
 
-Once the 6-indicator coverage gate is met, the net vote must be positive (`≥ 1`).
+Once the 6-indicator support gate is met, the net vote must also be positive (`>= 1`).
 
 #### 6. Confidence Calculation
 
@@ -142,13 +142,15 @@ TradeIdea(
     strategy_id = "combined",
     market      = symbol,
     direction   = direction,
-    thesis      = "Momentum +0.42% | RSI 38 | EMA bullish | MACD bullish | consensus +4/7",
+    thesis      = "Momentum +0.42% | RSI 38 | EMA bullish | MACD bullish | support 6/7 (net +5)",
     supporting_signals = {
         "momentum":             0.00421,
         "news_sentiment":       0.0,
         "current_price":        85420.0,
         "previous_price":       85061.0,
         "indicator_votes":      4,
+        "indicators_supporting": 6,
+        "indicators_opposing":  1,
         "indicators_available": 7,
         "rsi_14":               38.0,
         "ema_cross":            "bullish",
@@ -304,7 +306,7 @@ Strategy base confidence
 |---|---|---|
 | Momentum minimum | 0.2% | No signal generated |
 | Hard filter | RSI ≥80 / ≤20, BB ≥95% / ≤5% | Signal blocked |
-| Indicator coverage gate | 6 non-neutral indicators | Signal discarded if fewer are available |
+| Indicator support gate | 6 agreeing indicators | Signal discarded if fewer support the trade direction |
 | Consensus gate | net votes < 1 | Signal discarded |
 | Confidence minimum (strategy) | 20% | Signal discarded |
 | Confidence minimum (fully_automated) | 65% (configurable) | Signal skipped |
