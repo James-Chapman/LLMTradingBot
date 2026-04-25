@@ -1,5 +1,9 @@
 # LLMTradingBot
 
+### // This project is still in development
+
+---
+
 LLMTradingBot is a self-hosted cryptocurrency trading bot for Kraken spot markets. It collects Kraken market data, generates strategy signals, optionally asks a local Ollama LLM to analyse or veto those signals, applies risk controls, and exposes a FastAPI-powered dashboard for monitoring and operator control.
 
 The bot is designed to run safely in paper mode first. Live trading is supported for Kraken, but only after you provide Kraken API credentials and explicitly enable live execution.
