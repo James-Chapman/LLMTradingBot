@@ -10,7 +10,7 @@ from typing import Callable, Sequence
 def project_venv_python(main_file: str | Path) -> Path:
     """Return the expected project virtual-environment Python executable."""
     backend_dir = Path(main_file).resolve().parent
-    repo_root = backend_dir.parents[1]
+    repo_root = backend_dir.parent
     if os.name == "nt":
         return repo_root / ".venv" / "Scripts" / "python.exe"
     return repo_root / ".venv" / "bin" / "python"
@@ -90,6 +90,6 @@ def dependency_error_message(exc: ModuleNotFoundError, main_file: str | Path) ->
         f"Missing Python dependency: {package_name}\n"
         f"Expected project interpreter: {venv_python}\n"
         "Run setup.bat from the repository root, or install dependencies with:\n"
-        f"  {venv_python} -m pip install -r {venv_python.parents[2] / 'kraken-bot' / 'requirements.txt'}\n"
+        f"  {venv_python} -m pip install -r {venv_python.parents[2] / 'requirements.txt'}\n"
         "If you are starting from an IDE, select the repository .venv interpreter."
     )

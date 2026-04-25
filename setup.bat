@@ -7,11 +7,11 @@ title Kraken Bot — Setup
 :: ─────────────────────────────────────────────────────────────────────────────
 set ROOT=%~dp0
 set VENV_DIR=%ROOT%.venv
-set BACKEND_DIR=%ROOT%kraken-bot\backend
-set REQUIREMENTS=%ROOT%kraken-bot\requirements.txt
+set BACKEND_DIR=%ROOT%backend
+set REQUIREMENTS=%ROOT%requirements.txt
 set ENV_FILE=%BACKEND_DIR%\.env
 set ENV_TEMPLATE=%BACKEND_DIR%\.env.example
-set DOCS_DIR=%ROOT%kraken-bot\docs
+set DOCS_DIR=%ROOT%docs
 set OLLAMA_MODEL=phi3:mini
 
 :: ─────────────────────────────────────────────────────────────────────────────

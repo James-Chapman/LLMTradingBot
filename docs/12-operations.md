@@ -17,21 +17,21 @@
 
 ### 1. Clone and enter the project
 
-```bash
-cd C:\Users\retro\Documents\TradingBot\kraken-bot
+```powershell
+cd C:\dev\LLMTradingBot
 ```
 
 ### 2. Create a virtual environment
 
-```bash
+```powershell
 python -m venv .venv
-.venv\Scripts\activate          # Windows
+.\.venv\Scripts\activate        # Windows
 # source .venv/bin/activate     # macOS/Linux
 ```
 
 ### 3. Install dependencies
 
-```bash
+```powershell
 pip install -r requirements.txt
 ```
 
@@ -81,17 +81,18 @@ On Windows, the preferred path is to run the repository launcher from `C:\dev\LL
 
 The launcher starts Ollama when available, creates `.venv` if it is missing, hashes `requirements.txt`, updates the virtual environment when dependencies are stale or key imports fail, and runs `backend\main.py` with `.venv\Scripts\python.exe` explicitly. This avoids accidentally starting the bot with the system Python installation.
 
-From `kraken-bot`, start the app with the project virtual environment:
+From the project root, start the app with the project virtual environment:
 
 ```powershell
 cd backend
-..\..\.venv\Scripts\python.exe main.py
+..\.venv\Scripts\python.exe main.py
 ```
 
 Or through Uvicorn directly:
 
 ```powershell
-..\..\.venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8000
+cd backend
+..\.venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
 If `main.py` is started with the system Python, startup attempts to re-execute itself with the repository `.venv` interpreter before importing application dependencies. If `.venv` is missing or incomplete, run `launch.bat` or `setup.bat` from the repository root.
@@ -115,10 +116,10 @@ The dashboard is available at: `http://127.0.0.1:8000`
 
 The test suite uses Python's standard `unittest` runner and BDD-style test names.
 
-From `kraken-bot/`:
+From the project root:
 
 ```bash
-..\.venv\Scripts\python.exe -m unittest discover -s tests
+.\.venv\Scripts\python.exe -m unittest discover -s tests
 ```
 
 With an activated virtual environment:
@@ -379,7 +380,8 @@ Ollama is not running or not reachable at `OLLAMA_URL`. Start Ollama with `ollam
 The bot was started with a Python interpreter that does not have the project dependencies installed. Use `launch.bat`, or run:
 
 ```powershell
-C:\dev\LLMTradingBot\.venv\Scripts\python.exe C:\dev\LLMTradingBot\kraken-bot\backend\main.py
+cd C:\dev\LLMTradingBot\backend
+C:\dev\LLMTradingBot\.venv\Scripts\python.exe main.py
 ```
 
 If `.venv` is missing or still lacks dependencies, run `launch.bat` from `C:\dev\LLMTradingBot`; it will create or update the virtual environment before starting the bot. `setup.bat` remains available for a full first-time setup.

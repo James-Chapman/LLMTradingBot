@@ -5,9 +5,9 @@ set SCRIPT_DIR=%~dp0
 set VENV_DIR=%SCRIPT_DIR%.venv
 set VENV_ACTIVATE=%VENV_DIR%\Scripts\activate.bat
 set VENV_PYTHON=%VENV_DIR%\Scripts\python.exe
-set REQUIREMENTS=%SCRIPT_DIR%kraken-bot\requirements.txt
+set REQUIREMENTS=%SCRIPT_DIR%requirements.txt
 set VENV_STAMP=%VENV_DIR%\.requirements.sha256
-set BACKEND_DIR=%SCRIPT_DIR%kraken-bot\backend
+set BACKEND_DIR=%SCRIPT_DIR%backend
 set URL=http://127.0.0.1:8000
 
 if not exist "%REQUIREMENTS%" (

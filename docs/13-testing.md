@@ -4,10 +4,10 @@ The project now has a lightweight `unittest` suite under `tests/`. Tests are wri
 
 ## Run Tests
 
-From `kraken-bot/`:
+From the project root:
 
 ```powershell
-..\.venv\Scripts\python.exe -m unittest discover -s tests
+.\.venv\Scripts\python.exe -m unittest discover -s tests
 ```
 
 If you use an activated virtual environment instead:
@@ -21,19 +21,19 @@ python -m unittest discover -s tests
 Install developer tooling from `requirements-dev.txt`:
 
 ```powershell
-..\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 ```
 
-Run Ruff from `kraken-bot/`:
+Run Ruff from the project root:
 
 ```powershell
-..\.venv\Scripts\python.exe -m ruff check .
+.\.venv\Scripts\python.exe -m ruff check .
 ```
 
 To apply safe automatic fixes, such as import ordering:
 
 ```powershell
-..\.venv\Scripts\python.exe -m ruff check . --fix
+.\.venv\Scripts\python.exe -m ruff check . --fix
 ```
 
 ## Coverage Focus

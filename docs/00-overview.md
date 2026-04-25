@@ -78,54 +78,55 @@ The primary design goals are:
 
 ## Repository Layout
 
-```
-TradingBot/
-├── launch.bat                      Windows launcher (Ollama + uvicorn)
-└── kraken-bot/
-    ├── docs/                       ← this folder
-    ├── tests/                      BDD-style unittest coverage
-    ├── backend/
-    │   ├── main.py                 FastAPI app, background loops, all endpoints
-    │   ├── .env                    Runtime configuration (not committed)
-    │   ├── analysis/
-    │   │   └── indicators.py       numpy-assisted technical indicators
-    │   ├── approval/
-    │   │   └── service.py          In-memory approval queue with TTL
-    │   ├── config/
-    │   │   └── settings.py         Pydantic settings model
-    │   ├── control/
-    │   │   └── state.py            Emergency stop + market toggles + strategy selection
-    │   ├── domain/
-    │   │   └── models.py           Pydantic domain models (source of truth)
-    │   ├── execution/
-    │   │   ├── paper.py            Paper trading engine
-    │   │   └── kraken.py           Live Kraken order engine
-    │   ├── ingestion/
-    │   │   ├── kraken_adapter.py   Kraken ticker + OHLC adapter
-    │   │   └── news_adapter.py     RSS news ingestion
-    │   ├── llm/
-    │   │   ├── client.py           Ollama async REST client
-    │   │   └── analyser.py         Signal analysis, briefing, reflection
-    │   ├── observability/
-    │   │   ├── activity.py         Event log — in-memory + DB-persisted
-    │   │   └── logging.py          JSON structured logging setup
-    │   ├── risk/
-    │   │   └── engine.py           Universal risk management
-    │   ├── storage/
-    │   │   ├── database.py         Engine creation + auto-migrations
-    │   │   ├── models.py           SQLAlchemy ORM table definitions
-    │   │   └── repository.py       All DB read/write operations
-    │   ├── strategy/
-    │   │   ├── basic_strategy.py   Momentum signal generator
-    │   │   ├── indicator_only_strategy.py Technical-indicator-only signal generator
-    │   │   ├── llm_only_strategy.py LLM-led signal generator
-    │   │   └── learner.py          Exponential-decay performance learner
-    │   └── universe/
-    │       └── resolver.py         Tradable market universe builder
-    └── frontend/
-        ├── index.html              Main dashboard (Alpine.js SPA)
-        ├── approvals.html          Dedicated approval queue page
-        └── sw.js                   Service Worker (network-first caching + live push)
+```text
+LLMTradingBot/
+|-- launch.bat                      Windows launcher (Ollama + uvicorn)
+|-- requirements.txt                Runtime dependencies
+|-- requirements-dev.txt            Developer tooling
+|-- docs/                           Project documentation
+|-- tests/                          BDD-style unittest coverage
+|-- backend/
+|   |-- main.py                     FastAPI app, background loops, all endpoints
+|   |-- .env                        Runtime configuration (not committed)
+|   |-- analysis/
+|   |   `-- indicators.py           numpy-assisted technical indicators
+|   |-- approval/
+|   |   `-- service.py              Approval queue with TTL
+|   |-- config/
+|   |   `-- settings.py             Pydantic settings model
+|   |-- control/
+|   |   `-- state.py                Emergency stop, market toggles, strategy selection
+|   |-- domain/
+|   |   `-- models.py               Pydantic domain models
+|   |-- execution/
+|   |   |-- paper.py                Paper trading engine
+|   |   `-- kraken.py               Live Kraken order engine
+|   |-- ingestion/
+|   |   |-- kraken_adapter.py       Kraken ticker and OHLC adapter
+|   |   `-- news_adapter.py         RSS news ingestion
+|   |-- llm/
+|   |   |-- client.py               Ollama async REST client
+|   |   `-- analyser.py             Signal analysis, briefing, reflection
+|   |-- observability/
+|   |   |-- activity.py             Event log, memory and DB persisted
+|   |   `-- logging.py              JSON structured logging setup
+|   |-- risk/
+|   |   `-- engine.py               Universal risk management
+|   |-- storage/
+|   |   |-- database.py             Engine creation and auto-migrations
+|   |   |-- models.py               SQLAlchemy ORM table definitions
+|   |   `-- repository.py           All DB read/write operations
+|   |-- strategy/
+|   |   |-- basic_strategy.py       Momentum signal generator
+|   |   |-- indicator_only_strategy.py
+|   |   |-- llm_only_strategy.py
+|   |   `-- learner.py              Exponential-decay performance learner
+|   `-- universe/
+|       `-- resolver.py             Tradable market universe builder
+`-- frontend/
+    |-- index.html                  Main dashboard (Alpine.js SPA)
+    |-- approvals.html              Dedicated approval queue page
+    `-- sw.js                       Service Worker
 ```
 
 ---

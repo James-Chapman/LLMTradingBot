@@ -1,6 +1,7 @@
 """BDD coverage for startup environment bootstrap helpers."""
 
 import unittest
+import os
 from pathlib import Path
 
 from bdd_helpers import BACKEND_DIR  # noqa: F401
@@ -22,6 +23,9 @@ class BootstrapBDDTests(unittest.TestCase):
 
         result = project_venv_python(main_file)
 
+        expected = Path(BACKEND_DIR).parent / ".venv"
+        expected = expected / "Scripts" / "python.exe" if os.name == "nt" else expected / "bin" / "python"
+        self.assertEqual(expected, result)
         self.assertTrue(result.exists())
         self.assertIn(".venv", result.parts)
 
@@ -117,7 +121,7 @@ class BootstrapBDDTests(unittest.TestCase):
     # GIVEN the Windows launcher WHEN its command is inspected
     # THEN it starts main.py with the project venv interpreter explicitly.
     def test_given_windows_launcher_when_inspected_then_project_venv_python_is_used(self) -> None:
-        launcher = Path(BACKEND_DIR).parents[1] / "launch.bat"
+        launcher = Path(BACKEND_DIR).parent / "launch.bat"
 
         content = launcher.read_text(encoding="utf-8")
 
@@ -128,7 +132,7 @@ class BootstrapBDDTests(unittest.TestCase):
     # GIVEN the Windows launcher WHEN inspected
     # THEN it creates or updates the venv from requirements before launching.
     def test_given_windows_launcher_when_inspected_then_venv_is_checked_and_updated(self) -> None:
-        launcher = Path(BACKEND_DIR).parents[1] / "launch.bat"
+        launcher = Path(BACKEND_DIR).parent / "launch.bat"
 
         content = launcher.read_text(encoding="utf-8")
 
