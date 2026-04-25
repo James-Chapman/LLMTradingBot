@@ -56,6 +56,59 @@ class PerformanceLearnerBDDTests(unittest.TestCase):
         self.assertEqual(summary["mean_loss_pnl"], -10.0)
         self.assertGreater(summary["quality_score"], 0.0)
 
+    # NUMPY-003: GIVEN 20 outcome records WHEN rolling win rate (last 10) is computed
+    # THEN the result equals the manually counted value.
+    def test_given_20_outcomes_when_rolling_win_rate_last_10_computed_then_matches_manual_count(self) -> None:
+        learner = PerformanceLearner()
+        # Record 20 outcomes: 10 wins then 10 losses (newest = last recorded)
+        for _ in range(10):
+            learner.record_outcome("combined", "BTC/EUR", "long", pnl=-5.0)  # oldest 10 = losses
+        for _ in range(10):
+            learner.record_outcome("combined", "BTC/EUR", "long", pnl=10.0)  # newest 10 = wins
+
+        result = learner.rolling_win_rate("combined", "BTC/EUR", "long", n=10)
+
+        # Last 10 recorded are all wins
+        self.assertAlmostEqual(result, 1.0, places=6)
+
+    # NUMPY-003: GIVEN outcome P&L values WHEN percentiles are requested
+    # THEN 25th, 50th, and 75th percentile outputs match reference values.
+    def test_given_outcome_pnl_values_when_percentiles_requested_then_match_reference(self) -> None:
+        import statistics
+        learner = PerformanceLearner()
+        pnl_values = [10.0, -5.0, 8.0, -3.0, 12.0, 6.0, -1.0, 15.0, -8.0, 4.0]
+        for p in pnl_values:
+            learner.record_outcome("combined", "BTC/EUR", "long", pnl=p)
+
+        result = learner.pnl_percentiles("combined", "BTC/EUR", "long")
+        quartiles = statistics.quantiles(pnl_values, n=4)
+
+        self.assertIn("p25", result)
+        self.assertIn("p50", result)
+        self.assertIn("p75", result)
+        self.assertAlmostEqual(result["mean"], statistics.mean(pnl_values), places=6)
+        self.assertAlmostEqual(result["p25"], quartiles[0], places=6)
+        self.assertAlmostEqual(result["p50"], statistics.median(pnl_values), places=6)
+        self.assertAlmostEqual(result["p75"], quartiles[2], places=6)
+
+    # NUMPY-003: GIVEN no outcomes for a key WHEN rolling win rate is requested
+    # THEN zero is returned without raising.
+    def test_given_no_outcomes_when_rolling_win_rate_requested_then_zero_returned(self) -> None:
+        learner = PerformanceLearner()
+
+        result = learner.rolling_win_rate("combined", "BTC/EUR", "long", n=10)
+
+        self.assertEqual(result, 0.0)
+
+    # NUMPY-003: GIVEN no outcomes for a key WHEN pnl_percentiles is requested
+    # THEN empty dict is returned without raising.
+    def test_given_no_outcomes_when_pnl_percentiles_requested_then_empty_dict_returned(self) -> None:
+        learner = PerformanceLearner()
+
+        result = learner.pnl_percentiles("combined", "BTC/EUR", "long")
+
+        self.assertEqual(result, {})
+
 
 if __name__ == "__main__":
     unittest.main()

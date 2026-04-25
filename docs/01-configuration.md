@@ -1,6 +1,6 @@
 # Configuration Reference
 
-All runtime configuration is managed by `backend/config/settings.py` using Pydantic v2's `BaseSettings`. Values are read from environment variables or from a `.env` file in the backend working directory. Unknown keys are silently ignored (`extra="ignore"`). Keys are case-insensitive.
+All runtime configuration is managed by `backend/config/settings.py` using Pydantic v2's `BaseSettings`. Values are read from environment variables or from a `.env` file in the backend working directory. Unknown keys are silently ignored (`extra="ignore"`). Keys are case-sensitive, so use the uppercase names shown here.
 
 ---
 
@@ -11,7 +11,7 @@ All runtime configuration is managed by `backend/config/settings.py` using Pydan
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class BotSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
 ```
 
 A singleton instance `settings` is created at module level and imported everywhere.
@@ -53,6 +53,9 @@ A singleton instance `settings` is created at module level and imported everywhe
 | `STOP_LOSS_PCT` | float | `0.05` | Fraction loss at which a position is automatically closed (5%) |
 | `FEE_AND_SLIPPAGE` | float | `0.0036` | Combined cost estimate: Kraken taker fee (0.26%) + one-way slippage (0.1%) |
 | `MIN_SIGNAL_CONFIDENCE` | float | `0.65` | Minimum signal confidence required to execute a trade in fully-automated mode. Signals below this threshold are skipped and logged. Has no effect in manual or semi-automated modes. |
+| `LLM_VETO_THRESHOLD` | float | `0.70` | If the LLM returns a `confidence_scale` below this value the signal is vetoed. Set to `0.0` to disable the veto. |
+| `MIN_24H_VOLUME` | float | `0.0` | Minimum 24-hour market volume required by the risk engine. `0.0` disables the liquidity gate. |
+| `ALERT_WEBHOOK_URL` | str \| None | `None` | Optional webhook URL for emergency stop, daily loss, stop-loss, and restart alerts. Blank disables alerts. |
 
 ### Trading Modes
 
@@ -72,6 +75,12 @@ Both fields are validated against a regex pattern in the Pydantic model. Invalid
 
 In paper mode these fields are ignored. The Kraken adapter is used for read-only market data regardless of environment.
 
+### News Sources
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `NEWS_SOURCES` | list[str] | `["CoinDesk", "CoinNews", "CoinWeek"]` | News/RSS source names to ingest. Use JSON array syntax in `.env` files. |
+
 ### Market Universe
 
 | Key | Type | Default | Description |
@@ -89,7 +98,7 @@ Market symbols use Kraken's public format (`BASE/QUOTE`). The adapter internally
 | `OLLAMA_URL` | str | `"http://localhost:11434"` | Base URL of the Ollama REST API |
 | `OLLAMA_MODEL` | str | `"phi3:mini"` | Model name as registered in Ollama |
 | `OLLAMA_TIMEOUT` | int | `60` | Per-request timeout in seconds. Needs to be high (≥30s) on first call as the model loads into VRAM |
-| `LLM_VETO_THRESHOLD` | float | `0.70` | If the LLM returns a `confidence_scale` below this value the signal is skipped entirely (vetoed). Set to `0` to disable. Only fires when the LLM is available — if Ollama is unreachable the veto never triggers. |
+| `LLM_ONLY_MAX_CONCURRENCY` | int | `3` | Maximum number of concurrent per-market LLM-only recommendations per strategy tick. |
 
 ### Logging
 
@@ -102,43 +111,7 @@ Market symbols use Kraken's public format (`BASE/QUOTE`). The adapter internally
 
 ## Example `.env` File
 
-```dotenv
-# ── Trading behaviour ──────────────────────────────────
-TRADING_MODE=semi_automated
-TRADING_ENVIRONMENT=paper
-STARTING_CAPITAL=1000.0
-BASE_CURRENCY=EUR
-
-# ── Risk limits ────────────────────────────────────────
-MAX_LOSS_PER_TRADE_PERCENT=3.0
-MAX_DAILY_LOSS_PERCENT=5.0
-MIN_TRADE_SIZE=50.0
-STOP_LOSS_PCT=0.05
-FEE_AND_SLIPPAGE=0.0036
-MIN_SIGNAL_CONFIDENCE=0.65
-
-# ── Markets ────────────────────────────────────────────
-FIXED_MARKETS=["BTC/EUR","ETH/EUR","SOL/EUR","ADA/EUR"]
-
-# ── Kraken API (required for live mode only) ───────────
-KRAKEN_API_KEY=
-KRAKEN_API_SECRET=
-
-# ── Local LLM ──────────────────────────────────────────
-OLLAMA_URL=http://localhost:11434
-OLLAMA_MODEL=phi3:mini
-OLLAMA_TIMEOUT=60
-LLM_VETO_THRESHOLD=0.70
-
-# ── Server ─────────────────────────────────────────────
-HOST=127.0.0.1
-PORT=8000
-DEBUG=false
-
-# ── Logging ────────────────────────────────────────────
-LOG_LEVEL=INFO
-LOG_FILE=kraken_bot.log
-```
+The complete commented template lives at `backend/.env.example`. It contains every `BotSettings` option, uses parseable defaults, and documents operational impact for each setting. Copy it to `backend/.env`, then replace local values such as capital, markets, webhook URL, and Kraken credentials.
 
 ---
 

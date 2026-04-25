@@ -73,18 +73,28 @@ Ollama listens on `http://localhost:11434` by default. This matches `OLLAMA_URL`
 
 ## Starting the Bot
 
-From the project root with the virtual environment active:
+On Windows, the preferred path is to run the repository launcher from `C:\dev\LLMTradingBot`:
 
-```bash
+```powershell
+.\launch.bat
+```
+
+The launcher starts Ollama when available, creates `.venv` if it is missing, hashes `requirements.txt`, updates the virtual environment when dependencies are stale or key imports fail, and runs `backend\main.py` with `.venv\Scripts\python.exe` explicitly. This avoids accidentally starting the bot with the system Python installation.
+
+From `kraken-bot`, start the app with the project virtual environment:
+
+```powershell
 cd backend
-uvicorn main:app --host 127.0.0.1 --port 8000 --reload
+..\..\.venv\Scripts\python.exe main.py
 ```
 
-Or without auto-reload (production):
+Or through Uvicorn directly:
 
-```bash
-uvicorn main:app --host 127.0.0.1 --port 8000
+```powershell
+..\..\.venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8000
 ```
+
+If `main.py` is started with the system Python, startup attempts to re-execute itself with the repository `.venv` interpreter before importing application dependencies. If `.venv` is missing or incomplete, run `launch.bat` or `setup.bat` from the repository root.
 
 **What happens on startup:**
 
@@ -363,6 +373,16 @@ Normal at startup. The strategy loop requires 10 price ticks before generating s
 ### "LLM unavailable — using neutral defaults"
 
 Ollama is not running or not reachable at `OLLAMA_URL`. Start Ollama with `ollama serve`. The bot will continue without LLM confidence adjustment — signals use the base strategy confidence only.
+
+### `ModuleNotFoundError: No module named 'httpx'`
+
+The bot was started with a Python interpreter that does not have the project dependencies installed. Use `launch.bat`, or run:
+
+```powershell
+C:\dev\LLMTradingBot\.venv\Scripts\python.exe C:\dev\LLMTradingBot\kraken-bot\backend\main.py
+```
+
+If `.venv` is missing or still lacks dependencies, run `launch.bat` from `C:\dev\LLMTradingBot`; it will create or update the virtual environment before starting the bot. `setup.bat` remains available for a full first-time setup.
 
 ### "Daily loss limit reached"
 

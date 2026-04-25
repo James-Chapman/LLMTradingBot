@@ -180,7 +180,7 @@ TradeIdea(
 
 **Class:** `PerformanceLearner`
 
-Tracks historical trade outcomes per (strategy, market, direction) tuple and adjusts future signal confidence based on win rate. Recent outcomes are weighted more heavily than old ones.
+Tracks historical trade outcomes per (strategy, market, direction) tuple and adjusts future signal confidence using win rate and P&L magnitude. Recent outcomes are weighted more heavily than old ones, while rolling statistics and percentiles use numpy-backed vectors over the stored P&L history.
 
 ---
 
@@ -188,11 +188,15 @@ Tracks historical trade outcomes per (strategy, market, direction) tuple and adj
 
 ```python
 # Internal state
-_outcomes: Dict[str, List[float]]   # key → list of +1.0 (win) or -1.0 (loss)
+_stats: Dict[Tuple[str, str, str], _Stats]
+
+_Stats.pnl_history: List[float]     # chronological realised P&L values
+_Stats.weighted_wins: float         # exponentially decayed winning weight
+_Stats.weighted_total: float        # exponentially decayed total weight
 ```
 
-Key format: `f"{strategy_id}:{market}:{direction}"`  
-Example: `"combined:BTC/EUR:long"`
+Key format: `(strategy_id, market, direction)`  
+Example: `("combined", "BTC/EUR", "long")`
 
 ---
 
@@ -200,8 +204,13 @@ Example: `"combined:BTC/EUR:long"`
 
 ```python
 def record_outcome(self, strategy_id: str, market: str, direction: str, pnl: float) -> None:
-    key = f"{strategy_id}:{market}:{direction}"
-    self._outcomes[key].append(1.0 if pnl > 0 else -1.0)
+    key = (strategy_id, market, direction)
+    stats = self._stats[key]
+    stats.weighted_wins *= DECAY
+    stats.weighted_total *= DECAY
+    stats.weighted_total += 1.0
+    stats.weighted_wins += 1.0 if pnl > 0 else 0.0
+    stats.record_pnl(pnl)
 ```
 
 Called from `main.py` in three places:
@@ -215,27 +224,17 @@ Called from `main.py` in three places:
 
 ```python
 def adjust_confidence(self, strategy_id: str, market: str, direction: str, confidence: float) -> float:
-    key = f"{strategy_id}:{market}:{direction}"
-    outcomes = self._outcomes.get(key, [])
-    
-    if len(outcomes) < 5:
+    stats = self._stats.get((strategy_id, market, direction))
+    if stats is None or stats.raw_count < 5:
         return confidence   # insufficient data — no adjustment
-    
-    # Exponential decay weighting — recent trades count more
-    weights = [DECAY ** (len(outcomes) - 1 - i) for i in range(len(outcomes))]
-    weighted_win_rate = sum(w * (1 if o > 0 else 0) for w, o in zip(weights, outcomes)) / sum(weights)
-    
-    # Scale from [0, 1] win rate → [0.5, 1.5] confidence multiplier
-    scale = 0.5 + weighted_win_rate
-    return min(max(confidence * scale, 0.1), 0.95)
+
+    scale = 1.0 + (stats.quality_score() * 0.5)
+    return min(0.95, confidence * scale)
 ```
 
 **`DECAY = 0.92`** — each older trade is worth 92% of the next more recent one. After 10 trades, the oldest has weight `0.92^9 ≈ 0.47` relative to the newest.
 
-**Scale interpretation:**
-- 0% win rate → scale 0.5 → confidence halved
-- 50% win rate → scale 1.0 → confidence unchanged
-- 100% win rate → scale 1.5 → confidence × 1.5
+**Scale interpretation:** `quality_score()` blends decayed win rate with average win/loss magnitude. A strongly negative expectancy can halve confidence, neutral expectancy leaves it unchanged, and strongly positive expectancy can boost confidence by up to 50%.
 
 Confidence is clamped to [0.1, 0.95] after adjustment.
 
@@ -247,24 +246,47 @@ Confidence is clamped to [0.1, 0.95] after adjustment.
 def load_from_outcomes(self, outcomes: List[SignalOutcomeModel]) -> None:
 ```
 
-Called at startup with all historical `signal_outcomes` from the database. Populates `_outcomes` so the learner has history from previous sessions without requiring live trades.
+Called at startup with all historical `signal_outcomes` from the database. Populates `_stats` and chronological P&L history so the learner has history from previous sessions without requiring live trades.
+
+---
+
+### Rolling Statistics
+
+```python
+def rolling_win_rate(self, strategy_id: str, market: str, direction: str, n: int = 10) -> float:
+    pnl = np.asarray(stats.pnl_history, dtype=np.float64)
+    return float(np.mean(pnl[-n:] > 0.0))
+
+def pnl_percentiles(self, strategy_id: str, market: str, direction: str) -> Dict[str, float]:
+    pnl = np.asarray(stats.pnl_history, dtype=np.float64)
+    p25, p50, p75, p95 = np.percentile(pnl, [25, 50, 75, 95], method="weibull")
+```
+
+The summary API exposes `rolling_win_rate_10`, `average_pnl`, `median_pnl`, `pnl_p25`, `pnl_p75`, and `pnl_p95` alongside the existing win/loss averages and quality score.
 
 ---
 
 ### `summary()`
 
-Returns a dict for the `GET /api/learning` endpoint and dashboard:
+Returns rows for the `GET /api/learning` endpoint and dashboard:
 
 ```python
-{
-    "combined:BTC/EUR:long": {
-        "count":    15,
-        "win_rate": 0.60,
-        "weighted_win_rate": 0.63,
-        "scale":    1.13,
-    },
-    ...
-}
+[
+    {
+        "strategy": "combined",
+        "market": "BTC/EUR",
+        "direction": "long",
+        "trades": 15,
+        "win_rate": 0.63,
+        "rolling_win_rate_10": 0.70,
+        "average_pnl": 4.25,
+        "median_pnl": 3.80,
+        "pnl_p25": -1.50,
+        "pnl_p75": 8.90,
+        "pnl_p95": 15.20,
+        "quality_score": 0.18,
+    }
+]
 ```
 
 ---

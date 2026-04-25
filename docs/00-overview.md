@@ -72,6 +72,7 @@ The primary design goals are:
 | LLM | Ollama (local) — phi3:mini default | REST at localhost:11434 |
 | HTTP client | httpx (async) | Used for Ollama only |
 | Logging | Python `logging` → JSON + file | Structured; module-level |
+| Numeric compute | numpy | Indicator reductions, replay metrics, learner statistics |
 
 ---
 
@@ -87,7 +88,7 @@ TradingBot/
     │   ├── main.py                 FastAPI app, background loops, all endpoints
     │   ├── .env                    Runtime configuration (not committed)
     │   ├── analysis/
-    │   │   └── indicators.py       Pure-Python technical indicators
+    │   │   └── indicators.py       numpy-assisted technical indicators
     │   ├── approval/
     │   │   └── service.py          In-memory approval queue with TTL
     │   ├── config/
@@ -166,5 +167,5 @@ Every signal analysis prompt includes the LLM's own most recent hourly reflectio
 ### 4. Complete State Persistence
 All dashboard-relevant state — positions, equity, price history, news, trade signals, risk rejections, activity log, control toggles, and LLM briefings/reflections — is stored in a local SQLite file. The bot can survive a restart and fully recover from the database with no loss of operational context.
 
-### 5. Pure-Python Indicators
-Technical indicators (`analysis/indicators.py`) have no external dependencies (no pandas, numpy, or ta-lib). This keeps the installation simple and the computation transparent.
+### 5. numpy-Assisted Indicators
+Technical indicators (`analysis/indicators.py`) use numpy for scalar reductions such as mean, standard deviation, min/max, and close-to-close absolute movement. EMA series remain explicit loops because each EMA value depends on the previous value.

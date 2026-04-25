@@ -1,8 +1,22 @@
 """BDD coverage for pure technical indicator calculations."""
+import json
+import math
 import unittest
 
 from bdd_helpers import BACKEND_DIR  # noqa: F401
-from analysis.indicators import _ema_series, atr_ohlc, compute_all, macd, price_changes, rsi, stochastic_ohlc
+from analysis.indicators import (
+    _ema_series,
+    atr,
+    atr_ohlc,
+    bollinger_bands,
+    compute_all,
+    macd,
+    price_changes,
+    rsi,
+    stochastic,
+    williams_r,
+    stochastic_ohlc,
+)
 
 
 class IndicatorBDDTests(unittest.TestCase):
@@ -116,6 +130,82 @@ class IndicatorBDDTests(unittest.TestCase):
         self.assertIn("line", result)
         self.assertIn("signal", result)
         self.assertIn("histogram", result)
+
+    # NUMPY-001: GIVEN a price list WHEN bollinger_bands is called
+    # THEN the result matches the pure-Python reference to 8 decimal places.
+    def test_given_price_list_when_bollinger_bands_called_then_matches_reference_to_8dp(self) -> None:
+        prices = [100.0 + i * 0.5 + (i % 3) * 0.2 for i in range(25)]
+        period = 20
+        window = prices[-period:]
+        mean_ref = sum(window) / period
+        variance_ref = sum((p - mean_ref) ** 2 for p in window) / period
+        std_ref = math.sqrt(variance_ref)
+        upper_ref = round(mean_ref + 2 * std_ref, 2)
+        lower_ref = round(mean_ref - 2 * std_ref, 2)
+        middle_ref = round(mean_ref, 2)
+
+        result = bollinger_bands(prices)
+
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result["upper"], upper_ref, places=8)
+        self.assertAlmostEqual(result["middle"], middle_ref, places=8)
+        self.assertAlmostEqual(result["lower"], lower_ref, places=8)
+
+    # NUMPY-001: GIVEN a price list WHEN rsi is called
+    # THEN the result matches the pure-Python reference to 1 decimal place.
+    def test_given_price_list_when_rsi_called_then_matches_pure_python_reference(self) -> None:
+        prices = [100.0, 101.0, 100.5, 102.0, 101.2, 103.0, 102.4, 104.0, 103.1, 105.0,
+                  104.2, 106.0, 105.5, 107.0, 106.1, 108.0, 107.4, 109.0, 108.3, 110.0]
+        period = 14
+        changes = [prices[i] - prices[i - 1] for i in range(1, len(prices))]
+        gains = [max(0.0, c) for c in changes]
+        losses = [max(0.0, -c) for c in changes]
+        avg_gain = sum(gains[:period]) / period
+        avg_loss = sum(losses[:period]) / period
+        for i in range(period, len(changes)):
+            avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+            avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+        rsi_ref = round(100.0 - 100.0 / (1.0 + avg_gain / avg_loss), 1)
+
+        result = rsi(prices)
+
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result, rsi_ref, places=1)
+
+    # NUMPY-001: GIVEN a price list WHEN atr, williams_r, and stochastic are called
+    # THEN results match pure-Python reference values within floating-point tolerance.
+    def test_given_price_list_when_atr_williams_r_stochastic_called_then_match_reference(self) -> None:
+        prices = [100.0 + i * 0.5 - (i % 3) * 0.4 for i in range(20)]
+        period = 14
+        window_atr = prices[-(period + 1):]
+        trs_ref = [abs(window_atr[i] - window_atr[i - 1]) for i in range(1, len(window_atr))]
+        atr_ref = round(sum(trs_ref) / period, 6)
+        window_wr = prices[-period:]
+        high_ref = max(window_wr)
+        low_ref = min(window_wr)
+        wr_ref = round((high_ref - window_wr[-1]) / (high_ref - low_ref) * -100.0, 1)
+
+        atr_result = atr(prices)
+        wr_result = williams_r(prices)
+        stoch_result = stochastic(prices)
+
+        self.assertAlmostEqual(atr_result, atr_ref, places=6)
+        self.assertAlmostEqual(wr_result, wr_ref, places=1)
+        self.assertIsNotNone(stoch_result)
+        self.assertIn("k", stoch_result)
+        self.assertIn("d", stoch_result)
+
+    # NUMPY-004: GIVEN compute_all is called with a plain list
+    # WHEN the result is serialised with json.dumps THEN no TypeError is raised.
+    def test_given_compute_all_output_when_json_serialized_then_no_type_error(self) -> None:
+        prices = [100.0 + i * 0.5 for i in range(50)]
+
+        result = compute_all(prices)
+
+        try:
+            json.dumps(result)
+        except TypeError as exc:
+            self.fail(f"compute_all() output is not JSON-serialisable: {exc}")
 
 
 if __name__ == "__main__":

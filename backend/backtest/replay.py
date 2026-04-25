@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import numpy as np
+
 from analysis.indicators import compute_all
 from domain.models import ExecutionIntent, OrderRecord
 from execution.paper import PaperExecutionEngine
@@ -30,14 +32,16 @@ class ReplayResult:
     max_drawdown: float
     trade_count: int
     win_rate: float
+    profit_factor: float = 0.0
     orders: List[OrderRecord] = field(default_factory=list)
     signal_decisions: List[Dict[str, Any]] = field(default_factory=list)
-    equity_curve: List[float] = field(default_factory=list)
+    equity_curve: Any = field(default_factory=list)
 
 
 # Convert a replay result to JSON-serialisable report data.
 def replay_result_to_dict(result: ReplayResult) -> Dict[str, Any]:
     """Return a JSON-serialisable replay report."""
+    equity_curve = np.asarray(result.equity_curve, dtype=np.float64).tolist()
     return {
         "summary": {
             "strategy_id": result.strategy_id,
@@ -48,6 +52,7 @@ def replay_result_to_dict(result: ReplayResult) -> Dict[str, Any]:
             "max_drawdown": result.max_drawdown,
             "trade_count": result.trade_count,
             "win_rate": result.win_rate,
+            "profit_factor": result.profit_factor,
         },
         "orders": [
             {
@@ -63,7 +68,7 @@ def replay_result_to_dict(result: ReplayResult) -> Dict[str, Any]:
             for order in result.orders
         ],
         "signals": result.signal_decisions,
-        "equity_curve": result.equity_curve,
+        "equity_curve": equity_curve,
     }
 
 
@@ -126,16 +131,26 @@ def _strategy_for(strategy_id: str):
 # Resample 5-minute candles into 15-minute candles using fixed 3-candle buckets.
 def resample_to_15m(candles: List[Dict[str, float]]) -> List[Dict[str, float]]:
     """Return 15-minute OHLC candles derived from 5-minute input candles."""
+    complete_count = (len(candles) // 3) * 3
+    if complete_count == 0:
+        return []
+
     result: List[Dict[str, float]] = []
-    for idx in range(0, len(candles) - 2, 3):
-        group = candles[idx:idx + 3]
+    groups = np.array_split(
+        np.asarray(candles[:complete_count], dtype=object),
+        complete_count // 3,
+    )
+    for group in groups:
+        highs = np.asarray([c["h"] for c in group], dtype=np.float64)
+        lows = np.asarray([c["l"] for c in group], dtype=np.float64)
+        volumes = np.asarray([c.get("v", 0.0) for c in group], dtype=np.float64)
         result.append({
             "t": group[-1].get("t", ""),
-            "o": group[0]["o"],
-            "h": max(c["h"] for c in group),
-            "l": min(c["l"] for c in group),
-            "c": group[-1]["c"],
-            "v": sum(c.get("v", 0.0) for c in group),
+            "o": float(group[0]["o"]),
+            "h": float(np.max(highs)),
+            "l": float(np.min(lows)),
+            "c": float(group[-1]["c"]),
+            "v": float(np.sum(volumes)),
         })
     return result
 
@@ -143,12 +158,67 @@ def resample_to_15m(candles: List[Dict[str, float]]) -> List[Dict[str, float]]:
 # Compute maximum drawdown from an equity curve.
 def _max_drawdown(equity_curve: List[float]) -> float:
     """Return the largest peak-to-trough drawdown as a positive cash value."""
-    peak = equity_curve[0] if equity_curve else 0.0
-    max_drawdown = 0.0
-    for equity in equity_curve:
-        peak = max(peak, equity)
-        max_drawdown = max(max_drawdown, peak - equity)
-    return max_drawdown
+    equity = np.asarray(equity_curve, dtype=np.float64)
+    if equity.size == 0:
+        return 0.0
+    peaks = np.maximum.accumulate(equity)
+    drawdowns = equity - peaks
+    return float(abs(np.min(drawdowns)))
+
+
+# Compute replay win rate and profit factor from realised trade P&L values.
+def _compute_trade_stats(pnl_values: List[float]) -> Dict[str, float]:
+    """Return numpy-backed trade statistics for realised P&L values."""
+    pnl = np.asarray(pnl_values, dtype=np.float64)
+    if pnl.size == 0:
+        return {"win_rate": 0.0, "profit_factor": 0.0}
+
+    wins = pnl > 0.0
+    losses = pnl < 0.0
+    win_rate = float(np.sum(wins) / pnl.size)
+    gross_profit = float(np.sum(pnl[wins]))
+    gross_loss = float(abs(np.sum(pnl[losses])))
+    if gross_loss == 0.0:
+        profit_factor = gross_profit if gross_profit > 0.0 else 0.0
+    else:
+        profit_factor = gross_profit / gross_loss
+    return {"win_rate": win_rate, "profit_factor": float(profit_factor)}
+
+
+# Extract per-position realised P&L values for replay close orders.
+def _closed_order_pnls(paper_engine: PaperExecutionEngine, close_orders: List[OrderRecord]) -> List[float]:
+    """Return realised P&L for each close order using paper engine close metadata."""
+    pnl_values: List[float] = []
+    for order in close_orders:
+        if not order.position_id:
+            continue
+        meta = paper_engine._position_meta.get(order.position_id, {})
+        avg_price = meta.get("avg_price_at_close")
+        size = meta.get("size_at_close")
+        direction = meta.get("direction", "")
+        if avg_price is None or size is None:
+            continue
+        exit_price = float(meta.get("exit_price_at_close", order.price))
+        entry_fee = float(meta.get("entry_fee") or 0.0)
+        exit_fee = float(meta.get("exit_fee_at_close") or 0.0)
+        signed_size = float(size) if direction == "long" else -float(size)
+        pnl_values.append(signed_size * (exit_price - float(avg_price)) - entry_fee - exit_fee)
+    return pnl_values
+
+
+# Classify replay orders that close a previously opened position.
+def _close_orders(orders: List[OrderRecord]) -> List[OrderRecord]:
+    """Return close orders by pairing repeated position IDs in chronological order."""
+    seen_positions = set()
+    close_orders: List[OrderRecord] = []
+    for order in orders:
+        if not order.position_id:
+            continue
+        if order.position_id in seen_positions:
+            close_orders.append(order)
+        else:
+            seen_positions.add(order.position_id)
+    return close_orders
 
 
 # Run a deterministic replay over historical OHLC candles.
@@ -169,9 +239,12 @@ async def run_replay(
     risk_engine.update_equity(starting_capital)
     paper_engine = PaperExecutionEngine(starting_capital=starting_capital)
     signals: List[Dict[str, Any]] = []
-    equity_curve = [starting_capital]
     news = news_signals or []
     length = min(len(candles) for candles in candles_by_market.values())
+    equity_curve = np.empty(length + 2, dtype=np.float64)
+    equity_count = 0
+    equity_curve[equity_count] = starting_capital
+    equity_count += 1
 
     for idx in range(length):
         market_data: Dict[str, Any] = {}
@@ -201,7 +274,8 @@ async def run_replay(
         paper_engine.update_mark_prices(prices)
         equity = paper_engine.get_total_equity(prices)
         risk_engine.update_equity(equity)
-        equity_curve.append(equity)
+        equity_curve[equity_count] = equity
+        equity_count += 1
 
         if getattr(strategy, "uses_llm_recommendation", False):
             ideas = await strategy.evaluate(
@@ -265,27 +339,26 @@ async def run_replay(
         )
 
     ending_equity = paper_engine.get_total_equity(final_prices)
-    equity_curve.append(ending_equity)
-    close_orders = [
-        order for order in paper_engine.orders
-        if order.position_id and order.id != paper_engine.orders[0].id
-    ]
+    equity_curve[equity_count] = ending_equity
+    equity_count += 1
+    final_equity_curve = equity_curve[:equity_count].copy()
+    close_orders = _close_orders(paper_engine.orders)
     fees = sum(fill.fee for fill in paper_engine.fills)
     realised_pnl = ending_equity - starting_capital
-    wins = [order for order in close_orders if realised_pnl > 0]
-    win_rate = len(wins) / len(close_orders) if close_orders else 0.0
+    trade_stats = _compute_trade_stats(_closed_order_pnls(paper_engine, close_orders))
     return ReplayResult(
         strategy_id=strategy_id,
         starting_equity=starting_capital,
         ending_equity=ending_equity,
         realised_pnl=realised_pnl,
         fees=fees,
-        max_drawdown=_max_drawdown(equity_curve),
+        max_drawdown=_max_drawdown(final_equity_curve),
         trade_count=len(close_orders),
-        win_rate=win_rate,
+        win_rate=trade_stats["win_rate"],
+        profit_factor=trade_stats["profit_factor"],
         orders=paper_engine.orders,
         signal_decisions=signals,
-        equity_curve=equity_curve,
+        equity_curve=final_equity_curve,
     )
 
 

@@ -8,6 +8,8 @@ MIN_SAMPLES outcomes before applying any adjustment.
 from collections import defaultdict
 from typing import Dict, Tuple
 
+import numpy as np
+
 from observability.logging import get_logger
 
 logger = get_logger("learner")
@@ -26,6 +28,7 @@ class _Stats:
         "win_count",
         "loss_pnl_total",
         "loss_count",
+        "pnl_history",
     )
 
     def __init__(self):
@@ -36,9 +39,11 @@ class _Stats:
         self.win_count = 0
         self.loss_pnl_total = 0.0
         self.loss_count = 0
+        self.pnl_history = []
 
     def record_pnl(self, pnl: float) -> None:
         """Record raw P&L magnitude for average win/loss calculations."""
+        self.pnl_history.append(float(pnl))
         if pnl > 0:
             self.win_pnl_total += pnl
             self.win_count += 1
@@ -83,6 +88,7 @@ class PerformanceLearner:
 
         for key, pnls in grouped.items():
             stats = self._stats[key]
+            history_start = len(stats.pnl_history)
             weight = 1.0
             for pnl in pnls:
                 stats.weighted_total += weight
@@ -91,6 +97,7 @@ class PerformanceLearner:
                 stats.record_pnl(pnl)
                 stats.raw_count += 1
                 weight *= DECAY
+            stats.pnl_history[history_start:] = list(reversed(stats.pnl_history[history_start:]))
 
         if grouped:
             logger.info("Learner seeded from DB", extra={
@@ -115,6 +122,49 @@ class PerformanceLearner:
         stats.raw_count += 1
 
     # ── Adjustment ────────────────────────────────────────────────────────
+
+    # Return P&L history for a learner key as one numpy vector per query.
+    def _pnl_array(self, strategy_id: str, market: str, direction: str) -> np.ndarray:
+        """Return the historical P&L vector for a strategy/market/direction key."""
+        stats = self._stats.get((strategy_id, market, direction))
+        if stats is None or not stats.pnl_history:
+            return np.asarray([], dtype=np.float64)
+        return np.asarray(stats.pnl_history, dtype=np.float64)
+
+    # Calculate trailing win rate using the latest N realised outcomes.
+    def rolling_win_rate(self, strategy_id: str, market: str, direction: str,
+                         n: int = 10) -> float:
+        """Return the win rate over the latest n outcomes for a learner key."""
+        if n <= 0:
+            return 0.0
+        pnl = self._pnl_array(strategy_id, market, direction)
+        if pnl.size == 0:
+            return 0.0
+        trailing = pnl[-n:]
+        return float(np.mean(trailing > 0.0))
+
+    # Calculate P&L distribution statistics for a learner key.
+    def pnl_percentiles(self, strategy_id: str, market: str, direction: str) -> Dict[str, float]:
+        """Return numpy-backed mean, median, and percentile values for P&L history."""
+        pnl = self._pnl_array(strategy_id, market, direction)
+        if pnl.size == 0:
+            return {}
+        if pnl.size == 1:
+            p25 = p50 = p75 = p95 = float(pnl[0])
+        else:
+            p25, p50, p75, p95 = np.percentile(
+                pnl,
+                [25, 50, 75, 95],
+                method="weibull",
+            )
+        return {
+            "mean": float(np.mean(pnl)),
+            "median": float(np.median(pnl)),
+            "p25": float(p25),
+            "p50": float(p50),
+            "p75": float(p75),
+            "p95": float(p95),
+        }
 
     def adjust_confidence(self, strategy_id: str, market: str, direction: str,
                           base_confidence: float) -> float:
@@ -146,11 +196,18 @@ class PerformanceLearner:
             if s.raw_count == 0:
                 continue
             wr = s.weighted_wins / s.weighted_total if s.weighted_total else 0.0
+            pnl_stats = self.pnl_percentiles(sid, mkt, d)
             rows.append({
                 "strategy": sid, "market": mkt, "direction": d,
                 "trades": s.raw_count, "win_rate": round(wr, 3),
+                "rolling_win_rate_10": round(self.rolling_win_rate(sid, mkt, d), 3),
                 "mean_win_pnl": round(s.mean_win_pnl(), 2),
                 "mean_loss_pnl": round(s.mean_loss_pnl(), 2),
+                "average_pnl": round(pnl_stats.get("mean", 0.0), 2),
+                "median_pnl": round(pnl_stats.get("median", 0.0), 2),
+                "pnl_p25": round(pnl_stats.get("p25", 0.0), 2),
+                "pnl_p75": round(pnl_stats.get("p75", 0.0), 2),
+                "pnl_p95": round(pnl_stats.get("p95", 0.0), 2),
                 "quality_score": round(s.quality_score(), 3),
             })
         return sorted(rows, key=lambda r: r["market"])

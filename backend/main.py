@@ -10,51 +10,61 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
-import httpx
-import uvicorn
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
-from fastapi.staticfiles import StaticFiles
+from bootstrap import ensure_project_venv
 
-from analysis.indicators import compute_all as compute_indicators
-from approval.service import ApprovalService
-from config.currency import currency_symbol
-from config.settings import settings
-from control.state import LEGACY_STRATEGY_IDS, ControlState
-from domain.models import ExecutionIntent
-from execution.kraken import KrakenExecutionEngine
-from execution.operator_reset import close_positions_for_operator_reset
-from execution.paper import PaperExecutionEngine
-from ingestion.kraken_adapter import KrakenMarketAdapter
-from ingestion.news_adapter import (
-    BitcoinMagazineAdapter,
-    CoinDeskAdapter,
-    CoinTelegraphAdapter,
-    CoinTelegraphMagazineAdapter,
-    CryptoNewsAdapter,
-    CryptoPotaroAdapter,
-    CryptoSlateAdapter,
-    DecryptAdapter,
-    FearGreedAdapter,
-    NewsBTCAdapter,
-    ReutersBusinessAdapter,
-    TheBlockAdapter,
-    TheDefiantAdapter,
-)
-from llm.analyser import LLMAnalyser, SignalAnalysis
-from llm.client import OllamaClient
-from observability.activity import activity
-from observability.logging import get_logger, setup_logging
-from risk.engine import STOP_LOSS_ASSUMPTION, RiskEngine
-from risk.persistence import record_trade_result_and_persist
-from storage.database import init_database
-from storage.repository import Repository
-from strategy.basic_strategy import BasicStrategy
-from strategy.indicator_only_strategy import IndicatorOnlyStrategy
-from strategy.learner import PerformanceLearner
-from strategy.llm_only_strategy import LLMOnlyStrategy
-from universe.resolver import UniverseResolver
+ensure_project_venv(__file__)
+
+try:
+    import httpx
+    import uvicorn
+    from fastapi import FastAPI, HTTPException, Query
+    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import FileResponse, Response
+    from fastapi.staticfiles import StaticFiles
+
+    from analysis.indicators import compute_all as compute_indicators
+    from approval.service import ApprovalService
+    from config.currency import currency_symbol
+    from config.settings import settings
+    from control.state import LEGACY_STRATEGY_IDS, ControlState
+    from domain.models import ExecutionIntent
+    from execution.kraken import KrakenExecutionEngine
+    from execution.operator_reset import close_positions_for_operator_reset
+    from execution.paper import PaperExecutionEngine
+    from ingestion.kraken_adapter import KrakenMarketAdapter
+    from ingestion.news_adapter import (
+        BitcoinMagazineAdapter,
+        CoinDeskAdapter,
+        CoinTelegraphAdapter,
+        CoinTelegraphMagazineAdapter,
+        CryptoNewsAdapter,
+        CryptoPotaroAdapter,
+        CryptoSlateAdapter,
+        DecryptAdapter,
+        FearGreedAdapter,
+        NewsBTCAdapter,
+        ReutersBusinessAdapter,
+        TheBlockAdapter,
+        TheDefiantAdapter,
+    )
+    from llm.analyser import LLMAnalyser, SignalAnalysis
+    from llm.client import OllamaClient
+    from observability.activity import activity
+    from observability.logging import get_logger, setup_logging
+    from risk.engine import STOP_LOSS_ASSUMPTION, RiskEngine
+    from risk.persistence import record_trade_result_and_persist
+    from storage.database import init_database
+    from storage.repository import Repository
+    from strategy.basic_strategy import BasicStrategy
+    from strategy.indicator_only_strategy import IndicatorOnlyStrategy
+    from strategy.learner import PerformanceLearner
+    from strategy.llm_only_strategy import LLMOnlyStrategy
+    from universe.resolver import UniverseResolver
+except ModuleNotFoundError as exc:
+    from bootstrap import dependency_error_message, restart_with_project_venv
+
+    restart_with_project_venv(__file__)
+    raise SystemExit(dependency_error_message(exc, __file__)) from exc
 
 BACKEND_DIR = Path(__file__).parent
 FRONTEND_DIR = BACKEND_DIR.parent / "frontend"

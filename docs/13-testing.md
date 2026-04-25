@@ -48,8 +48,9 @@ The suite intentionally checks stable behavior rather than internal implementati
 - Control state behavior: the default selected strategy and single selected-strategy switching.
 - LLM strategy behavior: LLM long recommendations emit trade ideas, hold recommendations do not, and indicators are passed through to the LLM.
 - LLM analyser prompt behavior: LLM-only recommendation prompts include the technical indicator context.
-- Indicators: insufficient-history behavior, RSI edge case, named price-change windows.
-- Learner: no adjustment before enough samples, confidence boost after wins, confidence reduction after losses.
+- Indicators: insufficient-history behavior, RSI edge case, named price-change windows, numpy scalar reductions, and JSON-safe output.
+- Backtest replay: deterministic 48-hour replay behavior plus numpy-backed drawdown, trade stats, and candle resampling metrics.
+- Learner: no adjustment before enough samples, confidence boost after wins, confidence reduction after losses, rolling win rate, and P&L percentiles.
 
 ## BDD Style
 

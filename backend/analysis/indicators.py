@@ -1,7 +1,8 @@
 """
 Technical indicator calculations from a raw price list (oldest → newest).
 
-All functions are pure Python — no pandas, numpy, or ta-lib required.
+Scalar reductions use numpy for batch operations. EMA calculations remain
+explicit loops because each value depends on the previous value.
 Designed for the 30-second tick stream stored in _price_history.
 
 Available indicators
@@ -16,10 +17,25 @@ williams_r(prices, period=14)               — Williams %R (-100 to 0)
 price_changes(prices, tick_seconds=30)       — 5m / 15m / 30m % change
 compute_all(prices, tick_seconds=30)         — all of the above in one dict
 """
-import math
 from typing import Any, Dict, List, Optional
 
+import numpy as np
+
 # ── Primitives ────────────────────────────────────────────────────────────────
+
+# Convert numpy values at public boundaries so JSON/database callers receive Python types.
+def _to_py(val: Any) -> Any:
+    """Return JSON-safe Python values for numpy scalars and arrays."""
+    if isinstance(val, np.generic):
+        return val.item()
+    if isinstance(val, np.ndarray):
+        return [_to_py(item) for item in val.tolist()]
+    if isinstance(val, dict):
+        return {key: _to_py(value) for key, value in val.items()}
+    if isinstance(val, list):
+        return [_to_py(item) for item in val]
+    return val
+
 
 def _ema(prices: List[float], period: int) -> Optional[float]:
     """Exponential moving average seeded with the SMA of the first window."""
@@ -69,27 +85,28 @@ def rsi(prices: List[float], period: int = 14) -> Optional[float]:
 
     Returns None if there are fewer than period+1 prices.
     """
-    if len(prices) < period + 1:
+    arr = np.asarray(prices, dtype=np.float64)
+    if arr.size < period + 1:
         return None
 
     # Separate all price changes into gains and losses
-    changes = [prices[i] - prices[i - 1] for i in range(1, len(prices))]
-    gains  = [max(0.0, c) for c in changes]
-    losses = [max(0.0, -c) for c in changes]
+    changes = np.diff(arr)
+    gains = np.where(changes > 0.0, changes, 0.0)
+    losses = np.where(changes < 0.0, -changes, 0.0)
 
     # Seed with the SMA of the first `period` bars
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
+    avg_gain = float(np.mean(gains[:period]))
+    avg_loss = float(np.mean(losses[:period]))
 
     # Apply Wilder's exponential smoothing (alpha = 1/period) for all subsequent bars
-    for i in range(period, len(changes)):
-        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
-        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+    for gain, loss in zip(gains[period:], losses[period:], strict=True):
+        avg_gain = (avg_gain * (period - 1) + float(gain)) / period
+        avg_loss = (avg_loss * (period - 1) + float(loss)) / period
 
     if avg_loss == 0:
         return 100.0
     rs = avg_gain / avg_loss
-    return round(100.0 - 100.0 / (1.0 + rs), 1)
+    return _to_py(round(100.0 - 100.0 / (1.0 + rs), 1))
 
 
 def ema_pair(prices: List[float], fast: int = 9, slow: int = 21):
@@ -99,24 +116,24 @@ def ema_pair(prices: List[float], fast: int = 9, slow: int = 21):
 
 def bollinger_bands(prices: List[float], period: int = 20) -> Optional[Dict[str, float]]:
     """20-period Bollinger Bands (2 std).  Returns None if not enough data."""
-    if len(prices) < period:
+    arr = np.asarray(prices, dtype=np.float64)
+    if arr.size < period:
         return None
-    window = prices[-period:]
-    mean = sum(window) / period
-    variance = sum((p - mean) ** 2 for p in window) / period
-    std = math.sqrt(variance)
+    window = arr[-period:]
+    mean = float(np.mean(window))
+    std = float(np.std(window))
     upper = mean + 2 * std
     lower = mean - 2 * std
-    current = prices[-1]
+    current = float(arr[-1])
     position = (current - lower) / (upper - lower) if upper != lower else 0.5
     width_pct = (upper - lower) / mean * 100 if mean > 0 else 0.0
-    return {
+    return _to_py({
         "upper":    round(upper, 2),
         "middle":   round(mean, 2),
         "lower":    round(lower, 2),
         "position": round(max(0.0, min(1.0, position)) * 100, 1),  # 0–100 %
         "width_pct": round(width_pct, 2),
-    }
+    })
 
 
 def macd(
@@ -156,13 +173,13 @@ def macd(
     signal_val  = signal_series[-1]
     histogram   = line_val - signal_val
 
-    return {
+    return _to_py({
         "line":         round(line_val, 4),
         "signal":       round(signal_val, 4),
         "histogram":    round(histogram, 4),
         "bias":         "bullish" if line_val > 0 else "bearish",
         "signal_bias":  "bullish" if line_val > signal_val else "bearish",
-    }
+    })
 
 
 def atr(prices: List[float], period: int = 14) -> Optional[float]:
@@ -171,11 +188,12 @@ def atr(prices: List[float], period: int = 14) -> Optional[float]:
     True Range ≈ |close[i] − close[i−1]|.
     Returns None when there are fewer than period+1 ticks.
     """
-    if len(prices) < period + 1:
+    arr = np.asarray(prices, dtype=np.float64)
+    if arr.size < period + 1:
         return None
-    window = prices[-(period + 1):]
-    trs = [abs(window[i] - window[i - 1]) for i in range(1, len(window))]
-    return round(sum(trs) / period, 6)
+    window = arr[-(period + 1):]
+    true_ranges = np.abs(np.diff(window))
+    return _to_py(round(float(np.mean(true_ranges)), 6))
 
 
 def stochastic(
@@ -188,30 +206,31 @@ def stochastic(
     Uses the close price as H/L proxy — the highest/lowest close in the window
     stands in for the true high/low.  Returns None when insufficient data.
     """
+    arr = np.asarray(prices, dtype=np.float64)
     required = k_period + d_period - 1
-    if len(prices) < required:
+    if arr.size < required:
         return None
 
     k_values: List[float] = []
     for i in range(d_period):
-        idx = len(prices) - d_period + i
-        window = prices[idx - k_period + 1 : idx + 1]
-        if len(window) < k_period:
+        idx = arr.size - d_period + i
+        window = arr[idx - k_period + 1 : idx + 1]
+        if window.size < k_period:
             return None
-        high  = max(window)
-        low   = min(window)
-        close = window[-1]
+        high = float(np.max(window))
+        low = float(np.min(window))
+        close = float(window[-1])
         k = ((close - low) / (high - low) * 100.0) if high != low else 50.0
         k_values.append(round(k, 1))
 
     k_latest = k_values[-1]
     d_latest = round(sum(k_values) / d_period, 1)
 
-    return {
+    return _to_py({
         "k":    k_latest,
         "d":    d_latest,
         "bias": "oversold" if k_latest < 20 else ("overbought" if k_latest > 80 else "neutral"),
-    }
+    })
 
 
 def atr_ohlc(
@@ -234,7 +253,7 @@ def atr_ohlc(
         lo = window[i]["l"]
         tr = max(h - lo, abs(h - prev_c), abs(lo - prev_c))
         trs.append(tr)
-    return round(sum(trs) / period, 6)
+    return _to_py(round(sum(trs) / period, 6))
 
 
 def stochastic_ohlc(
@@ -265,11 +284,11 @@ def stochastic_ohlc(
 
     k_latest = k_values[-1]
     d_latest = round(sum(k_values) / d_period, 1)
-    return {
+    return _to_py({
         "k":    k_latest,
         "d":    d_latest,
         "bias": "oversold" if k_latest < 20 else ("overbought" if k_latest > 80 else "neutral"),
-    }
+    })
 
 
 def williams_r(prices: List[float], period: int = 14) -> Optional[float]:
@@ -278,16 +297,17 @@ def williams_r(prices: List[float], period: int = 14) -> Optional[float]:
     Range: −100 (most oversold) to 0 (most overbought).
     Returns None when there are fewer than period ticks.
     """
-    if len(prices) < period:
+    arr = np.asarray(prices, dtype=np.float64)
+    if arr.size < period:
         return None
-    window = prices[-period:]
-    high  = max(window)
-    low   = min(window)
-    close = window[-1]
+    window = arr[-period:]
+    high = float(np.max(window))
+    low = float(np.min(window))
+    close = float(window[-1])
     if high == low:
         return -50.0
     wr = (high - close) / (high - low) * -100.0
-    return round(wr, 1)
+    return _to_py(round(wr, 1))
 
 
 def price_changes(prices: List[float], tick_seconds: int = 30) -> Dict[str, float]:
@@ -302,7 +322,7 @@ def price_changes(prices: List[float], tick_seconds: int = 30) -> Dict[str, floa
             past = prices[-(n + 1)]
             if past > 0:
                 result[label] = round((current - past) / past * 100, 2)
-    return result
+    return _to_py(result)
 
 
 # ── Convenience wrapper ───────────────────────────────────────────────────────
@@ -382,4 +402,4 @@ def compute_all(
             else "neutral"
         )
 
-    return out
+    return _to_py(out)

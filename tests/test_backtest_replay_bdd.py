@@ -2,13 +2,15 @@
 import json
 import unittest
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 from bdd_helpers import BACKEND_DIR  # noqa: F401
 from backtest.replay import (
     ReplayResult,
+    _compute_trade_stats,
+    _max_drawdown,
     enforce_profit_requirement,
     replay_result_to_dict,
+    resample_to_15m,
     run_replay,
     write_replay_report,
 )
@@ -124,8 +126,8 @@ class BacktestReplayBDDTests(unittest.IsolatedAsyncioTestCase):
             analyser=FixtureAnalyser(),
         )
 
-        with TemporaryDirectory() as tmp:
-            path = Path(tmp) / "report.json"
+        path = Path(__file__).resolve().parent / "replay_report_test.json"
+        try:
             write_replay_report(result, path)
 
             report = replay_result_to_dict(result)
@@ -133,6 +135,9 @@ class BacktestReplayBDDTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(report["summary"]["strategy_id"], "llm")
             self.assertGreater(report["summary"]["ending_equity"], report["summary"]["starting_equity"])
             self.assertGreaterEqual(len(report["orders"]), 2)
+        finally:
+            if path.exists():
+                path.unlink()
 
     # GIVEN live replay is run without explicit profit mode WHEN P&L is negative THEN it remains a smoke result.
     def test_given_live_smoke_result_when_profit_not_required_then_loss_does_not_raise(self) -> None:
@@ -164,6 +169,57 @@ class BacktestReplayBDDTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(ValueError):
             enforce_profit_requirement(result, require_profit=True)
+
+
+class NumpyReplayMetricsBDDTests(unittest.TestCase):
+    # NUMPY-002: GIVEN an equity series with a known peak-to-trough drawdown
+    # WHEN max drawdown is computed THEN the numpy result equals the pure-Python reference.
+    def test_given_equity_series_when_max_drawdown_computed_then_equals_reference(self) -> None:
+        equity = [1000.0, 1100.0, 900.0, 1050.0, 800.0]
+        # Manual: peaks = [1000, 1100, 1100, 1100, 1100], drawdowns = [0, 0, 200, 50, 300]
+        expected = 300.0
+
+        result = _max_drawdown(equity)
+
+        self.assertAlmostEqual(result, expected, places=6)
+
+    # NUMPY-002: GIVEN an empty equity series WHEN max drawdown is computed THEN zero is returned.
+    def test_given_empty_equity_series_when_max_drawdown_computed_then_zero(self) -> None:
+        self.assertEqual(_max_drawdown([]), 0.0)
+
+    # NUMPY-002: GIVEN a list of P&L values WHEN win rate and profit factor are computed
+    # THEN results match manually calculated expected values.
+    def test_given_pnl_values_when_trade_stats_computed_then_match_manual_calculation(self) -> None:
+        pnl = [10.0, -5.0, 8.0, -3.0, 12.0]  # 3 wins, 2 losses
+        expected_win_rate = 3 / 5
+        expected_profit_factor = (10.0 + 8.0 + 12.0) / (5.0 + 3.0)
+
+        result = _compute_trade_stats(pnl)
+
+        self.assertAlmostEqual(result["win_rate"], expected_win_rate, places=6)
+        self.assertAlmostEqual(result["profit_factor"], expected_profit_factor, places=6)
+
+    # NUMPY-002: GIVEN all-loss P&L values WHEN trade stats computed THEN win_rate is zero.
+    def test_given_all_loss_pnl_when_trade_stats_computed_then_win_rate_is_zero(self) -> None:
+        result = _compute_trade_stats([-1.0, -2.0, -3.0])
+
+        self.assertEqual(result["win_rate"], 0.0)
+        self.assertEqual(result["profit_factor"], 0.0)
+
+    # NUMPY-002: GIVEN 9 candles WHEN resampled to 15-minute THEN three groups are returned.
+    def test_given_nine_5m_candles_when_resampled_to_15m_then_three_candles_returned(self) -> None:
+        candles = [
+            {"t": f"t{i}", "o": 100.0 + i, "h": 102.0 + i, "l": 99.0 + i, "c": 101.0 + i, "v": 10.0}
+            for i in range(9)
+        ]
+
+        result = resample_to_15m(candles)
+
+        self.assertEqual(len(result), 3)
+        # First group: o from candle[0], h = max(102, 103, 104) = 104, l = min(99, 100, 101) = 99
+        self.assertAlmostEqual(result[0]["h"], 104.0)
+        self.assertAlmostEqual(result[0]["l"], 99.0)
+        self.assertAlmostEqual(result[0]["v"], 30.0)  # sum of 3 × 10.0
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 import os
 import tempfile
 import unittest
+from pathlib import Path
 
 from bdd_helpers import BACKEND_DIR  # noqa: F401
 from config.settings import BotSettings
@@ -31,6 +32,33 @@ class SettingsBDDTests(unittest.TestCase):
                 os.environ["base_currency"] = previous_lower
 
         self.assertEqual(settings.base_currency, "USD")
+
+    # GIVEN the example env file WHEN settings aliases are inspected
+    # THEN every supported configuration option is documented and parseable.
+    def test_given_env_example_when_settings_aliases_inspected_then_all_options_are_present(self) -> None:
+        example_path = Path(BACKEND_DIR).parent / "backend" / ".env.example"
+        content = example_path.read_text(encoding="utf-8")
+        example_keys = {
+            line.split("=", 1)[0].strip()
+            for line in content.splitlines()
+            if line.strip() and not line.lstrip().startswith("#") and "=" in line
+        }
+        expected_keys = {
+            field.validation_alias
+            for field in BotSettings.model_fields.values()
+            if isinstance(field.validation_alias, str)
+        }
+
+        self.assertEqual(example_keys, expected_keys)
+        previous_values = {
+            key: os.environ.pop(key)
+            for key in expected_keys
+            if key in os.environ
+        }
+        try:
+            BotSettings(_env_file=example_path)
+        finally:
+            os.environ.update(previous_values)
 
 
 if __name__ == "__main__":
