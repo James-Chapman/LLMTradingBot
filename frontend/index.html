@@ -29,6 +29,11 @@
             <span class="pill pill-green"  x-show="mode === 'fully_automated'">AUTO</span>
             <div class="metric-separator"></div>
             <div class="metric-block">
+                <div class="label" style="margin-bottom:1px;">Active Strategy</div>
+                <div style="font-size:13px;font-weight:700;" x-text="activeStrategyLabel"></div>
+            </div>
+            <div class="metric-separator"></div>
+            <div class="metric-block">
                 <div class="label" style="margin-bottom:1px;">Total Equity</div>
                 <div class="mono" style="font-size:14px;font-weight:600;"><span x-text="currencySymbol"></span><span x-text="equity"></span></div>
             </div>
@@ -52,6 +57,12 @@
 <div x-show="emergencyStop" class="emergency-banner">
     <span>
         ⛔ Emergency stop is active. All trading is halted. The approval queue has been cleared. Click Resume to restart.
+    </span>
+</div>
+
+<div x-show="warmupTicksRemaining > 0" class="warmup-banner">
+    <span>
+        ⚠ No trades will be placed until warm-up completes — <strong x-text="warmupTicksRemaining"></strong> tick<span x-show="warmupTicksRemaining !== 1">s</span> remaining.
     </span>
 </div>
 
@@ -198,7 +209,9 @@
                     <span style="color:var(--muted);font-size:13px;" x-text="panels.closedTrades ? '▲' : '▼'"></span>
                 </div>
             </div>
-            <div x-show="panels.closedTrades" class="panel-body panel-body-scroll core-scroll">
+            <div x-show="panels.closedTrades" class="panel-body core-scroll">
+                <div id="closed-filter"></div>
+                <div style="overflow-x:auto;">
                 <table class="responsive-table">
                     <thead>
                         <tr style="border-bottom:1px solid var(--border);text-align:left;">
@@ -222,6 +235,7 @@
                         <tr><td colspan="14" style="padding:20px 10px;color:var(--muted);text-align:center;">Loading…</td></tr>
                     </tbody>
                 </table>
+                </div>
             </div>
         </div>
     </div>
@@ -594,12 +608,15 @@
                     <span style="color:var(--muted);font-size:13px;" x-text="panels.tradeLedger ? '▲' : '▼'"></span>
                 </div>
             </div>
-            <div x-show="panels.tradeLedger" class="panel-body panel-body-scroll">
+            <div x-show="panels.tradeLedger" class="panel-body">
+                <div id="ledger-filter"></div>
+                <div style="overflow-x:auto;">
                 <table class="responsive-table">
                     <thead>
                         <tr style="border-bottom:1px solid var(--border);text-align:left;">
                             <th style="padding:6px 10px;color:var(--muted);font-weight:600;white-space:nowrap;">Time</th>
                             <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Market</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Strategy</th>
                             <th style="padding:6px 10px;color:var(--muted);font-weight:600;" title="Buy = bought asset · Sell = sold asset · badge shows whether this trade opened or closed a position">Action</th>
                             <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Direction</th>
                             <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">Size</th>
@@ -613,9 +630,10 @@
                         </tr>
                     </thead>
                     <tbody id="ledger-body">
-                        <tr><td colspan="12" style="padding:20px 10px;color:var(--muted);text-align:center;">Loading…</td></tr>
+                        <tr><td colspan="13" style="padding:20px 10px;color:var(--muted);text-align:center;">Loading…</td></tr>
                     </tbody>
                 </table>
+                </div>
             </div>
         </div>
 
@@ -645,6 +663,7 @@
             </div>
         </div>
         <div x-show="panels.news" class="panel-body">
+            <div id="news-source-filter"></div>
             <div id="news-grid" class="news-grid">
                 <div class="grid-empty">Loading news…</div>
             </div>
@@ -816,6 +835,61 @@
         </div>
     </div>
 
+    <!-- Rejected Trades register (execution-level rejections, collapsed by default) -->
+    <div class="card panel" x-show="rejectedTrades.length > 0">
+        <div class="panel-header"
+             @click="panels.rejectedTrades = !panels.rejectedTrades">
+            <div class="flex items-center gap-2">
+                <span class="label">Rejected Trades</span>
+                <span class="pill pill-red" x-text="rejectedTrades.length + ' total'"></span>
+            </div>
+            <span style="color:var(--muted);font-size:13px;" x-text="panels.rejectedTrades ? '▲' : '▼'"></span>
+        </div>
+        <div x-show="panels.rejectedTrades" class="panel-body panel-body-scroll">
+            <table class="responsive-table">
+                <thead>
+                    <tr style="border-bottom:1px solid var(--border);text-align:left;">
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;white-space:nowrap;">Time</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Market</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Strategy</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Direction</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">Size</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">Confidence</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">Price</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">Value</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Reason</th>
+                        <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Signal</th>
+                    </tr>
+                </thead>
+                <tbody id="rejected-trades-body">
+                    <template x-for="(r, i) in rejectedTrades" :key="r.id || i">
+                        <tr style="border-bottom:1px solid var(--subtle);">
+                            <td style="padding:7px 10px;color:var(--muted);font-size:11px;white-space:nowrap;"
+                                x-text="new Date(r.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})"></td>
+                            <td style="padding:7px 10px;font-weight:600;" x-text="r.market"></td>
+                            <td style="padding:7px 10px;color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap;" x-text="_strategyLabel(r.strategy)"></td>
+                            <td style="padding:7px 10px;">
+                                <span class="pill" :class="r.direction === 'long' ? 'pill-green' : 'pill-red'"
+                                      x-text="(r.direction === 'long' ? '▲ ' : '▼ ') + r.direction.toUpperCase()"></span>
+                            </td>
+                            <td style="padding:7px 10px;text-align:right;font-family:monospace;" x-text="parseFloat(r.size).toFixed(6)"></td>
+                            <td style="padding:7px 10px;text-align:right;font-family:monospace;" x-text="r.confidence == null ? '--' : Math.round(r.confidence * 100) + '%'"></td>
+                            <td style="padding:7px 10px;text-align:right;font-family:monospace;" x-text="parseFloat(r.price).toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2})"></td>
+                            <td style="padding:7px 10px;text-align:right;font-family:monospace;" x-text="(parseFloat(r.size) * parseFloat(r.price)).toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2})"></td>
+                            <td style="padding:7px 10px;color:var(--red);font-size:12px;" x-text="(r.reason || '').replace(/_/g,' ')"></td>
+                            <td style="padding:7px 10px;">
+                                <button x-show="r.trade_idea_id" @click="showSignal(r.trade_idea_id)"
+                                        style="font-size:10px;padding:3px 9px;border-radius:4px;background:rgba(139,148,158,.12);border:1px solid rgba(139,148,158,.25);color:var(--muted);cursor:pointer;white-space:nowrap;">
+                                    📊 Detail
+                                </button>
+                            </td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
 </main>
 
 <script>
@@ -828,9 +902,15 @@ function dashboard() {
         cash: '0.00',
         pendingCount: 0,
         newsStatus: 'Loading…',
+        _allNewsItems: [],
+        newsSourceFilter: new Set(),
         emergencyStop: false,
+        warmupTicksRemaining: 0,
         strategies: [],
+        activeStrategyId: '',
+        activeStrategyLabel: 'Combined',
         riskRejections: [],
+        rejectedTrades: [],
         activityLog: [],
         llmAvailable: false,
         llmModel: '',
@@ -840,7 +920,13 @@ function dashboard() {
         signalBreakdown: null,
         signalVoteRows: [],
         ledgerStatus: 'Loading…',
+        _allLedgerTrades: [],
+        ledgerMarketFilter: new Set(),
+        ledgerDirFilter: '',
         closedStatus: 'Loading…',
+        _allClosedTrades: [],
+        closedMarketFilter: new Set(),
+        closedDirFilter: '',
         pnlStatus: 'Loading...',
         _chart: null,
         _equityTimestamps: [],
@@ -851,11 +937,11 @@ function dashboard() {
         _notifyReady: false,         // true after first render; prevents burst on page load
         _swActive: false,
         _lastUpdate: null,
-        // Collapsible panel state — Risk Rejections collapsed by default
+        // Collapsible panel state — Risk Rejections and Rejected Trades collapsed by default
         panels: {
             equity: true, markets: true, signals: true, positions: true,
             tradeLedger: true, pnlSummary: true, closedTrades: true, riskRejections: false,
-            priceCharts: false, news: true, llm: true, activity: true
+            rejectedTrades: false, priceCharts: false, news: true, llm: true, activity: true
         },
 
         init() {
@@ -868,6 +954,7 @@ function dashboard() {
             this.loadLedger();
             this.loadClosedTrades();
             this.loadPnlSummary();
+            this.loadRejectedTrades();
             // Fallback polling — SW broadcasts keep things live; these fire if SW is unavailable
             setInterval(() => this.loadDashboard(), 5000);
             setInterval(() => this.loadNews(), 300000);
@@ -875,10 +962,60 @@ function dashboard() {
             setInterval(() => this.loadClosedTrades(), 30000);
             setInterval(() => this.loadPnlSummary(), 30000);
             setInterval(() => this.refreshCharts(), 60000);
+            setInterval(() => this.loadRejectedTrades(), 30000);
             // Event delegation for signal detail buttons rendered inside innerHTML tables
             document.addEventListener('click', e => {
                 const btn = e.target.closest('.sig-btn');
                 if (btn) this.showSignal(btn.dataset.signalId);
+            });
+            // Trade ledger filters
+            document.addEventListener('ledger-market-toggle', e => {
+                const f = new Set(this.ledgerMarketFilter);
+                f.has(e.detail) ? f.delete(e.detail) : f.add(e.detail);
+                this.ledgerMarketFilter = f;
+                this._renderTradeFilter('ledger');
+                this._applyLedgerFilter();
+            });
+            document.addEventListener('ledger-market-clear', () => {
+                this.ledgerMarketFilter = new Set();
+                this._renderTradeFilter('ledger');
+                this._applyLedgerFilter();
+            });
+            document.addEventListener('ledger-dir-set', e => {
+                this.ledgerDirFilter = e.detail;
+                this._renderTradeFilter('ledger');
+                this._applyLedgerFilter();
+            });
+            // Closed positions filters
+            document.addEventListener('closed-market-toggle', e => {
+                const f = new Set(this.closedMarketFilter);
+                f.has(e.detail) ? f.delete(e.detail) : f.add(e.detail);
+                this.closedMarketFilter = f;
+                this._renderTradeFilter('closed');
+                this._applyClosedFilter();
+            });
+            document.addEventListener('closed-market-clear', () => {
+                this.closedMarketFilter = new Set();
+                this._renderTradeFilter('closed');
+                this._applyClosedFilter();
+            });
+            document.addEventListener('closed-dir-set', e => {
+                this.closedDirFilter = e.detail;
+                this._renderTradeFilter('closed');
+                this._applyClosedFilter();
+            });
+            // News source filter — chips dispatch these events (can't use x-on inside innerHTML)
+            document.addEventListener('news-filter-toggle', e => {
+                const f = new Set(this.newsSourceFilter);
+                f.has(e.detail) ? f.delete(e.detail) : f.add(e.detail);
+                this.newsSourceFilter = f;
+                this._renderNewsFilterStrip();
+                this._applyNewsFilter();
+            });
+            document.addEventListener('news-filter-clear', () => {
+                this.newsSourceFilter = new Set();
+                this._renderNewsFilterStrip();
+                this._applyNewsFilter();
             });
             // Register Service Worker for network-first caching + live broadcast updates
             if ('serviceWorker' in navigator) {
@@ -928,6 +1065,9 @@ function dashboard() {
                     this.renderNews(d);
                     this.newsStatus = `${d.length} article${d.length !== 1 ? 's' : ''} · ${new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}`;
                     break;
+                case '/api/rejected-trades':
+                    this.rejectedTrades = d;
+                    break;
             }
         },
 
@@ -942,7 +1082,11 @@ function dashboard() {
             this._openPositionIds = new Set(d.open_position_ids || []);
             this.pendingCount = (d.approvals || []).length;
             this.emergencyStop = d.control?.emergency_stop ?? false;
+            this.warmupTicksRemaining = d.warmup_ticks_remaining ?? 0;
             this.strategies = d.strategies || [];
+            const selectedStrategy = this.strategies.find(s => s.selected);
+            this.activeStrategyId = d.control?.selected_strategy || selectedStrategy?.id || '';
+            this.activeStrategyLabel = selectedStrategy?.label || this._strategyLabel(this.activeStrategyId);
             this.riskRejections = d.risk_rejections || [];
             this.activityLog = d.activity || [];
             this.llmAvailable = d.llm?.available ?? false;
@@ -1299,29 +1443,92 @@ function dashboard() {
             };
         },
 
-        _sourceBadge(source) {
-            const map = {
-                'CoinDesk':      ['#2684ff', 'rgba(38,132,255,.13)'],
-                'CoinTelegraph': ['#ffb400', 'rgba(255,180,0,.13)'],
-                'The Block':     ['#a78bfa', 'rgba(167,139,250,.13)'],
-                'Decrypt':       ['#34d399', 'rgba(52,211,153,.13)'],
-                'Bitcoin Magazine': ['#f97316', 'rgba(249,115,22,.13)'],
-                'Reuters':       ['#e11d48', 'rgba(225,29,72,.13)'],
-                'Fear & Greed':  ['#facc15', 'rgba(250,204,21,.13)'],
+        _strategyLabel(strategyId) {
+            const labels = {
+                combined: 'Combined',
+                indicator_only: 'Indicator Only',
+                llm: 'LLM Only',
             };
-            const [col, bg] = map[source] || ['var(--muted)', 'rgba(139,148,158,.1)'];
+            return labels[strategyId] || strategyId || '--';
+        },
+
+        _sourceBadge(source) {
+            // 16-slot palette — each source gets a deterministic colour via string hash
+            const PALETTE = [
+                ['#2684ff', 'rgba(38,132,255,.13)'],
+                ['#34d399', 'rgba(52,211,153,.13)'],
+                ['#a78bfa', 'rgba(167,139,250,.13)'],
+                ['#f97316', 'rgba(249,115,22,.13)'],
+                ['#facc15', 'rgba(250,204,21,.13)'],
+                ['#e11d48', 'rgba(225,29,72,.13)'],
+                ['#22d3ee', 'rgba(34,211,238,.13)'],
+                ['#f472b6', 'rgba(244,114,182,.13)'],
+                ['#84cc16', 'rgba(132,204,22,.13)'],
+                ['#fb7185', 'rgba(251,113,133,.13)'],
+                ['#0ea5e9', 'rgba(14,165,233,.13)'],
+                ['#14b8a6', 'rgba(20,184,166,.13)'],
+                ['#c084fc', 'rgba(192,132,252,.13)'],
+                ['#fbbf24', 'rgba(251,191,36,.13)'],
+                ['#4ade80', 'rgba(74,222,128,.13)'],
+                ['#60a5fa', 'rgba(96,165,250,.13)'],
+            ];
+            if (!source) return { col: 'var(--muted)', bg: 'rgba(139,148,158,.1)' };
+            let h = 0;
+            for (let i = 0; i < source.length; i++) h = (Math.imul(31, h) + source.charCodeAt(i)) | 0;
+            const [col, bg] = PALETTE[Math.abs(h) % PALETTE.length];
             return { col, bg };
         },
 
         renderNews(items) {
+            this._allNewsItems = items;
+            this._renderNewsFilterStrip();
+            this._applyNewsFilter();
+        },
+
+        _renderNewsFilterStrip() {
+            const el = document.getElementById('news-source-filter');
+            if (!el) return;
+            const sources = [...new Set(this._allNewsItems.map(n => n.source).filter(Boolean))].sort();
+            if (sources.length < 2) { el.innerHTML = ''; return; }
+
+            const allActive = this.newsSourceFilter.size === 0;
+            const allStyle = allActive
+                ? 'color:var(--text);background:var(--surface);border-color:var(--muted);'
+                : 'color:var(--muted);background:transparent;border-color:var(--border);opacity:.55;';
+
+            const chips = sources.map(s => {
+                const { col, bg } = this._sourceBadge(s);
+                const active = this.newsSourceFilter.has(s);
+                const esc = s.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+                const style = active
+                    ? `color:${col};background:${bg};border-color:${col};`
+                    : `color:var(--muted);background:transparent;border-color:var(--border);opacity:.55;`;
+                return `<button class="news-filter-chip" style="${style}"
+                    onclick="document.dispatchEvent(new CustomEvent('news-filter-toggle',{detail:'${esc}'}))"
+                    >${s}</button>`;
+            }).join('');
+
+            el.innerHTML = `<div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:10px 0 8px;border-bottom:1px solid var(--border);margin-bottom:10px;">
+                <span style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-right:2px;">Sources</span>
+                <button class="news-filter-chip" style="${allStyle}"
+                    onclick="document.dispatchEvent(new CustomEvent('news-filter-clear'))">All</button>
+                ${chips}
+            </div>`;
+        },
+
+        _applyNewsFilter() {
             const el = document.getElementById('news-grid');
+            if (!el) return;
+            const items = this.newsSourceFilter.size > 0
+                ? this._allNewsItems.filter(n => this.newsSourceFilter.has(n.source))
+                : this._allNewsItems;
             if (!items.length) {
-                el.innerHTML = '<div class="grid-empty">No news available yet — fetching…</div>';
+                el.innerHTML = '<div class="grid-empty">No articles from selected sources.</div>';
                 return;
             }
             el.innerHTML = items.map(n => {
                 const { col: srcCol, bg: srcBg } = this._sourceBadge(n.source);
-                const ago    = this.timeAgo(new Date(n.published_at));
+                const ago = this.timeAgo(new Date(n.published_at));
                 return `
                 <a href="${n.url || '#'}" target="_blank" rel="noopener noreferrer"
                     style="display:block;text-decoration:none;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;transition:border-color .15s;"
@@ -1458,10 +1665,99 @@ function dashboard() {
             } catch(e) { console.error('Ledger:', e); }
         },
 
-        renderLedger(trades) {
+        // Shared filter strip renderer for ledger and closed-trades panels.
+        // `panel` is 'ledger' or 'closed'.
+        _renderTradeFilter(panel) {
+            const el = document.getElementById(`${panel}-filter`);
+            if (!el) return;
+            const trades   = panel === 'ledger' ? this._allLedgerTrades : this._allClosedTrades;
+            const mktFilter = panel === 'ledger' ? this.ledgerMarketFilter : this.closedMarketFilter;
+            const dirFilter = panel === 'ledger' ? this.ledgerDirFilter    : this.closedDirFilter;
+            if (!trades.length) { el.innerHTML = ''; return; }
+
+            const markets = [...new Set(trades.map(t => t.market).filter(Boolean))].sort();
+
+            const allMktStyle = mktFilter.size === 0
+                ? 'color:var(--text);background:var(--surface);border-color:var(--muted);'
+                : 'color:var(--muted);background:transparent;border-color:var(--border);opacity:.55;';
+
+            const mktChips = markets.map(m => {
+                const active = mktFilter.has(m);
+                const esc = m.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+                const style = active
+                    ? `color:var(--blue);background:rgba(88,166,255,.13);border-color:var(--blue);`
+                    : `color:var(--muted);background:transparent;border-color:var(--border);opacity:.55;`;
+                return `<button class="news-filter-chip" style="${style}"
+                    onclick="document.dispatchEvent(new CustomEvent('${panel}-market-toggle',{detail:'${esc}'}))">
+                    ${m}</button>`;
+            }).join('');
+
+            const dirDefs = [
+                { val: '',      label: 'All',     col: 'var(--text)',  bg: 'var(--surface)', bdr: 'var(--muted)' },
+                { val: 'long',  label: '▲ Long',  col: 'var(--green)', bg: 'rgba(63,185,80,.13)', bdr: 'var(--green)' },
+                { val: 'short', label: '▼ Short', col: 'var(--red)',   bg: 'rgba(248,81,73,.13)', bdr: 'var(--red)' },
+            ];
+            const dirBtns = dirDefs.map(d => {
+                const active = dirFilter === d.val;
+                const style  = active
+                    ? `color:${d.col};background:${d.bg};border-color:${d.bdr};`
+                    : `color:var(--muted);background:transparent;border-color:var(--border);opacity:.55;`;
+                return `<button class="news-filter-chip" style="${style}"
+                    onclick="document.dispatchEvent(new CustomEvent('${panel}-dir-set',{detail:'${d.val}'}))">
+                    ${d.label}</button>`;
+            }).join('');
+
+            el.innerHTML = `<div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:10px 0 8px;border-bottom:1px solid var(--border);margin-bottom:6px;">
+                <span style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-right:2px;">Market</span>
+                <button class="news-filter-chip" style="${allMktStyle}"
+                    onclick="document.dispatchEvent(new CustomEvent('${panel}-market-clear'))">All</button>
+                ${mktChips}
+                <span style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-left:8px;margin-right:2px;">Direction</span>
+                ${dirBtns}
+            </div>`;
+        },
+
+        _applyLedgerFilter() {
             const tbody = document.getElementById('ledger-body');
+            if (!tbody) return;
+            if (!this._allLedgerTrades.length) {
+                tbody.innerHTML = '<tr><td colspan="13" style="padding:20px 10px;color:var(--muted);text-align:center;">No trades recorded yet</td></tr>';
+                return;
+            }
+            let trades = this._allLedgerTrades;
+            if (this.ledgerMarketFilter.size > 0)
+                trades = trades.filter(t => this.ledgerMarketFilter.has(t.market));
+            if (this.ledgerDirFilter)
+                trades = trades.filter(t => t.direction === this.ledgerDirFilter);
+            this._renderLedgerRows(trades);
+        },
+
+        _applyClosedFilter() {
+            const tbody = document.getElementById('closed-body');
+            if (!tbody) return;
+            if (!this._allClosedTrades.length) {
+                tbody.innerHTML = '<tr><td colspan="14" style="padding:20px 10px;color:var(--muted);text-align:center;">No closed positions yet — positions close via stop-loss or a SELL signal</td></tr>';
+                return;
+            }
+            let trades = this._allClosedTrades;
+            if (this.closedMarketFilter.size > 0)
+                trades = trades.filter(t => this.closedMarketFilter.has(t.market));
+            if (this.closedDirFilter)
+                trades = trades.filter(t => t.direction === this.closedDirFilter);
+            this._renderClosedRows(trades);
+        },
+
+        renderLedger(trades) {
+            this._allLedgerTrades = trades;
+            this._renderTradeFilter('ledger');
+            this._applyLedgerFilter();
+        },
+
+        _renderLedgerRows(trades) {
+            const tbody = document.getElementById('ledger-body');
+            if (!tbody) return;
             if (!trades.length) {
-                tbody.innerHTML = '<tr><td colspan="12" style="padding:20px 10px;color:var(--muted);text-align:center;">No trades recorded yet</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="13" style="padding:20px 10px;color:var(--muted);text-align:center;">No trades match the current filter</td></tr>';
                 return;
             }
             const fmt2 = v => parseFloat(v).toLocaleString('en-GB', {minimumFractionDigits:2,maximumFractionDigits:2});
@@ -1498,6 +1794,7 @@ function dashboard() {
                 const posId = t.position_id
                     ? `<span style="font-family:monospace;font-size:10px;color:var(--muted);">#${t.position_id}</span>`
                     : '—';
+                const strategyLabel = this._strategyLabel(t.strategy);
                 const sigBtn = t.trade_idea_id
                     ? `<button class="sig-btn" data-signal-id="${t.trade_idea_id}"
                                style="font-size:10px;padding:2px 8px;border-radius:4px;background:rgba(139,148,158,.12);border:1px solid rgba(139,148,158,.25);color:var(--muted);cursor:pointer;white-space:nowrap;"
@@ -1522,6 +1819,7 @@ function dashboard() {
                 return `<tr style="border-bottom:1px solid var(--subtle);${rowBg}">
                     <td style="padding:7px 10px;color:var(--muted);white-space:nowrap;font-size:11px;">${timeStr}</td>
                     <td style="padding:7px 10px;font-weight:700;">${t.market}</td>
+                    <td style="padding:7px 10px;color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap;">${strategyLabel}</td>
                     <td style="padding:7px 10px;font-weight:600;color:${actionCol};">${actionLabel}${posBadge}</td>
                     <td style="padding:7px 10px;font-weight:700;color:${dirCol};font-size:11px;">${dirLabel}</td>
                     <td style="padding:7px 10px;text-align:right;font-family:monospace;">${fmt6(t.size)}</td>
@@ -1546,6 +1844,14 @@ function dashboard() {
                     ? `${trades.length} closed · updated ${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`
                     : 'No closed trades yet';
             } catch(e) { console.error('Closed trades:', e); }
+        },
+
+        async loadRejectedTrades() {
+            try {
+                const r = await fetch('/api/rejected-trades');
+                if (!r.ok) return;
+                this.rejectedTrades = await r.json();
+            } catch(e) { console.error('Rejected trades:', e); }
         },
 
         async loadPnlSummary() {
@@ -1582,9 +1888,16 @@ function dashboard() {
         },
 
         renderClosedTrades(trades) {
+            this._allClosedTrades = trades;
+            this._renderTradeFilter('closed');
+            this._applyClosedFilter();
+        },
+
+        _renderClosedRows(trades) {
             const tbody = document.getElementById('closed-body');
+            if (!tbody) return;
             if (!trades.length) {
-                tbody.innerHTML = '<tr><td colspan="14" style="padding:20px 10px;color:var(--muted);text-align:center;">No closed positions yet — positions close via stop-loss or a SELL signal</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="14" style="padding:20px 10px;color:var(--muted);text-align:center;">No closed positions match the current filter</td></tr>';
                 return;
             }
             const fmt2 = v => parseFloat(v).toLocaleString('en-GB', {minimumFractionDigits:2,maximumFractionDigits:2});

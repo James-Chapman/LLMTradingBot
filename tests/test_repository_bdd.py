@@ -2,11 +2,11 @@
 import unittest
 from datetime import datetime, timedelta
 
-from bdd_helpers import BACKEND_DIR  # noqa: F401
+from bdd_helpers import BACKEND_DIR, make_trade_idea  # noqa: F401
 from domain.models import Direction, OrderRecord
 from storage import repository as repository_module
 from storage.database import get_session, init_database
-from storage.models import MarketSnapshotModel
+from storage.models import MarketSnapshotModel, OrderRecordModel
 from storage.repository import Repository
 
 
@@ -134,6 +134,147 @@ class RepositoryBDDTests(unittest.TestCase):
         self.assertEqual(ledger[0]["status"], "pending")
         self.assertEqual(ledger[0]["environment"], "live")
         self.assertEqual(ledger[0]["exchange_order_id"], "TX123")
+
+    # GIVEN an order is linked to a trade idea WHEN the ledger is requested
+    # THEN the strategy that generated the trade is returned.
+    def test_given_order_linked_to_trade_idea_when_ledger_requested_then_strategy_is_returned(self) -> None:
+        init_database("sqlite://")
+        repository = Repository()
+        idea = make_trade_idea()
+        repository.save_trade_idea(idea)
+        order = OrderRecord(
+            id="strategy-order-1",
+            market="BTC/EUR",
+            direction=Direction.LONG,
+            size=0.1,
+            price=50_000.0,
+            status="filled",
+            timestamp=datetime(2026, 4, 24, 12, 0, 0),
+            position_id="position-1",
+        )
+
+        repository.save_order(order, approval_id="auto", trade_idea_id=idea.id)
+
+        ledger = repository.get_trade_ledger()
+
+        self.assertEqual(ledger[0]["strategy"], "combined")
+
+    # GIVEN a close order has no direct signal WHEN the ledger is requested
+    # THEN strategy falls back to the opening order's signal.
+    def test_given_close_order_without_signal_when_ledger_requested_then_open_strategy_is_returned(self) -> None:
+        init_database("sqlite://")
+        repository = Repository()
+        idea = make_trade_idea()
+        repository.save_trade_idea(idea)
+        position_id = "position-strategy-close"
+        repository.save_order(
+            OrderRecord(
+                id="open-with-strategy",
+                market="BTC/EUR",
+                direction=Direction.LONG,
+                size=0.1,
+                price=50_000.0,
+                status="filled",
+                timestamp=datetime(2026, 4, 24, 12, 0, 0),
+                position_id=position_id,
+            ),
+            approval_id="auto",
+            trade_idea_id=idea.id,
+        )
+        repository.save_order(
+            OrderRecord(
+                id="close-without-strategy",
+                market="BTC/EUR",
+                direction=Direction.SHORT,
+                size=0.1,
+                price=51_000.0,
+                status="filled",
+                timestamp=datetime(2026, 4, 24, 13, 0, 0),
+                position_id=position_id,
+            ),
+            approval_id="stop_loss",
+        )
+
+        ledger = repository.get_trade_ledger(limit=1)
+
+        self.assertEqual(ledger[0]["id"], "close-wi")
+        self.assertEqual(ledger[0]["strategy"], "combined")
+
+    # E13: GIVEN legacy rejected order rows exist WHEN the trade ledger is requested
+    # THEN they are excluded from the operational ledger.
+    def test_given_rejected_order_row_when_ledger_requested_then_it_is_excluded(self) -> None:
+        init_database("sqlite://")
+        repository = Repository()
+        with get_session() as session:
+            session.add(OrderRecordModel(
+                id="rejected-order-1",
+                approval_request_id="auto",
+                market="BTC/EUR",
+                direction="long",
+                size=0.1,
+                price=50_000.0,
+                fee=0.0,
+                status="rejected",
+                environment="paper",
+                timestamp=datetime(2026, 4, 24, 12, 0, 0),
+            ))
+
+        self.assertEqual(repository.get_trade_ledger(), [])
+
+    # E13: GIVEN a rejected intent WHEN the rejected-trades register is queried
+    # THEN the intent appears with its rejection reason.
+    def test_given_rejected_trade_saved_when_register_requested_then_reason_is_returned(self) -> None:
+        init_database("sqlite://")
+        repository = Repository()
+        idea = make_trade_idea()
+        repository.save_trade_idea(idea)
+
+        repository.save_rejected_trade(
+            market="ETH/EUR",
+            direction="short",
+            size=0.5,
+            price=2_000.0,
+            confidence=0.64,
+            reason="insufficient_funds",
+            trade_idea_id=idea.id,
+            timestamp=datetime(2026, 4, 24, 13, 0, 0),
+        )
+
+        rejected_trades = repository.get_rejected_trades()
+
+        self.assertEqual(len(rejected_trades), 1)
+        self.assertEqual(rejected_trades[0]["market"], "ETH/EUR")
+        self.assertEqual(rejected_trades[0]["direction"], "short")
+        self.assertEqual(rejected_trades[0]["size"], 0.5)
+        self.assertEqual(rejected_trades[0]["confidence"], 0.64)
+        self.assertEqual(rejected_trades[0]["reason"], "insufficient_funds")
+        self.assertEqual(rejected_trades[0]["trade_idea_id"], idea.id)
+        self.assertEqual(rejected_trades[0]["strategy"], "combined")
+
+    # E13: GIVEN save_order receives a rejected order WHEN it persists
+    # THEN the repository redirects it to the rejected-trades register.
+    def test_given_rejected_order_saved_when_persisting_then_register_receives_it(self) -> None:
+        init_database("sqlite://")
+        repository = Repository()
+        rejected_order = OrderRecord(
+            id="rejected-order-2",
+            market="SOL/EUR",
+            direction=Direction.LONG,
+            size=2.0,
+            price=100.0,
+            status="rejected",
+            timestamp=datetime(2026, 4, 24, 14, 0, 0),
+            exchange_order_id="EOrder:Insufficient funds",
+        )
+
+        repository.save_order(rejected_order, approval_id="auto", environment="live", trade_idea_id="idea-2")
+
+        self.assertEqual(repository.get_trade_ledger(), [])
+        rejected_trades = repository.get_rejected_trades()
+        self.assertEqual(len(rejected_trades), 1)
+        self.assertEqual(rejected_trades[0]["market"], "SOL/EUR")
+        self.assertEqual(rejected_trades[0]["reason"], "EOrder:Insufficient funds")
+        self.assertEqual(rejected_trades[0]["trade_idea_id"], "idea-2")
 
     # GIVEN a close order is inside the page but its opener is outside the limit
     # WHEN the ledger is built THEN the returned close row is still classified as close.

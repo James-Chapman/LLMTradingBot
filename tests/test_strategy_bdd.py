@@ -294,6 +294,39 @@ class BasicStrategyBDDTests(unittest.IsolatedAsyncioTestCase):
             "_LOOKBACK_TICKS must be >= 34 so all indicators are computable before strategy fires",
         )
 
+    # GIVEN the trade warmup constant WHEN inspected THEN it is at least 1 tick and at most
+    # _LOOKBACK_TICKS, ensuring the warmup completes before indicator-based strategies fire.
+    def test_given_trade_warmup_constant_when_inspected_then_it_is_a_positive_tick_count(self) -> None:
+        import backend.main as bot_main  # noqa: PLC0415
+
+        self.assertGreaterEqual(
+            bot_main._TRADE_WARMUP_TICKS,
+            1,
+            "_TRADE_WARMUP_TICKS must be at least 1 tick",
+        )
+        self.assertLessEqual(
+            bot_main._TRADE_WARMUP_TICKS,
+            bot_main._LOOKBACK_TICKS,
+            "_TRADE_WARMUP_TICKS should not exceed _LOOKBACK_TICKS — indicator warmup already covers that window",
+        )
+
+    # BUG-028: GIVEN legacy LLM briefing outlook data is a string WHEN the strategy loop reads sentiment
+    # THEN score extraction falls back to neutral instead of crashing.
+    def test_given_string_llm_outlook_when_score_extracted_then_neutral_score_is_used(self) -> None:
+        import backend.main as bot_main  # noqa: PLC0415
+        from llm.analyser import MarketBriefing  # noqa: PLC0415
+
+        briefing = MarketBriefing(
+            market_outlooks={"BTC/EUR": "bullish"},
+            overall_sentiment=0.2,
+            key_insight="Legacy malformed context",
+            article_count=1,
+        )
+
+        score = bot_main._briefing_sentiment_for_market(briefing, "BTC/EUR")
+
+        self.assertEqual(score, 0.0)
+
     # BUG-024: GIVEN a market snapshot with previous_price = 0.0
     # WHEN the strategy evaluates THEN it returns None instead of raising ZeroDivisionError.
     async def test_given_zero_previous_price_when_strategy_evaluates_then_no_crash(self) -> None:

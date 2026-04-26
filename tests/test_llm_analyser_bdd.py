@@ -80,6 +80,27 @@ class LLMAnalyserBDDTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(briefing.market_outlooks), {"BTC/EUR", "ETH/EUR"})
         self.assertIn("Use exactly these market symbols", prompt)
 
+    # BUG-028: GIVEN the LLM returns a string outlook WHEN a briefing is parsed
+    # THEN the outlook is normalised to the dict shape expected by strategy consumers.
+    async def test_given_string_market_outlook_when_briefing_parsed_then_outlook_shape_is_normalised(self) -> None:
+        client = FakeLLMClient({
+            "market_outlooks": {
+                "BTC/EUR": "bullish",
+            },
+            "overall_sentiment": 0.2,
+            "key_insight": "Risk appetite improving",
+        })
+        analyser = LLMAnalyser(client)
+
+        briefing = await analyser.brief_market(
+            [{"id": "n1", "source": "test", "title": "Bitcoin rises", "summary": "BTC bid"}],
+            {"BTC/EUR": {"price": 100.0, "indicators": {}}},
+        )
+
+        self.assertEqual(briefing.market_outlooks["BTC/EUR"]["bias"], "bullish")
+        self.assertEqual(briefing.market_outlooks["BTC/EUR"]["score"], 0.0)
+        self.assertEqual(briefing.market_outlooks["BTC/EUR"]["note"], "")
+
     # GIVEN persisted naive LLM context timestamps WHEN signal analysis builds prompt context
     # THEN UTC age calculations do not crash.
     async def test_given_naive_context_timestamps_when_signal_analysed_then_age_context_is_safe(self) -> None:
@@ -121,6 +142,39 @@ class LLMAnalyserBDDTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(analysis.llm_used)
         self.assertIn("Latest market briefing", prompt)
         self.assertIn("Your most recent self-reflection", prompt)
+
+    # BUG-028: GIVEN legacy briefing data has a string market outlook WHEN signal analysis builds context
+    # THEN prompt construction does not crash on the malformed outlook.
+    async def test_given_string_context_outlook_when_signal_analysed_then_prompt_context_is_safe(self) -> None:
+        client = FakeLLMClient({
+            "sentiment": 0.2,
+            "confidence_scale": 1.1,
+            "reasoning": "Context accepted",
+        })
+        analyser = LLMAnalyser(client)
+        analyser.latest_briefing = MarketBriefing(
+            market_outlooks={"BTC/EUR": "bullish"},
+            overall_sentiment=0.25,
+            key_insight="Market context available",
+            article_count=2,
+        )
+
+        analysis = await analyser.analyse_signal(
+            market="BTC/EUR",
+            direction="long",
+            momentum_pct=1.2,
+            base_confidence=0.65,
+            news=[],
+            current_price=100.0,
+            indicators={},
+            equity=500.0,
+            cash=400.0,
+            open_positions=[],
+        )
+
+        prompt = client.messages[1]["content"]
+        self.assertTrue(analysis.llm_used)
+        self.assertIn("BTC/EUR outlook: bullish", prompt)
 
     # GIVEN the Ollama circuit is ready for a half-open retry WHEN signal analysis runs
     # THEN the analyser attempts the LLM call even though available is still false.

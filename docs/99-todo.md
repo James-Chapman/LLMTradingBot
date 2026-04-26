@@ -28,6 +28,19 @@ This document tracks all identified bugs, improvements, and enhancements in the 
   - **Expected:** `get()` should call `_get_if_valid()` so that the expiry check is consistent with `approve()` and `reject()`.
   - **Suggested test:** GIVEN an approval whose TTL has elapsed WHEN `approval_service.get(id)` is called THEN it returns `None` and the approval is marked expired in the repository.
 
+- [x] **BUG-027: `get_total_equity` uses `pos.size * price` for short positions, producing large negative values.**
+  - **Where:** `backend/execution/paper.py` `get_total_equity()` lines 325–330.
+  - **Problem:** Short positions have negative `size` (e.g. -876.85). The formula `pos.size * current_price` gives a large negative positions_value, making total equity deeply negative even when short P&L is positive. The paper short accounting only deducts `fee` from cash at open (not `fill_value`); the sell proceeds are locked in `_position_meta["short_proceeds"]`. The correct unrealised P&L contribution for a short is `(entry_price - current_price) × |size|`.
+  - **Expected:** For longs: `pos.size * current_price` (unchanged). For shorts: `(pos.avg_price - current_price) * abs(pos.size)`.
+  - **Suggested test:** GIVEN a paper short opened at 100 WHEN price falls to 80 THEN `get_total_equity()` returns a value greater than `cash` (positive unrealised P&L) and greater than starting capital (minus fees).
+
+- [x] **BUG-028: Strategy loop crashes when an LLM market outlook is a string.**
+  - **Where:** `backend/main.py` strategy loop, `backend/llm/analyser.py` briefing context rendering.
+  - **Problem:** Some LLM or legacy persisted briefing payloads can store `market_outlooks["BTC/EUR"]` as a string such as `"bullish"` instead of a dict. The strategy loop then calls `.get("score")` on the string and raises `AttributeError: 'str' object has no attribute 'get'`.
+  - **Expected:** Market outlook entries should be normalised to `{bias, score, note}` at the analyser boundary, and strategy-loop score extraction should fall back to neutral sentiment for malformed data.
+  - **BDD tests:** GIVEN a string market outlook WHEN a briefing is parsed THEN the outlook shape is normalised. GIVEN legacy string outlook context WHEN signal analysis or strategy score extraction runs THEN it does not crash.
+  - **Implementation:** Added LLM outlook normalisation helpers and a safe `_briefing_sentiment_for_market()` fallback used by the strategy loop.
+
 ---
 
 ### Code Quality — 2026-04-26
@@ -774,5 +787,39 @@ All bugs below have been fixed. 104 tests pass; ruff reports no violations.
   - **Files:** `backend/config/settings.py`, `backend/execution/`
   - **Problem:** The bot ran entirely in paper or entirely live.
   - **Fix:** Add a per-market `live` flag and route execution per market to the paper or Kraken engine.
+
+---
+
+## User-Requested Features — 2026-04-26
+
+- [x] **E11: Unique per-source colour coding and source filter in the news panel.**
+  - **Files:** `frontend/index.html`, `frontend/static/styles.css`
+  - **Problem:** Multiple news sources share the same colour in the news panel, making it impossible to distinguish CryptoSlate from CryptoPotato at a glance. There is also no way to view articles from a specific subset of sources — all sources are displayed together.
+  - **Fix:**
+    1. Assign a deterministic, visually distinct colour to each source name (e.g. derive from a fixed palette using a hash of the source string). Apply it as a coloured pill or left-border accent on each article row.
+    2. Collect the unique set of source names present in the current article list. Render a multi-select filter strip above the news list. Selecting sources narrows the displayed articles client-side using Alpine.js reactive filtering; no API change required. The bot continues to ingest articles from all sources regardless of filter state.
+  - **Suggested tests:** GIVEN two articles from different sources WHEN the news panel renders THEN each source pill has a distinct colour. GIVEN a source filter is active WHEN articles are rendered THEN only articles from the selected sources are visible.
+
+- [x] **E12: Market and direction filter for the trade ledger and closed positions panels.**
+  - **Files:** `frontend/index.html`
+  - **Problem:** The trade ledger and closed positions panels have no filtering. With many markets and positions, it is hard to isolate activity for a specific pair or direction (long vs short).
+  - **Fix:** Add a compact filter row above each panel with a multi-select market picker (populated from the markets present in the current rows) and a long/short direction toggle. Filtering is client-side only — Alpine.js computed properties narrow the displayed rows. The underlying `/api/trades` and `/api/closed-trades` responses are unchanged.
+  - **Suggested tests:** GIVEN a ledger with BTC/EUR and ETH/EUR rows WHEN the BTC/EUR filter is active THEN only BTC/EUR rows are visible. GIVEN a direction filter of "short" WHEN applied THEN only short-direction rows are shown.
+
+- [x] **E13: Replace rejected-trade rows in the ledger with a dedicated Rejected Trades register.**
+  - **Files:** `backend/main.py`, `backend/storage/repository.py`, `frontend/index.html`
+  - **Problem:** Rejected trade orders appear in the main trade ledger alongside filled orders, polluting the operational record. A rejected intent never resulted in a trade, so it has no place in the ledger. The current ledger also does not surface the rejection reason.
+  - **Fix:**
+    1. Stop saving rejected orders to the orders table. Instead, write rejected intents to a separate `rejected_trades` table (or reuse the existing `risk_rejections` store) capturing: timestamp, market, direction, size, confidence, and rejection reason.
+    2. Remove rejected rows from the `/api/trades` ledger response.
+    3. Add a new collapsible "Rejected Trades" panel to the dashboard (similar to "Risk Rejections") backed by a `/api/rejected-trades` endpoint. Each row shows market, direction, size, confidence, reason, and timestamp.
+  - **Suggested tests:** GIVEN a risk-rejected trade idea WHEN it is processed THEN no order row appears in the ledger. GIVEN a rejected intent WHEN `/api/rejected-trades` is queried THEN the row is present with the rejection reason.
+  - **Implementation:** Added `rejected_trades`, routed paper and live execution-level rejects into it, excluded legacy rejected orders from `/api/trades`, added `/api/rejected-trades`, and rendered a dedicated dashboard panel with timestamp, market, direction, size, confidence, price, value, reason, and signal link.
+
+- [x] **E14: Show strategy context in trade registers and dashboard header.**
+  - **Files:** `backend/storage/repository.py`, `frontend/index.html`, `docs/08-api-endpoints.md`, `docs/11-frontend.md`
+  - **Problem:** Operators can see trade direction and source, but not which strategy generated the trade or which strategy is currently selected.
+  - **Fix:** Add `strategy` to `/api/trades` and `/api/rejected-trades` by resolving linked `trade_ideas.strategy_id`; stop-loss/manual close rows fall back to the opening signal's strategy. Render Strategy columns in the Trade Ledger and Rejected Trades register, and show the active strategy in the header from `/api/dashboard`.
+  - **BDD tests:** GIVEN a ledger/rejected row linked to a trade idea WHEN the API is queried THEN the strategy ID is returned. GIVEN dashboard markup is inspected THEN the active strategy header indicator and strategy columns are present.
 
 ---

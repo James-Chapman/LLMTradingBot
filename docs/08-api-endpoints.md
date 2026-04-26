@@ -345,7 +345,7 @@ Returns cached OHLC candlestick data for the requested market and interval. The 
 
 ### `GET /api/trades`
 
-Returns the trade ledger — filled order records only (both opening and closing trades) sorted by timestamp descending, limited to 200 rows. Rejected orders are excluded.
+Returns the trade ledger - filled paper orders and accepted live orders sorted by timestamp descending, limited to 200 rows. Rejected execution intents are excluded and are available from `/api/rejected-trades`.
 
 **Response:** Array of trade objects:
 
@@ -354,6 +354,7 @@ Returns the trade ledger — filled order records only (both opening and closing
     {
         "timestamp":        "2026-04-23T14:32:10",
         "market":           "BTC/EUR",
+        "strategy":         "combined",
         "direction":        "long",
         "trade_type":       "open | close",
         "size":             0.001140,
@@ -368,6 +369,7 @@ Returns the trade ledger — filled order records only (both opening and closing
     {
         "timestamp":        "2026-04-23T15:01:05",
         "market":           "BTC/EUR",
+        "strategy":         "combined",
         "direction":        "short",
         "trade_type":       "close",
         "size":             0.001140,
@@ -384,10 +386,42 @@ Returns the trade ledger — filled order records only (both opening and closing
 
 **Key fields:**
 - `trade_type`: `"open"` for LONG orders (opening a position), `"close"` for SHORT orders (closing).
+- `strategy`: Strategy ID that generated the linked signal. Stop-loss/manual close rows fall back to the opening signal's strategy when the close row has no direct signal.
 - `pnl`: Non-null on `"close"` rows. Gross P&L before fees (fees captured separately in order_records).
 - `position_id`: First 8 characters of the position UUID — for display only. Same value on the open and close rows.
 - `position_id_full`: Full UUID of the position. Use this to match against `open_position_ids` from `/api/dashboard` to determine OPEN/CLOSED status.
 - `source`: Origin of the trade — `"auto"` (fully-automated), `"manual"` (approved by user), `"stop_loss"` (stop-loss closure).
+
+---
+
+### `GET /api/rejected-trades`
+
+Returns execution-level rejected intents sorted by timestamp descending, limited to 100 rows. These rows never became trades and are intentionally kept out of `/api/trades`.
+
+**Response:** Array of rejected-trade objects:
+
+```json
+[
+    {
+        "id":              12,
+        "timestamp":       "2026-04-23T14:32:10",
+        "market":          "BTC/EUR",
+        "strategy":        "combined",
+        "direction":       "long",
+        "size":            0.001140,
+        "price":           85505.42,
+        "confidence":      0.72,
+        "reason":          "insufficient_funds",
+        "trade_idea_id":   "7c9e6679-..."
+    }
+]
+```
+
+**Key fields:**
+- `reason`: Execution rejection reason. Paper orders use values such as `"insufficient_funds"`; live orders store the Kraken submission error or local credential failure.
+- `strategy`: Strategy ID from the linked rejected signal, when available.
+- `confidence`: Signal confidence when the rejected intent was attempted. May be `null` for non-signal execution paths.
+- `trade_idea_id`: Optional link back to the signal detail modal.
 
 ---
 

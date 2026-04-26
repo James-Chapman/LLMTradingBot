@@ -237,3 +237,16 @@ class RiskStateModel(Base):
     daily_start_equity = Column(Float, default=0.0)
     last_reset_date = Column(String)   # ISO date string "YYYY-MM-DD"
     updated_at = Column(DateTime, default=_utcnow)
+
+class RejectedTradeModel(Base):
+    """Execution-level rejected orders (e.g. insufficient funds) — separate from risk rejections."""
+    __tablename__ = "rejected_trades"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    market = Column(String)
+    direction = Column(String)
+    size = Column(Float)
+    price = Column(Float)
+    confidence = Column(Float, nullable=True)
+    reason = Column(Text)
+    trade_idea_id = Column(String, nullable=True, index=True)
+    timestamp = Column(DateTime, default=_utcnow, index=True)

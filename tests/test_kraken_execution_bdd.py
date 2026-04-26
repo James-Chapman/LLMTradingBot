@@ -27,6 +27,8 @@ class FakeRepo:
     def __init__(self, pending_orders=None):
         self.pending_orders = pending_orders or []
         self.updates = []
+        self.saved_orders = []
+        self.saved_rejected_trades = []
 
     def get_pending_live_orders(self):
         return list(self.pending_orders)
@@ -35,7 +37,10 @@ class FakeRepo:
         self.updates.append({"order_id": order_id, "status": status, "fill_price": fill_price, "fee": fee})
 
     def save_order(self, *args, **kwargs):
-        pass
+        self.saved_orders.append({"args": args, "kwargs": kwargs})
+
+    def save_rejected_trade(self, **kwargs):
+        self.saved_rejected_trades.append(kwargs)
 
 
 class KrakenExecutionEngineBDDTests(unittest.IsolatedAsyncioTestCase):
@@ -117,6 +122,33 @@ class KrakenExecutionEngineBDDTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(order.status, "rejected")
         self.assertEqual(order.exchange_order_id, "missing_api_credentials")
         self.assertEqual(position_id, "")
+
+    # E13: GIVEN live execution rejects an order WHEN a repository is configured
+    # THEN the order is stored in the rejected-trades register instead of the trade ledger.
+    async def test_given_kraken_rejects_order_when_repo_present_then_rejected_trade_is_saved_not_order(self) -> None:
+        api = FakeKrakenAPI({"error": ["EOrder:Insufficient funds"], "result": {}})
+        repo = FakeRepo()
+        engine = KrakenExecutionEngine(api_key="key", api_secret="secret", api_client=api, repository=repo)
+
+        order, position_id = await engine.execute(
+            make_intent(market="ETH/EUR", direction=Direction.SHORT, size=0.5),
+            market_price=2_000.0,
+            signal_confidence=0.71,
+            trade_idea_id="idea-live-rejected-1",
+        )
+
+        self.assertEqual(order.status, "rejected")
+        self.assertEqual(position_id, "")
+        self.assertEqual(repo.saved_orders, [])
+        self.assertEqual(len(repo.saved_rejected_trades), 1)
+        rejected = repo.saved_rejected_trades[0]
+        self.assertEqual(rejected["market"], "ETH/EUR")
+        self.assertEqual(rejected["direction"], "short")
+        self.assertEqual(rejected["size"], 0.5)
+        self.assertEqual(rejected["price"], 2_000.0)
+        self.assertEqual(rejected["confidence"], 0.71)
+        self.assertEqual(rejected["reason"], "EOrder:Insufficient funds")
+        self.assertEqual(rejected["trade_idea_id"], "idea-live-rejected-1")
 
     # BUG-017: GIVEN a live order with a known txid WHEN reconciliation runs and Kraken reports filled
     # THEN the order record is updated to status="filled" with the actual fill price and fee.

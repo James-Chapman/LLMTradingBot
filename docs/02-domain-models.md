@@ -168,7 +168,7 @@ All tables use SQLAlchemy's `DeclarativeBase`. The database is a single SQLite f
 
 ### Table: `order_records`
 
-Primary table for the trade ledger. Every execution attempt creates a row.
+Primary table for the trade ledger. Filled paper orders and accepted live orders create rows here. Execution-level rejections are stored separately in `rejected_trades` so rejected intents do not pollute the operational ledger.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -179,12 +179,13 @@ Primary table for the trade ledger. Every execution attempt creates a row.
 | `size` | Float | Base asset quantity |
 | `price` | Float | Fill price |
 | `fee` | Float nullable | Fee in quote currency |
-| `status` | String | `"filled"` or `"rejected"` |
+| `status` | String | `"filled"`, `"pending"`, or `"submitted"` |
 | `environment` | String | `"paper"` or `"live"` |
 | `timestamp` | DateTime | Fill time |
 | `exchange_order_id` | String nullable | Reserved for live exchange order IDs |
 | `position_id` | String nullable (indexed) | Links to `open_positions.position_id`; shared between the opening BUY and closing SELL |
 | `pnl` | Float nullable | Realised P&L. Set only on close orders (SHORT that closes a LONG) |
+| `trade_idea_id` | String nullable (indexed) | Signal that triggered the accepted order |
 
 **Derived field `source`** (computed in repository, not stored):
 - `"stop-loss"` — when `approval_request_id == "stop_loss"`
@@ -195,6 +196,24 @@ Primary table for the trade ledger. Every execution attempt creates a row.
 **Derived field `trade_type`** (computed in repository, not stored):
 - `"open"` — when `direction == "long"`
 - `"close"` — when `direction == "short"`
+
+---
+
+### Table: `rejected_trades`
+
+Execution-level rejected intents that never became trades. Paper insufficient-funds rejections and live Kraken submission failures are recorded here instead of in `order_records`.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | Integer PK (auto) | |
+| `market` | String | e.g. `"BTC/EUR"` |
+| `direction` | String | `"long"` or `"short"` |
+| `size` | Float | Requested base asset quantity |
+| `price` | Float | Price used when the execution was attempted |
+| `confidence` | Float nullable | Signal confidence at execution time |
+| `reason` | Text | Rejection reason such as `"insufficient_funds"` or a Kraken error |
+| `trade_idea_id` | String nullable (indexed) | Signal that triggered the rejected intent |
+| `timestamp` | DateTime | Rejection time |
 
 ---
 

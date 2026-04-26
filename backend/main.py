@@ -169,6 +169,10 @@ _OHLC_INTER_INTERVAL_GAP = 1.0  # seconds between the two interval fetches for t
 # computable before the first strategy evaluation.  200-bar buffer lets Wilder
 # SMMA (RSI) warm up well past its 14-bar seed window.
 _LOOKBACK_TICKS = 34
+# Number of live ticks that must pass before any new trade is opened after startup.
+_TRADE_WARMUP_TICKS = 20
+_session_tick: int = 0   # updated each tick; readable by dashboard endpoint
+
 _price_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=200))
 
 # Equity snapshots for chart (max 1 440 = 4 h at 10-s resolution) - pre-loaded from DB
@@ -227,6 +231,23 @@ def _record_trade_result(pnl: float) -> None:
     record_trade_result_and_persist(risk_engine, repo, pnl)
 
 
+# Safely extract the numeric LLM briefing score for a market.
+def _briefing_sentiment_for_market(briefing: Any, market: str) -> float:
+    """Return the market briefing score, falling back to neutral for malformed data."""
+    if briefing is None:
+        return 0.0
+    outlooks = getattr(briefing, "market_outlooks", {}) or {}
+    if not isinstance(outlooks, dict):
+        return 0.0
+    outlook = outlooks.get(market, {})
+    if not isinstance(outlook, dict):
+        return 0.0
+    try:
+        return max(-1.0, min(1.0, float(outlook.get("score", 0.0) or 0.0)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 # Record a mark-to-market portfolio value point for dashboard graphing.
 def _record_equity_snapshot(prices: Dict[str, float]) -> Dict[str, Any]:
     """Compute, cache, and persist cash plus current position value."""
@@ -275,7 +296,7 @@ async def _send_alert(event_type: str, payload: Dict[str, Any]) -> None:
 
 async def _strategy_loop() -> None:
     """Background task: poll market data, run strategy, and act based on trading mode."""
-    global _latest_signals, _current_prices, _active_markets
+    global _latest_signals, _current_prices, _active_markets, _session_tick
 
     universe = await universe_resolver.resolve_universe()
     all_markets = universe.fixed_markets + universe.dynamic_markets
@@ -332,6 +353,7 @@ async def _strategy_loop() -> None:
                 _price_history[sym].append(price)
 
             tick += 1
+            _session_tick = tick
             ticks_collected = min(len(next(iter(_price_history.values()), [])), _LOOKBACK_TICKS + 1)
             warming_up = ticks_collected <= _LOOKBACK_TICKS
 
@@ -364,10 +386,7 @@ async def _strategy_loop() -> None:
                     "price":          snap.price,
                     "previous_price": prev,
                     "volume":         snap.volume,
-                    "llm_sentiment":  (
-                        (_analyser.latest_briefing.market_outlooks.get(sym, {}) or {}).get("score", 0.0)
-                        if _analyser.latest_briefing else 0.0
-                    ),
+                    "llm_sentiment":  _briefing_sentiment_for_market(_analyser.latest_briefing, sym),
                     "higher_timeframe": htf_indicators,
                     "indicators":     compute_indicators(list(hist), ohlc_candles=ohlc),
                 }
@@ -430,6 +449,16 @@ async def _strategy_loop() -> None:
                             "stop_loss_triggered",
                             {"market": pos.market, "position_id": pos.position_id, "pnl": pnl},
                         )
+
+            # Session trade warmup: block all new trades for the first _TRADE_WARMUP_TICKS ticks
+            # after startup to let price history stabilise before the strategy acts.
+            if tick <= _TRADE_WARMUP_TICKS:
+                activity.info(
+                    f"Tick #{tick} - trade warmup ({tick}/{_TRADE_WARMUP_TICKS} ticks complete, "
+                    f"{_TRADE_WARMUP_TICKS - tick} remaining)",
+                )
+                await asyncio.sleep(30)
+                continue
 
             # LLM-backed strategies do not require indicator warm-up — they derive signals
             # from the LLM's analysis of price context and news rather than from price history.
@@ -761,7 +790,8 @@ async def _market_briefing_task(new_articles: List[Dict[str, Any]]) -> None:
         briefing = await _analyser.brief_market(new_articles, market_data)
         if briefing:
             outlooks = "  ".join(
-                f"{m}: {v.get('bias','?')}" for m, v in briefing.market_outlooks.items()
+                f"{m}: {v.get('bias','?') if isinstance(v, dict) else '?'}"
+                for m, v in briefing.market_outlooks.items()
             )
             activity.info(
                 f"LLM briefing ({len(new_articles)} new article(s)): {briefing.key_insight}",
@@ -1051,6 +1081,7 @@ async def get_dashboard():
             "activity": activity.recent(60),
             "control": ctrl,
             "strategies": strategy_states,
+            "warmup_ticks_remaining": max(0, _TRADE_WARMUP_TICKS - _session_tick),
             "learning": learner.summary(),
             "llm": {
                 "available": _ollama.available,
@@ -1291,8 +1322,14 @@ async def get_ohlc(market: str, interval: int = Query(5, description="Candle int
 
 @app.get("/api/trades")
 async def get_trades():
-    """Full trade ledger: all filled and rejected orders, newest first."""
+    """Full trade ledger: filled paper and accepted live orders, newest first."""
     return repo.get_trade_ledger(limit=200)
+
+
+@app.get("/api/rejected-trades")
+async def get_rejected_trades():
+    """Execution-rejected orders (e.g. insufficient funds), newest first."""
+    return repo.get_rejected_trades(limit=100)
 
 
 @app.get("/api/closed-trades")

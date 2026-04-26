@@ -127,6 +127,16 @@ matched = next(
 )
 ```
 
+#### Outlook Shape Normalisation
+
+The LLM is prompted to return each outlook as an object, but malformed or older persisted rows may contain a plain string such as `"bullish"`. The analyser normalises every market outlook to:
+
+```json
+{"bias": "bullish", "score": 0.0, "note": ""}
+```
+
+Invalid or missing scores are clamped/fallbacked to `0.0`, so the strategy loop treats malformed briefing data as neutral instead of crashing.
+
 ---
 
 ### Workflow 2: Signal Analysis (`analyse_signal`)

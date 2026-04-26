@@ -104,15 +104,24 @@ class PaperExecutionEngine:
             timestamp=datetime.now(timezone.utc),
         )
 
-        if not self._has_sufficient_funds(intent, fill_value, fee):
+        rejection_reason = self._rejection_reason(intent, fill_value, fee)
+        if rejection_reason:
             order.status = "rejected"
             self.orders.append(order)
             if self._repo:
-                self._repo.save_order(order, intent.approval_request_id, fee, environment,
-                                      trade_idea_id=trade_idea_id)
-            logger.warning("Paper order rejected: insufficient funds", extra={
+                self._repo.save_rejected_trade(
+                    market=intent.market,
+                    direction=intent.direction.value,
+                    size=intent.size,
+                    price=fill_price,
+                    confidence=signal_confidence,
+                    reason=rejection_reason,
+                    trade_idea_id=trade_idea_id,
+                )
+            logger.warning("Paper order rejected", extra={
                 "market": intent.market, "required": fill_value + fee,
                 "available_cash": self.cash,
+                "reason": rejection_reason,
             })
             return order, ""
 
@@ -323,10 +332,16 @@ class PaperExecutionEngine:
         return loss_pct >= stop_loss_pct
 
     def get_total_equity(self, prices: Dict[str, float]) -> float:
-        positions_value = sum(
-            pos.size * prices.get(pos.market, pos.avg_price)
-            for pos in self.positions.values()
-        )
+        positions_value = 0.0
+        for pos in self.positions.values():
+            price = prices.get(pos.market, pos.avg_price)
+            if pos.size > 0:
+                # Long: mark-to-market value
+                positions_value += pos.size * price
+            else:
+                # Short: cash was NOT reduced by fill_value at open — only fee was deducted.
+                # Unrealised P&L = (entry_price - current_price) × |size|.
+                positions_value += (pos.avg_price - price) * abs(pos.size)
         return self.cash + positions_value
 
     def open_positions(self) -> List[PositionRecord]:
@@ -341,25 +356,30 @@ class PaperExecutionEngine:
         return price * (1 + SLIPPAGE_RATE) if direction == Direction.LONG else price * (1 - SLIPPAGE_RATE)
 
     def _has_sufficient_funds(self, intent: ExecutionIntent, fill_value: float, fee: float) -> bool:
+        """Return True when the intent can be filled under cash and position limits."""
+        return not self._rejection_reason(intent, fill_value, fee)
+
+    def _rejection_reason(self, intent: ExecutionIntent, fill_value: float, fee: float) -> str:
+        """Return the execution rejection reason, or an empty string when the intent can fill."""
         market_positions = [p for p in self.positions.values() if p.market == intent.market]
 
         if intent.direction == Direction.LONG:
             # Hard limit: one position per pair — block if a long already exists
             if any(p.size > 0 for p in market_positions):
                 logger.warning("One-position-per-pair limit: long already open", extra={"market": intent.market})
-                return False
-            return self.cash >= fill_value + fee
+                return "long_position_already_open"
+            return "" if self.cash >= fill_value + fee else "insufficient_funds"
 
         # SHORT — closing an existing long takes priority
         total_long = sum(p.size for p in market_positions if p.size > 0)
         if total_long >= intent.size:
-            return True
+            return ""
         # Hard limit: block paper shorts if a short already exists
         if any(p.size < 0 for p in market_positions):
             logger.warning("One-position-per-pair limit: short already open", extra={"market": intent.market})
-            return False
+            return "short_position_already_open"
         # Paper short (no existing long) — require cash as margin
-        return self.cash >= fill_value + fee
+        return "" if self.cash >= fill_value + fee else "insufficient_funds"
 
     def _apply_fill(self, intent: ExecutionIntent, fill_price: float, fee: float,
                     strategy_id: str, signal_confidence: Optional[float],

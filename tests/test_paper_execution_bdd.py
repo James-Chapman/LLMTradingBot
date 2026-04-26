@@ -13,6 +13,7 @@ class CapturingRepository:
     def __init__(self) -> None:
         self.saved_orders = []
         self.saved_fills = []
+        self.saved_rejected_trades = []
         self.saved_signal_outcomes = []
         self.deleted_positions = []
 
@@ -29,6 +30,10 @@ class CapturingRepository:
     # GIVEN a fill is persisted WHEN save_fill is called THEN capture the fill.
     def save_fill(self, fill) -> None:
         self.saved_fills.append(fill)
+
+    # GIVEN an execution is rejected WHEN save_rejected_trade is called THEN capture it.
+    def save_rejected_trade(self, **kwargs) -> None:
+        self.saved_rejected_trades.append(kwargs)
 
     # GIVEN a position closes WHEN delete_open_position is called THEN capture its ID.
     def delete_open_position(self, position_id: str) -> None:
@@ -72,6 +77,30 @@ class PaperExecutionEngineBDDTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(order.status, "rejected")
         self.assertEqual(position_id, "")
         self.assertEqual(len(engine.positions), 1)
+
+    # E13: GIVEN a paper order is rejected at execution WHEN a repository is configured
+    # THEN the order is not saved to the ledger and the rejected-trades register captures the reason.
+    async def test_given_execution_rejection_when_repo_present_then_rejected_trade_is_saved_not_order(self) -> None:
+        repo = CapturingRepository()
+        engine = PaperExecutionEngine(starting_capital=10.0, repository=repo)
+
+        order, position_id = await engine.execute(
+            make_intent(direction=Direction.LONG, size=1.0),
+            market_price=100.0,
+            signal_confidence=0.82,
+            trade_idea_id="idea-rejected-1",
+        )
+
+        self.assertEqual(order.status, "rejected")
+        self.assertEqual(position_id, "")
+        self.assertEqual(repo.saved_orders, [])
+        self.assertEqual(len(repo.saved_rejected_trades), 1)
+        rejected = repo.saved_rejected_trades[0]
+        self.assertEqual(rejected["market"], "BTC/EUR")
+        self.assertEqual(rejected["direction"], "long")
+        self.assertEqual(rejected["reason"], "insufficient_funds")
+        self.assertEqual(rejected["confidence"], 0.82)
+        self.assertEqual(rejected["trade_idea_id"], "idea-rejected-1")
 
     # GIVEN an open long WHEN a matching short executes THEN the oldest long is closed.
     async def test_given_open_long_when_short_executes_then_position_is_closed_fifo(self) -> None:
@@ -279,6 +308,35 @@ class PaperExecutionEngineBDDTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(engine.trailing_stop_triggered(position_id, 57_000.0, 0.05))
         # Price 58,000 is above the 57,000 stop — should not trigger
         self.assertFalse(engine.trailing_stop_triggered(position_id, 58_000.0, 0.05))
+
+    # BUG-027: GIVEN a paper short is open at entry=100 WHEN price falls to 80
+    # THEN total equity exceeds cash and exceeds starting capital (minus fees).
+    async def test_given_open_short_when_price_falls_then_equity_reflects_positive_pnl(self) -> None:
+        engine = PaperExecutionEngine(starting_capital=1000.0)
+        _, position_id = await engine.execute(
+            make_intent(direction=Direction.SHORT, size=1.0),
+            market_price=100.0,
+        )
+
+        equity = engine.get_total_equity({"BTC/EUR": 80.0})
+
+        # Short in profit: unrealised P&L = (entry - current) * size ≈ (99.9 - 80) * 1 = 19.9
+        self.assertGreater(equity, engine.cash, "Short in profit must add to equity, not subtract from it")
+        self.assertGreater(equity, 1000.0 - 1.0, "Equity should be near starting capital plus P&L minus fees")
+
+    # BUG-027: GIVEN a paper short is open at entry=100 WHEN price rises to 120
+    # THEN equity is less than cash (unrealised loss reduces equity).
+    async def test_given_open_short_when_price_rises_then_equity_reflects_negative_pnl(self) -> None:
+        engine = PaperExecutionEngine(starting_capital=1000.0)
+        _, position_id = await engine.execute(
+            make_intent(direction=Direction.SHORT, size=1.0),
+            market_price=100.0,
+        )
+
+        equity = engine.get_total_equity({"BTC/EUR": 120.0})
+
+        # Short at loss: unrealised P&L = (99.9 - 120) * 1 = -20.1
+        self.assertLess(equity, engine.cash, "Short at a loss must reduce equity below cash")
 
     # BUG-025: GIVEN a restored long with None watermark BEFORE the first price update
     # WHEN trailing_stop_triggered is called THEN it falls back to avg_price conservatively.

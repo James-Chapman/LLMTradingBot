@@ -95,6 +95,11 @@ class MarketBriefing:
     article_count: int                 # number of new articles that triggered this
     generated_at: datetime = field(default_factory=_utc_now)
 
+    # Normalize LLM and legacy persisted outlook payloads at the boundary.
+    def __post_init__(self) -> None:
+        """Ensure market_outlooks always maps each market to a dict payload."""
+        self.market_outlooks = _normalise_market_outlooks(self.market_outlooks)
+
 
 @dataclass
 class SignalAnalysis:
@@ -179,6 +184,39 @@ def _match_market_key(raw_key: str, known_markets: List[str]) -> str:
             return market
     logger.warning("LLM market key did not match watched markets", extra={"raw_key": raw_key})
     return raw_key
+
+
+# Normalize one LLM outlook entry to the shape expected by strategy consumers.
+def _normalise_outlook_value(value: Any) -> Dict[str, Any]:
+    """Return a safe market outlook dict with bias, score, and note keys."""
+    if isinstance(value, dict):
+        try:
+            score = float(value.get("score", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        return {
+            "bias": str(value.get("bias", "neutral") or "neutral"),
+            "score": max(-1.0, min(1.0, score)),
+            "note": str(value.get("note", "") or ""),
+        }
+    if isinstance(value, str):
+        return {"bias": value or "neutral", "score": 0.0, "note": ""}
+    return {"bias": "neutral", "score": 0.0, "note": ""}
+
+
+# Normalize all LLM outlook entries and optionally map keys to watched markets.
+def _normalise_market_outlooks(
+    outlooks: Any,
+    known_markets: Optional[List[str]] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Return market outlooks in a stable dict-of-dicts shape."""
+    if not isinstance(outlooks, dict):
+        return {}
+    normalised: Dict[str, Dict[str, Any]] = {}
+    for raw_key, raw_value in outlooks.items():
+        market = _match_market_key(str(raw_key), known_markets) if known_markets else str(raw_key)
+        normalised[market] = _normalise_outlook_value(raw_value)
+    return normalised
 
 
 def _relevant_news(market: str, news: List[Dict], max_items: int = 5) -> List[Dict]:
@@ -286,7 +324,7 @@ class LLMAnalyser:
             b = self._repo.load_latest_llm_briefing()
             if b:
                 self.latest_briefing = MarketBriefing(
-                    market_outlooks=b["market_outlooks"],
+                    market_outlooks=_normalise_market_outlooks(b["market_outlooks"]),
                     overall_sentiment=b["overall_sentiment"],
                     key_insight=b["key_insight"],
                     article_count=b["article_count"],
@@ -370,11 +408,8 @@ class LLMAnalyser:
         try:
             outlooks = result.get("market_outlooks", {})
             known_markets = list(market_data.keys())
-            # Normalise keys for matching only; keep exact watched symbols in the result.
-            normalised: Dict[str, Dict] = {}
-            for k, v in outlooks.items():
-                matched = _match_market_key(str(k), known_markets)
-                normalised[matched] = v
+            # Normalise keys and nested values so downstream consumers can read safely.
+            normalised = _normalise_market_outlooks(outlooks, known_markets)
 
             briefing = MarketBriefing(
                 market_outlooks=normalised,
@@ -440,14 +475,15 @@ class LLMAnalyser:
         briefing_block = ""
         if self.latest_briefing:
             b = self.latest_briefing
-            outlook = b.market_outlooks.get(market, {})
+            raw_outlook = b.market_outlooks.get(market)
             age_min = _age_minutes_since(b.generated_at)
             briefing_block = (
                 f"\nLatest market briefing ({age_min}m ago, {b.article_count} new article(s)):\n"
                 f"  Key insight: {b.key_insight}\n"
                 f"  Overall sentiment: {b.overall_sentiment:+.2f}\n"
             )
-            if outlook:
+            if raw_outlook is not None:
+                outlook = _normalise_outlook_value(raw_outlook)
                 briefing_block += (
                     f"  {market} outlook: {outlook.get('bias','?')} "
                     f"(score {outlook.get('score', 0):+.2f}) — {outlook.get('note','')}\n"
@@ -543,14 +579,15 @@ class LLMAnalyser:
         briefing_block = ""
         if self.latest_briefing:
             b = self.latest_briefing
-            outlook = b.market_outlooks.get(market, {})
+            raw_outlook = b.market_outlooks.get(market)
             age_min = _age_minutes_since(b.generated_at)
             briefing_block = (
                 f"\nLatest market briefing ({age_min}m ago, {b.article_count} new article(s)):\n"
                 f"  Key insight: {b.key_insight}\n"
                 f"  Overall sentiment: {b.overall_sentiment:+.2f}\n"
             )
-            if outlook:
+            if raw_outlook is not None:
+                outlook = _normalise_outlook_value(raw_outlook)
                 briefing_block += (
                     f"  {market} outlook: {outlook.get('bias','?')} "
                     f"(score {outlook.get('score', 0):+.2f}) — {outlook.get('note','')}\n"

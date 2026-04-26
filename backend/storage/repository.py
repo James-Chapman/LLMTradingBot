@@ -31,6 +31,7 @@ from .models import (
     NewsItemModel,
     OpenPositionModel,
     OrderRecordModel,
+    RejectedTradeModel,
     RiskDecisionModel,
     RiskRejectionModel,
     RiskStateModel,
@@ -228,6 +229,20 @@ class Repository:
     def save_order(self, order: OrderRecord, approval_id: str = "",
                    fee: float = 0.0, environment: str = "paper",
                    trade_idea_id: str = "") -> None:
+        """Persist a non-rejected order record for the operational trade ledger."""
+        if order.status == "rejected":
+            direction = order.direction.value if hasattr(order.direction, "value") else str(order.direction)
+            self.save_rejected_trade(
+                market=order.market,
+                direction=direction,
+                size=order.size,
+                price=order.price,
+                reason=order.exchange_order_id or "rejected",
+                trade_idea_id=trade_idea_id,
+                timestamp=order.timestamp,
+            )
+            return
+
         with get_session() as s:
             s.merge(OrderRecordModel(
                 id=order.id,
@@ -256,7 +271,7 @@ class Repository:
         with get_session() as s:
             rows = (
                 s.query(OrderRecordModel)
-                .filter(OrderRecordModel.status.in_(["filled", "pending", "submitted", "rejected"]))
+                .filter(OrderRecordModel.status.in_(["filled", "pending", "submitted"]))
                 .order_by(OrderRecordModel.timestamp.desc())
                 .limit(limit)
                 .all()
@@ -266,6 +281,7 @@ class Repository:
             # oldest order's id as the value — that is the position opener.
             position_ids = {r.position_id for r in rows if r.position_id}
             position_opener: dict = {}
+            position_opener_idea: dict = {}
             for position_id in position_ids:
                 opener = (
                     s.query(OrderRecordModel)
@@ -275,6 +291,18 @@ class Repository:
                 )
                 if opener:
                     position_opener[position_id] = opener.id
+                    position_opener_idea[position_id] = opener.trade_idea_id
+
+            trade_idea_ids = {r.trade_idea_id for r in rows if r.trade_idea_id}
+            trade_idea_ids.update(idea_id for idea_id in position_opener_idea.values() if idea_id)
+            strategy_by_idea = {}
+            if trade_idea_ids:
+                strategy_rows = (
+                    s.query(TradeIdeaModel.id, TradeIdeaModel.strategy_id)
+                    .filter(TradeIdeaModel.id.in_(trade_idea_ids))
+                    .all()
+                )
+                strategy_by_idea = {idea_id: strategy_id for idea_id, strategy_id in strategy_rows}
 
             result = []
             for r in rows:
@@ -295,11 +323,13 @@ class Repository:
                     trade_type = "close"
                 else:
                     trade_type = "open"   # no position_id → unmatched, treat as open
+                strategy_idea_id = r.trade_idea_id or position_opener_idea.get(r.position_id)
                 result.append({
                     "id":               r.id[:8],
                     "position_id":      (r.position_id or "")[:8],  # short form for display
                     "position_id_full": r.position_id or "",
                     "trade_idea_id":    r.trade_idea_id or "",
+                    "strategy":         strategy_by_idea.get(strategy_idea_id, ""),
                     "market":           r.market,
                     "direction":        r.direction,
                     "trade_type":       trade_type,
@@ -709,6 +739,57 @@ class Repository:
                  "confidence": r.confidence, "thesis": r.thesis or "",
                  "reason": r.reason,
                  "trade_idea_id": r.trade_idea_id or "",
+                 "timestamp": r.timestamp.isoformat() if r.timestamp else ""}
+                for r in rows
+            ]
+
+    # ── Rejected trades (execution-level) ────────────────────────────────
+
+    def save_rejected_trade(self, *, market: str, direction: str,
+                            size: float, price: float,
+                            confidence: Optional[float] = None,
+                            reason: str = "insufficient_funds",
+                            trade_idea_id: str = "",
+                            timestamp: Optional[datetime] = None) -> None:
+        """Persist an execution-rejected order (e.g. insufficient funds)."""
+        with get_session() as s:
+            s.add(RejectedTradeModel(
+                market=market,
+                direction=direction,
+                size=size,
+                price=price,
+                confidence=confidence,
+                reason=reason,
+                trade_idea_id=trade_idea_id or None,
+                timestamp=timestamp or datetime.now(timezone.utc),
+            ))
+
+    def get_rejected_trades(self, limit: int = 100) -> List[Dict]:
+        """Return execution-rejected orders, newest first."""
+        with get_session() as s:
+            rows = (
+                s.query(RejectedTradeModel)
+                .order_by(RejectedTradeModel.timestamp.desc())
+                .limit(limit)
+                .all()
+            )
+            trade_idea_ids = {r.trade_idea_id for r in rows if r.trade_idea_id}
+            strategy_by_idea = {}
+            if trade_idea_ids:
+                strategy_rows = (
+                    s.query(TradeIdeaModel.id, TradeIdeaModel.strategy_id)
+                    .filter(TradeIdeaModel.id.in_(trade_idea_ids))
+                    .all()
+                )
+                strategy_by_idea = {idea_id: strategy_id for idea_id, strategy_id in strategy_rows}
+            return [
+                {"id": r.id,
+                 "market": r.market, "direction": r.direction,
+                 "size": r.size, "price": r.price,
+                 "confidence": r.confidence,
+                 "reason": r.reason,
+                 "trade_idea_id": r.trade_idea_id or "",
+                 "strategy": strategy_by_idea.get(r.trade_idea_id, ""),
                  "timestamp": r.timestamp.isoformat() if r.timestamp else ""}
                 for r in rows
             ]

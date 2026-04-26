@@ -68,7 +68,7 @@ class KrakenExecutionEngine:
         trade_idea_id: str = "",
     ) -> Tuple[OrderRecord, str]:
         """Submit a live market or limit order to Kraken."""
-        del strategy_id, signal_confidence
+        del strategy_id
         order = OrderRecord(
             id=str(uuid.uuid4()),
             market=intent.market,
@@ -82,7 +82,12 @@ class KrakenExecutionEngine:
         if self._api is None:
             order.status = "rejected"
             order.exchange_order_id = "missing_api_credentials"
-            self._save_order(order, intent.approval_request_id, environment, trade_idea_id)
+            self._save_rejected_trade(
+                order,
+                confidence=signal_confidence,
+                reason="missing_api_credentials",
+                trade_idea_id=trade_idea_id,
+            )
             return order, ""
 
         payload = self._build_add_order_payload(intent)
@@ -97,15 +102,26 @@ class KrakenExecutionEngine:
         except Exception as exc:
             order.status = "rejected"
             order.exchange_order_id = str(exc)
-            self._save_order(order, intent.approval_request_id, environment, trade_idea_id)
+            self._save_rejected_trade(
+                order,
+                confidence=signal_confidence,
+                reason=str(exc),
+                trade_idea_id=trade_idea_id,
+            )
             logger.error("Kraken live order failed", extra={"market": intent.market, "error": str(exc)})
             return order, ""
 
         errors = response.get("error") or []
         if errors:
             order.status = "rejected"
-            order.exchange_order_id = "; ".join(errors)
-            self._save_order(order, intent.approval_request_id, environment, trade_idea_id)
+            reason = "; ".join(errors)
+            order.exchange_order_id = reason
+            self._save_rejected_trade(
+                order,
+                confidence=signal_confidence,
+                reason=reason,
+                trade_idea_id=trade_idea_id,
+            )
             logger.warning("Kraken live order rejected", extra={"market": intent.market, "error": errors})
             return order, ""
 
@@ -118,6 +134,27 @@ class KrakenExecutionEngine:
             "txid": order.exchange_order_id,
         })
         return order, ""
+
+    # Persist a live execution rejection without polluting the trade ledger.
+    def _save_rejected_trade(
+        self,
+        order: OrderRecord,
+        confidence: Optional[float],
+        reason: str,
+        trade_idea_id: str,
+    ) -> None:
+        """Persist a rejected live execution when a repository is configured."""
+        if self._repo:
+            self._repo.save_rejected_trade(
+                market=order.market,
+                direction=order.direction.value,
+                size=order.size,
+                price=order.price,
+                confidence=confidence,
+                reason=reason,
+                trade_idea_id=trade_idea_id,
+                timestamp=order.timestamp,
+            )
 
     async def reconcile_pending_orders(self) -> int:
         """Query Kraken for all pending live orders and update status in the repository.

@@ -17,7 +17,7 @@
  * { type: 'API_OFFLINE', endpoint: '/api/dashboard',              ts: 1234567890 }
  */
 
-const CACHE  = 'kraken-bot-v6';
+const CACHE  = 'kraken-bot-v7';  // update this to invalidate old caches
 
 /**
  * GET endpoints whose responses should be cached AND broadcast to clients.
@@ -27,6 +27,7 @@ const LIVE_ENDPOINTS = new Set([
     '/api/dashboard',
     '/api/trades',
     '/api/closed-trades',
+    '/api/rejected-trades',
     '/api/news',
 ]);
 

@@ -100,7 +100,7 @@ function dashboard() {
 
 ## Service Worker Caching
 
-`/sw.js` uses a versioned cache (`kraken-bot-v6`) and claims open tabs as soon as the new worker activates. Navigation and other `text/html` requests are network-first, so the dashboard shell does not keep running stale inline scripts after frontend fixes. API dashboard endpoints remain network-first with client broadcasts, while non-HTML static assets use stale-while-revalidate.
+`/sw.js` uses a versioned cache (`kraken-bot-v7`) and claims open tabs as soon as the new worker activates. Navigation and other `text/html` requests are network-first, so the dashboard shell does not keep running stale inline scripts after frontend fixes. API dashboard endpoints remain network-first with client broadcasts, while non-HTML static assets use stale-while-revalidate.
 
 ---
 
@@ -113,6 +113,7 @@ The frontend polls the backend on fixed intervals set up in `init()`. There is n
 | 5 seconds | Prices, signals, positions, equity, approvals, activity, LLM state | `GET /api/dashboard` |
 | 15 seconds | Full trade ledger | `GET /api/trades` |
 | 30 seconds | Closed trades | `GET /api/closed-trades` |
+| 30 seconds | Rejected trades register | `GET /api/rejected-trades` |
 | 300 seconds | News feed | `GET /api/news` |
 | 60 seconds | Price candlestick charts (both intervals) | `GET /api/ohlc/{market}?interval=5` and `?interval=15` |
 
@@ -123,6 +124,7 @@ async init() {
     setInterval(() => this.loadDashboard(),    5_000);
     setInterval(() => this.renderLedger(),    15_000);
     setInterval(() => this.loadClosedTrades(), 30_000);
+    setInterval(() => this.loadRejectedTrades(), 30_000);
     setInterval(() => this.loadNews(),        300_000);
     setInterval(() => this.refreshCharts(),    60_000);
 }
@@ -146,6 +148,7 @@ async loadDashboard() {
     this.emergencyStop = d.control?.emergency_stop ?? false;
     this.strategies    = Object.entries(d.strategies ?? {})
                                .map(([id, enabled]) => ({id, enabled}));
+    this.activeStrategyLabel = (d.strategies ?? []).find(s => s.selected)?.label ?? '';
     this.riskRejections = d.risk_rejections ?? [];
     this.activityLog    = d.activity ?? [];
     this.llmAvailable   = d.llm?.available ?? false;
@@ -191,6 +194,8 @@ ETH/EUR    £1,842.00     [Disable]
 ```
 
 Toggle buttons call `toggleMarket(market)` which POSTs to `/api/control/markets/{market}/toggle`.
+
+The top header shows **Active Strategy**, populated from the selected strategy in `/api/dashboard`, so the operator can see the current trading logic without opening the Markets panel.
 
 ---
 
@@ -242,6 +247,7 @@ Fetches `/api/trades` (200 most recent filled order records) and renders a table
 |--------|---------|
 | Time | UTC time of order fill |
 | Market | Trading pair |
+| Strategy | Human-readable strategy label derived from the row's `strategy` ID |
 | Action | **Buy** when the asset was purchased (long); **Sell** when it was sold (short). An inline badge shows **Open** (green) or **Close** (orange) based on `trade_type` — independent of direction. |
 | Direction | **▲ Long** (green) / **▼ Short** (red) |
 | Size | Units |
@@ -278,6 +284,27 @@ Fetches `/api/closed-trades` (200 most recent signal outcomes) and renders a tab
 | Close Signal | `📊 Close` button — opens signal detail for the SHORT signal that triggered the close. `—` for stop-loss, manual, or reset closes. |
 
 Both signal buttons are `sig-btn` elements handled by the global click delegate in `initEventListeners`, so clicking them calls `showSignal(tradeIdeaId)`.
+
+---
+
+### Rejected Trades Register
+
+Fetches `/api/rejected-trades` (100 most recent execution-level rejections) and renders a collapsed-by-default table separate from the trade ledger. Rows show:
+
+| Column | Content |
+|--------|---------|
+| Time | Rejection timestamp |
+| Market | Trading pair |
+| Strategy | Human-readable strategy label derived from the row's `strategy` ID |
+| Direction | Long/short pill |
+| Size | Requested base asset quantity |
+| Confidence | Signal confidence percentage, or `--` if unavailable |
+| Price | Price used when execution was attempted |
+| Value | `size x price` |
+| Reason | Rejection reason with underscores shown as spaces |
+| Signal | Detail button linked by `trade_idea_id`, if present |
+
+This panel is for intents that never became trades, such as paper insufficient-funds blocks or Kraken submission errors. The main trade ledger remains limited to filled paper orders and accepted live orders.
 
 ---
 

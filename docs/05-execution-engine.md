@@ -5,7 +5,7 @@
 
 Simulates Kraken spot order execution with realistic fee and slippage modelling. All state is held in memory and persisted to SQLite so positions survive restarts.
 
-Live execution is handled by `backend/execution/kraken.py` / `KrakenExecutionEngine`. It mirrors the paper engine's `execute()` signature, submits Kraken `AddOrder` private REST calls, stores the returned Kraken transaction ID in `order_records.exchange_order_id`, and returns an empty `position_id` because exchange balances/fills are the live source of truth.
+Live execution is handled by `backend/execution/kraken.py` / `KrakenExecutionEngine`. It mirrors the paper engine's `execute()` signature, submits Kraken `AddOrder` private REST calls, stores accepted orders in `order_records` with the returned Kraken transaction ID, and returns an empty `position_id` because exchange balances/fills are the live source of truth. Live submission failures are stored in `rejected_trades`, not the trade ledger.
 
 Per-market routing is controlled by `ControlState.live_markets`: paper markets use `PaperExecutionEngine`; live markets use `KrakenExecutionEngine`.
 
@@ -76,7 +76,7 @@ Returns `(OrderRecord, position_id)`. For a rejection, `position_id` is `""`.
 1.  Apply slippage to market_price         → fill_price
 2.  Compute fill_value = size * fill_price
 3.  Compute fee = fill_value * TAKER_FEE_RATE
-4.  Check _has_sufficient_funds()          → reject if False
+4.  Check _has_sufficient_funds()          → save `rejected_trades` row and reject if False
 5.  Set order.status = "filled"
 6.  Create FillRecord
 7.  Call _apply_fill()                     → mutates cash + positions; returns position_id
@@ -84,6 +84,8 @@ Returns `(OrderRecord, position_id)`. For a rejection, `position_id` is `""`.
 9.  Persist to DB: order, fill, position upsert/delete
 10. Return (order, position_id)
 ```
+
+Rejected orders return `order.status == "rejected"` and `position_id == ""`, but they are not saved to `order_records`. The rejected-trades register stores timestamp, market, direction, size, attempted price, signal confidence, reason, and `trade_idea_id`.
 
 ---
 

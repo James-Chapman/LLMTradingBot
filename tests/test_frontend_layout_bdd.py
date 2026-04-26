@@ -112,7 +112,7 @@ class FrontendLayoutBDDTests(unittest.TestCase):
         sw = (FRONTEND_DIR / "sw.js").read_text(encoding="utf-8")
         backend_main = (ROOT_DIR / "backend" / "main.py").read_text(encoding="utf-8")
 
-        self.assertIn("const CACHE  = 'kraken-bot-v6';", sw)
+        self.assertIn("const CACHE  = 'kraken-bot-v7';", sw)
         self.assertIn("if (req.mode === 'navigate' || acceptsHtml) {", sw)
         self.assertIn("event.respondWith(networkFirst(req));", sw)
         self.assertNotIn("c.addAll(['/'])", sw)
@@ -191,6 +191,32 @@ class FrontendLayoutBDDTests(unittest.TestCase):
             "setInterval(load, 3000)",
         ]:
             self.assertIn(hook, approvals)
+
+    # E13: GIVEN execution rejections exist WHEN dashboard markup is inspected
+    # THEN the Rejected Trades register has its endpoint, table body, and confidence field.
+    def test_given_rejected_trades_register_when_markup_inspected_then_required_fields_are_rendered(self) -> None:
+        index = (FRONTEND_DIR / "index.html").read_text(encoding="utf-8")
+        sw = (FRONTEND_DIR / "sw.js").read_text(encoding="utf-8")
+
+        self.assertIn("Rejected Trades", index)
+        self.assertIn("loadRejectedTrades()", index)
+        self.assertIn("fetch('/api/rejected-trades')", index)
+        self.assertIn("'/api/rejected-trades'", sw)
+        self.assertIn('id="rejected-trades-body"', index)
+        self.assertIn("r.confidence", index)
+        self.assertIn("r.strategy", index)
+        self.assertIn("(r.reason || '').replace", index)
+
+    # GIVEN strategy context is available WHEN dashboard markup is inspected
+    # THEN the header and trade tables expose the active/row strategy.
+    def test_given_strategy_context_when_markup_inspected_then_header_and_trade_tables_show_strategy(self) -> None:
+        index = (FRONTEND_DIR / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("Active Strategy", index)
+        self.assertIn("activeStrategyLabel", index)
+        self.assertIn("_strategyLabel(", index)
+        self.assertIn("<th style=\"padding:6px 10px;color:var(--muted);font-weight:600;\">Strategy</th>", index)
+        self.assertIn("this._strategyLabel(t.strategy)", index)
 
 
 if __name__ == "__main__":
