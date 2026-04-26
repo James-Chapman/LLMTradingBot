@@ -133,5 +133,32 @@ class ApprovalServiceBDDTests(unittest.TestCase):
         self.assertEqual(reloaded.get_pending(), [])
 
 
+    # BUG-026: GIVEN an approval whose TTL has elapsed WHEN get() is called
+    # THEN it returns None and the approval is marked expired in the repository.
+    def test_given_expired_approval_when_get_called_then_returns_none_and_marks_expired(self) -> None:
+        repository = CapturingApprovalRepository()
+        service = ApprovalService(ttl_minutes=30, repository=repository)
+        idea = make_trade_idea()
+        request = service.submit(idea, make_risk_decision(idea))
+        request.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+        result = service.get(request.id)
+
+        self.assertIsNone(result)
+        self.assertEqual(repository.status_updates[-1], (request.id, "expired"))
+
+    # BUG-026: GIVEN a valid (non-expired) approval WHEN get() is called
+    # THEN the approval is returned.
+    def test_given_valid_approval_when_get_called_then_approval_is_returned(self) -> None:
+        service = ApprovalService(ttl_minutes=30)
+        idea = make_trade_idea()
+        request = service.submit(idea, make_risk_decision(idea))
+
+        result = service.get(request.id)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.id, request.id)
+
+
 if __name__ == "__main__":
     unittest.main()

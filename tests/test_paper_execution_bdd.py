@@ -1,8 +1,9 @@
 """BDD coverage for the paper execution engine."""
 import unittest
+from datetime import datetime, timezone
 
 from bdd_helpers import make_intent
-from domain.models import Direction
+from domain.models import Direction, PositionRecord
 from execution.paper import SLIPPAGE_RATE, TAKER_FEE_RATE, PaperExecutionEngine
 
 
@@ -247,6 +248,58 @@ class PaperExecutionEngineBDDTests(unittest.IsolatedAsyncioTestCase):
             engine.cash, starting_cash,
             "Cash after closing a profitable short must exceed starting cash",
         )
+
+
+    # BUG-025: GIVEN a long restored with avg_price=50,000 (watermark reset to None)
+    # WHEN update_trailing_prices is called with 60,000 (price has rallied since restart)
+    # THEN trailing_high is 60,000 and trailing_stop_triggered fires at the correct level.
+    def test_given_restored_long_when_price_updates_then_watermark_uses_live_price_not_entry(self) -> None:
+        engine = PaperExecutionEngine(starting_capital=100_000.0)
+        position_id = "test-restore-001"
+        engine.positions[position_id] = PositionRecord(
+            position_id=position_id,
+            market="BTC/EUR",
+            size=1.0,
+            avg_price=50_000.0,
+            unrealized_pnl=0.0,
+            timestamp=datetime.now(timezone.utc),
+        )
+        # Simulate restore: watermarks are None
+        engine._position_meta[position_id] = {
+            "trailing_high": None,
+            "trailing_low": None,
+        }
+
+        # First live price update after restart sets watermark to current price
+        engine.update_trailing_prices({"BTC/EUR": 60_000.0})
+
+        meta = engine._position_meta[position_id]
+        self.assertEqual(meta["trailing_high"], 60_000.0)
+        # 5% trail from 60,000 → stop at 57,000; price 57,000 should trigger
+        self.assertTrue(engine.trailing_stop_triggered(position_id, 57_000.0, 0.05))
+        # Price 58,000 is above the 57,000 stop — should not trigger
+        self.assertFalse(engine.trailing_stop_triggered(position_id, 58_000.0, 0.05))
+
+    # BUG-025: GIVEN a restored long with None watermark BEFORE the first price update
+    # WHEN trailing_stop_triggered is called THEN it falls back to avg_price conservatively.
+    def test_given_restored_long_before_price_update_when_stop_checked_then_fallback_to_avg_price(self) -> None:
+        engine = PaperExecutionEngine(starting_capital=100_000.0)
+        position_id = "test-restore-002"
+        engine.positions[position_id] = PositionRecord(
+            position_id=position_id,
+            market="BTC/EUR",
+            size=1.0,
+            avg_price=50_000.0,
+            unrealized_pnl=0.0,
+            timestamp=datetime.now(timezone.utc),
+        )
+        engine._position_meta[position_id] = {"trailing_high": None, "trailing_low": None}
+
+        # With no price update yet, stop falls back to avg_price (conservative)
+        # 5% trail from 50,000 → stop at 47,500; price 47,000 should trigger
+        self.assertTrue(engine.trailing_stop_triggered(position_id, 47_000.0, 0.05))
+        # Price 48,000 is above 47,500 — should not trigger
+        self.assertFalse(engine.trailing_stop_triggered(position_id, 48_000.0, 0.05))
 
 
 if __name__ == "__main__":

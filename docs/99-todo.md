@@ -6,6 +6,46 @@ This document tracks all identified bugs, improvements, and enhancements in the 
 
 ---
 
+## QA Review — 2026-04-26
+
+### New Bugs — 2026-04-26
+
+- [x] **BUG-024: Division by zero crash in momentum calculation.**
+  - **Where:** `backend/strategy/basic_strategy.py` line 101.
+  - **Problem:** `momentum = (current_price - previous_price) / previous_price` has no guard for `previous_price == 0.0`. On startup the first tick uses `snap.price` as the fallback when history is short, and a misconfigured or zero-priced market snapshot would raise `ZeroDivisionError`, crashing the strategy loop for that tick.
+  - **Expected:** Guard with `if not previous_price: return None` before the division.
+  - **Suggested test:** GIVEN a market snapshot with `previous_price = 0.0` WHEN `_evaluate_market()` is called THEN it returns `None` instead of raising `ZeroDivisionError`.
+
+- [x] **BUG-025: Trailing-stop watermark resets to entry price on bot restart.**
+  - **Where:** `backend/execution/paper.py` lines 70–71.
+  - **Problem:** When restoring positions from the database, `trailing_high` is initialised to `row.avg_price` (the entry price) for longs. If price moved favourably before the restart (e.g., opened at 50,000, peaked at 60,000), the watermark resets to 50,000 instead of 60,000. The trailing stop then uses the wrong reference, allowing price to fall from 60,000 to 47,500 (entry × 0.95) before triggering — far below the correct stop of 57,000 (peak × 0.95). Profits built before the restart are not protected.
+  - **Expected:** On restore, watermarks should be `None` and lazily set to the first live price seen by `update_trailing_prices()`, rather than defaulting to the stale entry price.
+  - **Suggested test:** GIVEN a long restored with `avg_price = 50,000` WHEN `update_trailing_prices(60,000)` is called THEN `trailing_high` is 60,000 and `trailing_stop_triggered(57,000, 0.05)` returns `True`.
+
+- [x] **BUG-026: `ApprovalService.get()` returns expired approvals to the approve endpoint.**
+  - **Where:** `backend/approval/service.py` line 107–108; `backend/main.py` line 1098.
+  - **Problem:** `ApprovalService.get()` reads `_pending` directly without an expiry check. The `POST /api/approvals/{id}/approve` endpoint calls `get()` first and returns 404 with the message `"Approval not found or expired"` only if the result is `None` — but an expired approval that hasn't yet been purged is not `None`. It is returned to the caller, execution proceeds, and only the subsequent `approve()` call (which uses `_get_if_valid()`) rejects it with a second 404. The operator sees a misleading first 200-path through the endpoint before the actual rejection.
+  - **Expected:** `get()` should call `_get_if_valid()` so that the expiry check is consistent with `approve()` and `reject()`.
+  - **Suggested test:** GIVEN an approval whose TTL has elapsed WHEN `approval_service.get(id)` is called THEN it returns `None` and the approval is marked expired in the repository.
+
+---
+
+### Code Quality — 2026-04-26
+
+- [x] **QUALITY-003: Synchronous SQLite calls block the async event loop in the strategy tick.**
+  - **Where:** `backend/main.py` strategy loop — `repo.save_price_tick()`, `repo.trim_old_price_ticks()`, `repo.trim_old_activity()`, `repo.save_trade_idea()`, `repo.save_risk_rejection()`, etc.
+  - **Problem:** All repository methods are synchronous and are called directly from `async` strategy loop code. SQLite I/O under load (write-ahead log flush, vacuum, large result sets) blocks the event loop, delaying the next tick, WebSocket messages, and API responses. Each synchronous DB call holds the event loop for its entire duration.
+  - **Expected:** Wrap blocking repository calls with `await asyncio.get_event_loop().run_in_executor(None, ...)`, or convert the repository layer to use an async SQLite driver such as `aiosqlite`.
+  - **Suggested test:** GIVEN a repository operation that takes >10 ms WHEN it is called in the strategy loop THEN other async tasks (e.g. API health-check responses) are not blocked during the operation.
+
+- [x] **QUALITY-004: `previous_price` supplied to strategy is 17 minutes stale, not the prior tick.**
+  - **Where:** `backend/main.py` line 344.
+  - **Problem:** `prev = hist[-_LOOKBACK_TICKS - 1]` resolves to `hist[-35]` — the price from 35 ticks (≈17.5 minutes) ago. This value is passed as `previous_price` in `market_data` and used as the sole momentum baseline in `BasicStrategy` (`momentum = (current - previous) / previous`). The variable name implies it is the immediately preceding price; the actual value is a rolling 17-minute-old reference. This means the momentum signal is insensitive to short-term reversals within the lookback window, and the thesis logs display a momentum figure that operators would reasonably interpret as a 30-second change.
+  - **Expected:** Either rename the field to `reference_price` with a comment documenting the lookback, or change the lookback to `hist[-2]` for genuine tick-over-tick momentum and rely on `price_changes()` in indicators for multi-minute percentage moves.
+  - **Suggested test:** GIVEN 40 ticks of price history where the last tick is 10% above the prior tick but only 0.1% above `hist[-35]` WHEN the strategy evaluates THEN momentum reflects the 30-second move, not the 17-minute baseline.
+
+---
+
 ## Open Todos — 2026-04-25
 
 ### Critical — Test Runner Broken

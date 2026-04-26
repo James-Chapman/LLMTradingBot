@@ -294,6 +294,46 @@ class BasicStrategyBDDTests(unittest.IsolatedAsyncioTestCase):
             "_LOOKBACK_TICKS must be >= 34 so all indicators are computable before strategy fires",
         )
 
+    # BUG-024: GIVEN a market snapshot with previous_price = 0.0
+    # WHEN the strategy evaluates THEN it returns None instead of raising ZeroDivisionError.
+    async def test_given_zero_previous_price_when_strategy_evaluates_then_no_crash(self) -> None:
+        strategy = BasicStrategy()
+        market_data = {"BTC/EUR": {"price": 50000.0, "previous_price": 0.0, "indicators": {}}}
+
+        ideas = await strategy.evaluate(market_data, news_signals=[])
+
+        self.assertEqual(ideas, [])
+
+    # QUALITY-004: GIVEN price history where the prior tick is 10% above current
+    # WHEN the strategy receives previous_price = hist[-2] (prior tick, not 17-min ref)
+    # THEN momentum reflects the 30-second drop and a SHORT signal can form.
+    async def test_given_prior_tick_as_previous_price_when_large_drop_then_momentum_is_30s_change(
+        self,
+    ) -> None:
+        strategy = BasicStrategy()
+        # previous_price = 110.0, current = 100.0 → -9.1% momentum (well above 0.2% threshold)
+        market_data = {
+            "BTC/EUR": {
+                "price": 100.0,
+                "previous_price": 110.0,  # prior tick — genuine 30-second drop
+                "indicators": {
+                    "rsi_14": 75.0,           # > 60 bearish threshold — supports SHORT
+                    "ema_cross": "bearish",   # supports SHORT
+                    "bb": {"position": 85.0}, # > 70 bearish threshold — supports SHORT
+                    "macd": {"bias": "bearish", "signal_bias": "bearish", "histogram": -0.5},
+                    "stoch": {"k": 90.0, "d": 88.0},   # > 80 — supports SHORT
+                    "williams_r": -5.0,       # > -20 bearish threshold — supports SHORT
+                    "price_changes": {"5m": -3.0, "15m": -5.0},
+                    "atr_pct": 0.5,
+                },
+            }
+        }
+
+        ideas = await strategy.evaluate(market_data, news_signals=[])
+
+        self.assertEqual(len(ideas), 1)
+        self.assertEqual(ideas[0].direction.value, "short")
+
 
 if __name__ == "__main__":
     unittest.main()

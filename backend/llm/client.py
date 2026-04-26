@@ -188,7 +188,10 @@ class OllamaClient:
                 return _loads_model_json(content)
             return content
         except json.JSONDecodeError as e:
-            logger.warning(f"Ollama returned non-JSON: {e}")
+            logger.warning(
+                f"Ollama returned non-JSON: {e}",
+                extra={"raw_response": content},
+            )
             return None
         except Exception as e:
             self._mark_failed(str(e))

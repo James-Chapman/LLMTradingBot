@@ -98,6 +98,8 @@ class BasicStrategy:
         previous_price = data["previous_price"]
         ind: Dict[str, Any] = data.get("indicators", {})
 
+        if not previous_price:
+            return None
         momentum = (current_price - previous_price) / previous_price
         if abs(momentum) < MOMENTUM_THRESHOLD:
             return None

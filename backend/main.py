@@ -213,6 +213,11 @@ _analyser.load_from_db()
 activity.seed_from_db()
 
 
+async def _async_db(fn, *args, **kwargs):
+    """Run a synchronous repository call in a thread so the event loop stays free."""
+    return await asyncio.to_thread(fn, *args, **kwargs)
+
+
 def _record_trade_result(pnl: float) -> None:
     """Record a completed trade's P&L and persist the risk state to DB.
 
@@ -295,6 +300,7 @@ async def _strategy_loop() -> None:
 
     tick = 0
     while True:
+        _tick_start = asyncio.get_event_loop().time()
         try:
             if control.emergency_stop:
                 activity.warn("Emergency stop active - tick skipped")
@@ -341,7 +347,8 @@ async def _strategy_loop() -> None:
             market_data: Dict[str, Any] = {}
             for sym, snap in snapshots.items():
                 hist = _price_history[sym]
-                prev = hist[-_LOOKBACK_TICKS - 1] if len(hist) > _LOOKBACK_TICKS else snap.price
+                # previous_price is the immediately prior tick (30 s ago) for short-term momentum.
+                prev = hist[-2] if len(hist) >= 2 else snap.price
                 # Pass 5-min OHLC candles when available so ATR/Stochastic use true H/L
                 ohlc = _ohlc_cache_5.get(sym, {}).get("candles")
                 ohlc_15 = _ohlc_cache_15.get(sym, {}).get("candles") or []
@@ -374,11 +381,12 @@ async def _strategy_loop() -> None:
                 repo.save_price_tick(sym, price)
             _record_equity_snapshot(prices)
 
-            # Trim old price ticks and activity log periodically (every ~5 min = 10 ticks)
+            # Trim old price ticks and activity log periodically (every ~5 min = 10 ticks).
+            # Offloaded to a thread: DELETE+subquery scans can take 5–50 ms on a busy DB.
             if tick % 10 == 0:
                 for sym in active:
-                    repo.trim_old_price_ticks(sym)
-                repo.trim_old_activity(keep=2_000)
+                    await _async_db(repo.trim_old_price_ticks, sym)
+                await _async_db(repo.trim_old_activity, keep=2_000)
 
             # Stop-loss check: auto-close any position down at least 5%.
             for pos in paper_engine.open_positions():
@@ -722,7 +730,8 @@ async def _strategy_loop() -> None:
             logger.error("Strategy loop error", extra={"error": str(e)}, exc_info=True)
             activity.error("Strategy loop error", str(e))
 
-        await asyncio.sleep(30)
+        _elapsed = asyncio.get_event_loop().time() - _tick_start
+        await asyncio.sleep(max(0.0, 30.0 - _elapsed))
 
 
 async def _market_briefing_task(new_articles: List[Dict[str, Any]]) -> None:
@@ -779,7 +788,8 @@ async def _news_loop() -> None:
             all_items.sort(key=lambda x: x.published_at, reverse=True)
             for item in all_items:
                 try:
-                    repo.upsert_news_item(
+                    await _async_db(
+                        repo.upsert_news_item,
                         id=item.id, source=item.source, title=item.title,
                         content=getattr(item, "content", ""),
                         published_at=item.published_at, url=item.url,

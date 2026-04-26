@@ -195,5 +195,53 @@ class RepositoryBDDTests(unittest.TestCase):
         self.assertIn(995.0,  equities)
 
 
+class AsyncDbHelperBDDTests(unittest.IsolatedAsyncioTestCase):
+    # QUALITY-003: GIVEN a synchronous repository call WHEN wrapped with _async_db
+    # THEN it completes without blocking the event loop.
+    async def test_given_sync_repo_call_when_wrapped_with_async_db_then_event_loop_is_not_blocked(self) -> None:
+        import backend.main as bot_main  # noqa: PLC0415
+
+        calls = []
+
+        def slow_sync():
+            calls.append("called")
+            return "result"
+
+        result = await bot_main._async_db(slow_sync)
+
+        self.assertEqual(result, "result")
+        self.assertEqual(calls, ["called"])
+
+    # QUALITY-003: GIVEN two concurrent tasks WHEN one calls _async_db with a slow function
+    # THEN the other task is not blocked and runs concurrently.
+    async def test_given_slow_db_call_when_async_db_used_then_other_tasks_run_concurrently(self) -> None:
+        import asyncio as _asyncio
+        import time
+        import backend.main as bot_main  # noqa: PLC0415
+
+        order = []
+
+        async def fast_task():
+            order.append("fast_start")
+            await _asyncio.sleep(0)
+            order.append("fast_end")
+
+        def slow_sync():
+            time.sleep(0.05)
+            order.append("slow_done")
+
+        await _asyncio.gather(
+            bot_main._async_db(slow_sync),
+            fast_task(),
+        )
+
+        # fast_task should have run (and completed) while slow_sync was sleeping in its thread
+        self.assertIn("fast_start", order)
+        self.assertIn("fast_end", order)
+        self.assertIn("slow_done", order)
+        # fast_task should complete before the slow sync returns
+        self.assertLess(order.index("fast_end"), order.index("slow_done"))
+
+
 if __name__ == "__main__":
     unittest.main()

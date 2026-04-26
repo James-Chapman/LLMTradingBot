@@ -67,8 +67,10 @@ class PaperExecutionEngine:
                 "market": row.market,
                 # Restored so record_closed_trade() can link the outcome to the opening signal
                 "trade_idea_id": row.trade_idea_id or "",
-                "trailing_high": row.avg_price if row.size > 0 else None,
-                "trailing_low": row.avg_price if row.size < 0 else None,
+                # Watermarks intentionally None on restore: update_trailing_prices()
+                # will set them to the first live price seen, not the stale entry price.
+                "trailing_high": None,
+                "trailing_low": None,
             }
         if rows:
             logger.info("Restored open positions from DB", extra={"count": len(rows)})
@@ -288,9 +290,11 @@ class PaperExecutionEngine:
                 continue
             meta = self._position_meta.setdefault(pid, {})
             if pos.size > 0:
-                meta["trailing_high"] = max(meta.get("trailing_high", pos.avg_price), price)
+                current_high = meta.get("trailing_high")
+                meta["trailing_high"] = max(current_high, price) if current_high is not None else price
             else:
-                meta["trailing_low"] = min(meta.get("trailing_low", pos.avg_price), price)
+                current_low = meta.get("trailing_low")
+                meta["trailing_low"] = min(current_low, price) if current_low is not None else price
 
     def trailing_stop_triggered(self, position_id: str, market_price: float, trail_pct: float) -> bool:
         """Return True when price retraces from the best seen price by trail_pct."""
@@ -299,9 +303,9 @@ class PaperExecutionEngine:
             return False
         meta = self._position_meta.get(position_id, {})
         if pos.size > 0:
-            high = meta.get("trailing_high", pos.avg_price)
+            high = meta.get("trailing_high") or pos.avg_price
             return market_price <= high * (1.0 - trail_pct)
-        low = meta.get("trailing_low", pos.avg_price)
+        low = meta.get("trailing_low") or pos.avg_price
         return market_price >= low * (1.0 + trail_pct)
 
     # Return True only when the current price is losing versus the entry price.

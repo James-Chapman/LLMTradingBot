@@ -105,7 +105,8 @@ class ApprovalService:
         return list(self._pending.values())
 
     def get(self, approval_id: str) -> Optional[ApprovalRequest]:
-        return self._pending.get(approval_id)
+        """Return the approval only if it exists and has not expired."""
+        return self._get_if_valid(approval_id)
 
     def load_pending_from_repository(self) -> int:
         """Load persisted pending approvals from the repository.
