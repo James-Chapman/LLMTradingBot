@@ -12,10 +12,10 @@ from typing import Set
 from observability.logging import get_logger
 
 logger = get_logger("control")
-DEFAULT_SELECTED_STRATEGY = "combined"
+DEFAULT_SELECTED_STRATEGY = "basic_and_llm_strategy"
 LEGACY_STRATEGY_IDS = {
-    "basic_trend": "combined",
-    "llm_only": "llm",
+    "basic_trend": "basic_strategy",
+    "llm_only": "llm_only_strategy",
 }
 
 

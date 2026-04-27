@@ -77,9 +77,9 @@ The iteration is over a list snapshot (`open_positions()` returns `list(self.pos
 
 The loop evaluates the single strategy selected in control state:
 
-- `indicator_only` uses technical indicators only and requires at least six indicators to support the trade direction.
-- `combined` uses `BasicStrategy.evaluate()` with indicator consensus, news sentiment, LLM briefing sentiment, and the LLM signal-analysis/veto pass.
-- `llm` uses `LLMOnlyStrategy.evaluate()` and asks the LLM directly for `long`, `short`, or `hold`; indicators are passed into the LLM prompt but do not gate the trade locally.
+- `basic_strategy` uses technical indicators only and requires at least six indicators to support the trade direction.
+- `basic_and_llm_strategy` uses `BasicAndLLMStrategy.evaluate()` with indicator consensus, news sentiment, LLM briefing sentiment, and the LLM signal-analysis/veto pass.
+- `llm_only_strategy` uses `LLMOnlyStrategy.evaluate()` and asks the LLM directly for `long`, `short`, or `hold`; indicators are passed into the LLM prompt but do not gate the trade locally.
 
 Only one strategy is active at a time. The UI strategy selector writes `control.selected_strategy`, and the next signal tick applies that strategy to all markets.
 
@@ -108,7 +108,7 @@ if llm_analysis.llm_used:
 
 If the LLM is unavailable (Ollama not running, timeout, or error), `llm_used = False`, confidence is unchanged, and no veto fires.
 
-For `indicator_only`, no LLM signal-analysis pass runs. For `llm`, the strategy has already called `_analyser.recommend_trade()` and stored the LLM decision in the trade idea. The loop records that LLM metadata for persistence but does not run a second LLM veto/adjustment pass.
+For `basic_strategy`, no LLM signal-analysis pass runs. For `llm`, the strategy has already called `_analyser.recommend_trade()` and stored the LLM decision in the trade idea. The loop records that LLM metadata for persistence but does not run a second LLM veto/adjustment pass.
 
 ### Mode Routing
 
@@ -148,7 +148,6 @@ After risk evaluation (and only if `risk_decision.approved`):
 | TheDefiantAdapter | The Defiant RSS |
 | CryptoPotaroAdapter | CryptoPotato RSS |
 | NewsBTCAdapter | NewsBTC RSS |
-| ReutersBusinessAdapter | Reuters Business RSS |
 | FearGreedAdapter | Alternative.me Fear & Greed JSON API |
 
 ### Execution Sequence

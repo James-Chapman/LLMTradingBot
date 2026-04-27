@@ -253,7 +253,7 @@ active_strategy = _strategy_by_id(control.selected_strategy_id)
 strategy_ideas = await active_strategy.evaluate(...)
 ```
 
-Registered strategy IDs are `"indicator_only"`, `"combined"`, and `"llm"`. The UI selector writes the selected ID through `POST /api/control/strategies/{strategy_id}/select`.
+Registered strategy IDs are `"basic_strategy"`, `"basic_and_llm_strategy"`, and `"llm_only_strategy"`. The UI selector writes the selected ID through `POST /api/control/strategies/{strategy_id}/select`.
 
 ---
 
@@ -271,7 +271,7 @@ Returns the current state as a serialisable dict. Included in every `/api/dashbo
     "stop_since":         "ISO timestamp" | null,
     "disabled_markets":   ["sorted", "list"],
     "disabled_strategies": ["sorted", "list"],
-    "selected_strategy":  "combined",
+    "selected_strategy":  "basic_and_llm_strategy",
     "live_markets":       ["sorted", "list"]
 }
 ```

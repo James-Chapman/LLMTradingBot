@@ -202,16 +202,6 @@ class NewsBTCAdapter(RSSAdapter):
         super().__init__("NewsBTC")
 
 
-class ReutersBusinessAdapter(RSSAdapter):
-    """Reuters Business — macro news: Fed/ECB decisions, dollar strength, geopolitical risk.
-    Most impactful non-crypto source for EUR-quoted pairs."""
-
-    RSS_URL = "https://ir.thomsonreuters.com/rss/news-releases.xml?items=15"
-
-    def __init__(self):
-        super().__init__("Reuters")
-
-
 class FearGreedAdapter(NewsAdapter):
     """Alternative.me Crypto Fear & Greed Index.
 

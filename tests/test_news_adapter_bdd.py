@@ -1,4 +1,5 @@
 """BDD coverage for news adapters, including stub detection and warning behaviour."""
+
 import unittest
 from datetime import datetime, timezone
 
@@ -14,7 +15,7 @@ class StubNewsAdapterBDDTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         adapter = CoinNewsAdapter()
-        with self.assertLogs("kraken_bot.news_adapter", level="WARNING") as cm:
+        with self.assertLogs("trading_bot.news_adapter", level="WARNING") as cm:
             result = await adapter.fetch_news()
 
         self.assertEqual(result, [])
@@ -29,7 +30,7 @@ class StubNewsAdapterBDDTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         adapter = CoinWeekAdapter()
-        with self.assertLogs("kraken_bot.news_adapter", level="WARNING") as cm:
+        with self.assertLogs("trading_bot.news_adapter", level="WARNING") as cm:
             result = await adapter.fetch_news()
 
         self.assertEqual(result, [])
@@ -44,14 +45,12 @@ class StubNewsAdapterBDDTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         adapter = CoinNewsAdapter()
-        with self.assertLogs("kraken_bot.news_adapter", level="WARNING") as cm:
+        with self.assertLogs("trading_bot.news_adapter", level="WARNING") as cm:
             await adapter.fetch_news()
             await adapter.fetch_news()
 
         warning_count = sum(1 for msg in cm.output if "WARNING" in msg)
-        self.assertEqual(
-            warning_count, 1, "Stub warning should only fire once per adapter instance"
-        )
+        self.assertEqual(warning_count, 1, "Stub warning should only fire once per adapter instance")
 
     # BUG-022: GIVEN RSS and JSON news with mixed naive/aware timestamps
     # WHEN items are normalised and sorted THEN no datetime comparison error is raised.

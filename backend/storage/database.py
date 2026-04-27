@@ -2,6 +2,7 @@
 Database setup and session management.
 Call init_database() once at startup; use get_session() everywhere else.
 """
+
 from contextlib import contextmanager
 
 from sqlalchemy import create_engine, inspect, text
@@ -46,15 +47,17 @@ def _add_missing_columns(
 # Record the currently applied schema version for later migrations.
 def _record_schema_version(engine: Engine) -> None:
     with engine.begin() as conn:
-        conn.execute(text(
-            """
+        conn.execute(
+            text(
+                """
             CREATE TABLE IF NOT EXISTS schema_version (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 version INTEGER NOT NULL,
                 updated_at TEXT NOT NULL
             )
             """
-        ))
+            )
+        )
         conn.execute(
             text(
                 """
@@ -91,40 +94,60 @@ def init_database(database_url: str) -> None:
     Base.metadata.create_all(bind=engine)
 
     # Add new columns to legacy tables without failing on partially applied schemas.
-    _add_missing_columns(engine, "order_records", [
-        ("position_id", "TEXT"),
-        ("pnl", "REAL"),
-        ("trade_idea_id", "TEXT"),
-    ])
+    _add_missing_columns(
+        engine,
+        "order_records",
+        [
+            ("position_id", "TEXT"),
+            ("pnl", "REAL"),
+            ("trade_idea_id", "TEXT"),
+        ],
+    )
 
     # Add signal-context columns to trade_ideas (added for trade→signal linkage).
-    _add_missing_columns(engine, "trade_ideas", [
-        ("momentum_pct", "REAL"),
-        ("indicators", "JSON"),
-        ("llm_used", "INTEGER"),
-        ("llm_sentiment", "REAL"),
-        ("llm_confidence_scale", "REAL"),
-        ("llm_reasoning", "TEXT"),
-        ("news_context", "JSON"),
-        ("risk_approved", "INTEGER"),
-        ("risk_reason", "TEXT"),
-    ])
+    _add_missing_columns(
+        engine,
+        "trade_ideas",
+        [
+            ("momentum_pct", "REAL"),
+            ("indicators", "JSON"),
+            ("llm_used", "INTEGER"),
+            ("llm_sentiment", "REAL"),
+            ("llm_confidence_scale", "REAL"),
+            ("llm_reasoning", "TEXT"),
+            ("news_context", "JSON"),
+            ("risk_approved", "INTEGER"),
+            ("risk_reason", "TEXT"),
+        ],
+    )
 
     # Add columns to signal_outcomes introduced after initial release.
-    _add_missing_columns(engine, "signal_outcomes", [
-        ("trade_idea_id", "TEXT"),
-        ("position_id", "TEXT"),
-        ("closing_trade_idea_id", "TEXT"),
-    ])
+    _add_missing_columns(
+        engine,
+        "signal_outcomes",
+        [
+            ("trade_idea_id", "TEXT"),
+            ("position_id", "TEXT"),
+            ("closing_trade_idea_id", "TEXT"),
+        ],
+    )
 
     # Add trade_idea_id to open_positions (links a position back to the originating signal).
-    _add_missing_columns(engine, "open_positions", [
-        ("trade_idea_id", "TEXT"),
-    ])
-    _add_missing_columns(engine, "control_state", [
-        ("live_markets", "JSON"),
-        ("selected_strategy", "TEXT DEFAULT 'combined'"),
-    ])
+    _add_missing_columns(
+        engine,
+        "open_positions",
+        [
+            ("trade_idea_id", "TEXT"),
+        ],
+    )
+    _add_missing_columns(
+        engine,
+        "control_state",
+        [
+            ("live_markets", "JSON"),
+            ("selected_strategy", "TEXT DEFAULT 'unknown'"),
+        ],
+    )
     _record_schema_version(engine)
 
     _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

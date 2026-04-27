@@ -51,7 +51,7 @@ Returns the full dashboard state in a single payload. Polled every 5 seconds by 
     ],
     "signals": [
         {
-            "strategy":     "combined",
+            "strategy":     "llm_only_strategy",
             "market":       "BTC/EUR",
             "direction":    "long",
             "confidence":   0.72,
@@ -75,7 +75,7 @@ Returns the full dashboard state in a single payload. Polled every 5 seconds by 
             "id":          "7c9e6679-...",
             "market":      "ETH/EUR",
             "direction":   "long",
-            "strategy_id": "combined",
+            "strategy_id": "llm_only_strategy",
             "confidence":  0.65,
             "size":        0.05265,
             "expires_at":  "2026-04-23T15:02:00",
@@ -115,11 +115,11 @@ Returns the full dashboard state in a single payload. Polled every 5 seconds by 
         "stop_since":         null,
         "disabled_markets":   [],
         "disabled_strategies": [],
-        "selected_strategy": "combined"
+        "selected_strategy": "llm_only_strategy"
     },
     "strategies": [
-        {"id": "indicator_only", "label": "Indicator only", "enabled": false, "selected": false},
-        {"id": "combined", "label": "Combined", "enabled": true, "selected": true},
+        {"id": "basic_strategy", "label": "Indicator only", "enabled": false, "selected": false},
+        {"id": "llm_only_strategy", "label": "LLM Only strategy", "enabled": true, "selected": true},
         {"id": "llm", "label": "LLM", "enabled": false, "selected": false}
     ],
     "learning": {
@@ -279,7 +279,7 @@ When a market is disabled:
 
 ### `POST /api/control/strategies/{strategy_id}/select`
 
-Selects the single strategy used for future signal evaluation. Current strategy IDs are `"indicator_only"`, `"combined"`, and `"llm"`.
+Selects the single strategy used for future signal evaluation. Current strategy IDs are `"basic_strategy"`, `"basic_and_llm_strategy"`, and `"llm_only_strategy"`.
 
 **Response:**
 

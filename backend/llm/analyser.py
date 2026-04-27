@@ -12,13 +12,26 @@ reflect_on_outcomes()  — called hourly; finds patterns in closed trades.
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
 from config.currency import currency_symbol
 from config.settings import settings
 from observability.logging import get_logger
 
-from .client import OllamaClient
+
+@runtime_checkable
+class LLMClientProtocol(Protocol):
+    """Structural interface satisfied by LMStudioClient, OllamaClient, TransformersClient, and FallbackLLMClient."""
+
+    @property
+    def available(self) -> bool: ...
+
+    @property
+    def can_attempt(self) -> bool: ...
+
+    async def probe(self) -> bool: ...
+
+    async def chat(self, messages: list[dict], expect_json: bool = True) -> "dict | str | None": ...
 
 logger = get_logger("llm_analyser")
 CURRENCY_SYMBOL = currency_symbol(settings.base_currency)
@@ -80,7 +93,28 @@ _SYSTEM_RECOMMENDER = (
 _SYSTEM_REFLECTOR = (
     "You are a quantitative trading coach reviewing paper trade results. "
     "Find one clear pattern and give one concrete, actionable improvement. "
-    "Respond ONLY with a valid JSON object."
+    "Respond ONLY with a valid JSON object — no prose, no markdown."
+)
+
+_INDICATOR_ANALYST = (
+    "You are a concise crypto trading analyst. "
+    "You receive live market data and technical indicators. "
+    "Assess whether the signal is supported or contradicted by the evidence. "
+    "Respond ONLY with a valid JSON object — no prose, no markdown."
+)
+
+_NEWS_ANALYST = (
+    "You are a concise crypto trading analyst. "
+    "You receive recent news articles about the relevant asset. "
+    "Assess whether the signal is supported or contradicted by the evidence. "
+    "Respond ONLY with a valid JSON object — no prose, no markdown."
+)
+
+_MARKET_ANALYST = (
+    "You are a concise crypto trading analyst. "
+    "You receive a market briefing. "
+    "Assess whether the signal is supported or contradicted by the evidence. "
+    "Respond ONLY with a valid JSON object — no prose, no markdown."
 )
 
 
@@ -299,7 +333,7 @@ def _format_positions(positions: List[Any]) -> str:
 # ── Analyser ──────────────────────────────────────────────────────────────────
 
 class LLMAnalyser:
-    def __init__(self, client: OllamaClient):
+    def __init__(self, client: LLMClientProtocol):
         self._llm = client
         self.latest_reflection: Optional[Reflection] = None
         self.latest_briefing:   Optional[MarketBriefing] = None

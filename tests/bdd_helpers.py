@@ -26,7 +26,7 @@ def make_trade_idea(
     sizing: float = 0.20,
 ) -> TradeIdea:
     return TradeIdea(
-        strategy_id="combined",
+        strategy_id="basic_and_llm_strategy",
         market=market,
         direction=direction,
         thesis="BDD test signal",

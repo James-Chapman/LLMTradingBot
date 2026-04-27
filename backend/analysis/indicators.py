@@ -173,12 +173,15 @@ def macd(
     signal_val  = signal_series[-1]
     histogram   = line_val - signal_val
 
+    bias = "bullish" if line_val > 0 else ("bearish" if line_val < 0 else "neutral")
+    signal_bias = "bullish" if line_val > signal_val else ("bearish" if line_val < signal_val else "neutral")
+
     return _to_py({
         "line":         round(line_val, 4),
         "signal":       round(signal_val, 4),
         "histogram":    round(histogram, 4),
-        "bias":         "bullish" if line_val > 0 else "bearish",
-        "signal_bias":  "bullish" if line_val > signal_val else "bearish",
+        "bias":         bias,
+        "signal_bias":  signal_bias,
     })
 
 
@@ -363,7 +366,12 @@ def compute_all(
     if e9 is not None and e21 is not None:
         out["ema9"]      = round(e9, 2)
         out["ema21"]     = round(e21, 2)
-        out["ema_cross"] = "bullish" if e9 > e21 else "bearish"
+        if e9 > e21:
+            out["ema_cross"] = "bullish"
+        elif e9 < e21:
+            out["ema_cross"] = "bearish"
+        else:
+            out["ema_cross"] = "neutral"
 
     # Bollinger Bands
     bb = bollinger_bands(prices)

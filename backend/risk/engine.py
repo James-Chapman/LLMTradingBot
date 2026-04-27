@@ -143,6 +143,7 @@ class RiskEngine:
             approved=True,
             reason="All risk checks passed",
             adjusted_sizing=proposed_size_eur / self.current_equity if _adjusted else None,
+            proposed_size_eur=proposed_size_eur,
             timestamp=datetime.now(timezone.utc),
         )
 

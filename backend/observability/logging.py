@@ -1,6 +1,7 @@
 """
 Structured logging setup
 """
+
 import json
 import logging
 import sys
@@ -24,7 +25,7 @@ class JSONFormatter(logging.Formatter):
         }
 
         # Add extra fields if present
-        if hasattr(record, 'extra_fields'):
+        if hasattr(record, "extra_fields"):
             log_entry.update(record.extra_fields)
 
         # Add exception info if present
@@ -33,11 +34,12 @@ class JSONFormatter(logging.Formatter):
 
         return json.dumps(log_entry)
 
-def setup_logging(log_level: str = "INFO", log_file: str = "kraken_bot.log") -> None:
+
+def setup_logging(log_level: str = "INFO", log_file: str = "trading_bot.log") -> None:
     """Setup structured logging"""
 
     # Create logger
-    logger = logging.getLogger("kraken_bot")
+    logger = logging.getLogger("trading_bot")
     logger.setLevel(getattr(logging, log_level.upper()))
 
     # Remove existing handlers
@@ -61,9 +63,11 @@ def setup_logging(log_level: str = "INFO", log_file: str = "kraken_bot.log") -> 
     # Prevent duplicate logs
     logger.propagate = False
 
+
 def get_logger(name: str) -> logging.Logger:
     """Get a logger instance"""
-    return logging.getLogger(f"kraken_bot.{name}")
+    return logging.getLogger(f"trading_bot.{name}")
+
 
 def log_event(event_type: str, **kwargs: Any) -> None:
     """Log a structured event"""

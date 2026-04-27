@@ -48,7 +48,7 @@ FIXED_MARKETS=BTC/EUR,ETH/EUR
 OLLAMA_URL=http://localhost:11434
 OLLAMA_MODEL=phi3:mini
 
-DATABASE_URL=sqlite:///./kraken_bot.db
+DATABASE_URL=sqlite:///./trading_bot.db
 ```
 
 Full configuration reference: `docs/01-configuration.md`.
@@ -160,11 +160,11 @@ Start in `manual` mode to observe signal quality before enabling execution.
 
 ### Log File
 
-The bot writes structured JSON logs to `kraken_bot.log` (configurable via `LOG_FILE`). Useful for forensic analysis after unexpected behaviour.
+The bot writes structured JSON logs to `trading_bot.log` (configurable via `LOG_FILE`). Useful for forensic analysis after unexpected behaviour.
 
 ```bash
 # Tail the log file
-Get-Content kraken_bot.log -Wait -Tail 50
+Get-Content trading_bot.log -Wait -Tail 50
 ```
 
 Log level is configurable via `LOG_LEVEL` (default `INFO`). Set to `DEBUG` for verbose output including all Kraken API responses.
@@ -225,7 +225,7 @@ Or use the **Reset Positions** button (paper mode only) on the dashboard. This r
 
 ## Database Management
 
-The SQLite database file is `kraken_bot.db` in the `backend/` directory (or as configured in `DATABASE_URL`).
+The SQLite database file is `trading_bot.db` in the `backend/` directory (or as configured in `DATABASE_URL`).
 
 ### Schema migrations
 
@@ -238,7 +238,7 @@ No manual migration step is required.
 ### Inspect the database
 
 ```bash
-sqlite3 kraken_bot.db
+sqlite3 trading_bot.db
 
 # Useful queries:
 .tables
@@ -250,10 +250,10 @@ SELECT equity, timestamp FROM equity_snapshots ORDER BY timestamp DESC LIMIT 10;
 
 ### Backup
 
-Simply copy `kraken_bot.db`. The file is self-contained.
+Simply copy `trading_bot.db`. The file is self-contained.
 
 ```bash
-Copy-Item kraken_bot.db kraken_bot_backup_$(Get-Date -Format 'yyyyMMdd').db
+Copy-Item trading_bot.db trading_bot_backup_$(Get-Date -Format 'yyyyMMdd').db
 ```
 
 ### Reset for fresh start
@@ -261,7 +261,7 @@ Copy-Item kraken_bot.db kraken_bot_backup_$(Get-Date -Format 'yyyyMMdd').db
 Stop the bot, delete the database file, and restart. The bot will create a new empty database and start with `STARTING_CAPITAL` as the initial cash balance.
 
 ```bash
-Remove-Item backend\kraken_bot.db
+Remove-Item backend\trading_bot.db
 ```
 
 ---

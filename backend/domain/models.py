@@ -79,6 +79,7 @@ class RiskDecision(BaseModel):
     approved: bool
     reason: str
     adjusted_sizing: Optional[float] = None
+    proposed_size_eur: Optional[float] = None  # exact EUR amount the risk engine approved
     timestamp: datetime
 
 class ApprovalRequest(BaseModel):

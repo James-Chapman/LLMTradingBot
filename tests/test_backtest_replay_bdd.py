@@ -71,7 +71,7 @@ class BacktestReplayBDDTests(unittest.IsolatedAsyncioTestCase):
 
         result = await run_replay(
             candles_by_market={"BTC/EUR": _profitable_48h_candles()},
-            strategy_id="llm",
+            strategy_id="llm_only_strategy",
             starting_capital=500.0,
             analyser=analyser,
         )
@@ -87,13 +87,13 @@ class BacktestReplayBDDTests(unittest.IsolatedAsyncioTestCase):
 
         first = await run_replay(
             candles_by_market=candles,
-            strategy_id="llm",
+            strategy_id="llm_only_strategy",
             starting_capital=500.0,
             analyser=FixtureAnalyser(),
         )
         second = await run_replay(
             candles_by_market=candles,
-            strategy_id="llm",
+            strategy_id="llm_only_strategy",
             starting_capital=500.0,
             analyser=FixtureAnalyser(),
         )
@@ -109,7 +109,7 @@ class BacktestReplayBDDTests(unittest.IsolatedAsyncioTestCase):
 
         result = await run_replay(
             candles_by_market={"BTC/EUR": _profitable_48h_candles()[:40]},
-            strategy_id="llm",
+            strategy_id="llm_only_strategy",
             starting_capital=500.0,
             analyser=analyser,
         )
@@ -121,7 +121,7 @@ class BacktestReplayBDDTests(unittest.IsolatedAsyncioTestCase):
     async def test_given_replay_result_when_report_written_then_report_contains_summary_and_orders(self) -> None:
         result = await run_replay(
             candles_by_market={"BTC/EUR": _profitable_48h_candles()},
-            strategy_id="llm",
+            strategy_id="llm_only_strategy",
             starting_capital=500.0,
             analyser=FixtureAnalyser(),
         )
@@ -132,7 +132,7 @@ class BacktestReplayBDDTests(unittest.IsolatedAsyncioTestCase):
 
             report = replay_result_to_dict(result)
             self.assertTrue(path.exists())
-            self.assertEqual(report["summary"]["strategy_id"], "llm")
+            self.assertEqual(report["summary"]["strategy_id"], "llm_only_strategy")
             self.assertGreater(report["summary"]["ending_equity"], report["summary"]["starting_equity"])
             self.assertGreaterEqual(len(report["orders"]), 2)
         finally:

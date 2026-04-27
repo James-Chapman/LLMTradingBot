@@ -12,7 +12,7 @@ class ControlStateBDDTests(unittest.TestCase):
 
         snapshot = control.snapshot()
 
-        self.assertEqual(snapshot["selected_strategy"], "combined")
+        self.assertEqual(snapshot["selected_strategy"], "basic_and_llm_strategy")
 
     # GIVEN a strategy is selected WHEN the snapshot is requested THEN only that strategy is active.
     def test_given_strategy_selected_when_snapshot_requested_then_selected_strategy_is_active(self) -> None:

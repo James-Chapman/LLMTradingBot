@@ -100,7 +100,7 @@ function dashboard() {
 
 ## Service Worker Caching
 
-`/sw.js` uses a versioned cache (`kraken-bot-v7`) and claims open tabs as soon as the new worker activates. Navigation and other `text/html` requests are network-first, so the dashboard shell does not keep running stale inline scripts after frontend fixes. API dashboard endpoints remain network-first with client broadcasts, while non-HTML static assets use stale-while-revalidate.
+`/sw.js` uses a versioned cache (`trading-bot-v0.4.0`) and claims open tabs as soon as the new worker activates. Navigation and other `text/html` requests are network-first, so the dashboard shell does not keep running stale inline scripts after frontend fixes. API dashboard endpoints remain network-first with client broadcasts, while non-HTML static assets use stale-while-revalidate.
 
 ---
 

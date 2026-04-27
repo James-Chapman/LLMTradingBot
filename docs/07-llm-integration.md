@@ -1,12 +1,68 @@
 # LLM Integration
 
-The LLM subsystem consists of three components: an async Ollama client (`llm/client.py`), an analyser that builds prompts and parses responses (`llm/analyser.py`), and a pure-Python technical indicator library (`analysis/indicators.py`) that feeds the prompts.
+The LLM subsystem consists of four components: a `FallbackLLMClient` that chains three backend clients (`llm/lm_studio_client.py`, `llm/ollama_client.py`, `llm/transformers_client.py`), an analyser that builds prompts and parses responses (`llm/analyser.py`), and a pure-Python technical indicator library (`analysis/indicators.py`) that feeds the prompts.
 
-The LLM acts in two modes. For the `combined` strategy, it adjusts signal confidence, annotates theses, and can veto signals entirely when its `confidence_scale` falls below `LLM_VETO_THRESHOLD` (default 0.70). For the `llm` strategy, it directly recommends `long`, `short`, or `hold`; only `long` and `short` become trade ideas. The `indicator_only` strategy does not use the LLM signal-analysis/veto pass.
+The LLM acts in two modes. For the `basic_and_llm_strategy` strategy, it adjusts signal confidence, annotates theses, and can veto signals entirely when its `confidence_scale` falls below `LLM_VETO_THRESHOLD` (default 0.70). For the `llm_only_strategy` strategy, it directly recommends `long`, `short`, or `hold`; only `long` and `short` become trade ideas. The `basic_strategy` strategy does not use the LLM signal-analysis/veto pass.
 
 ---
 
-## Ollama Client (`backend/llm/client.py`)
+## LLM Clients
+
+Three backends are available. At startup, `FallbackLLMClient` probes them in priority order and locks in the first available one. All three share the same circuit-breaker interface (`probe`, `chat`, `can_attempt`, `circuit_state`, `available`) so `LLMAnalyser` works identically regardless of which is active.
+
+### Fallback Client (`backend/llm/fallback_client.py`)
+
+**Class:** `FallbackLLMClient`
+
+Wraps the three backend clients and manages selection. Probes in priority order at startup (LM Studio → Ollama → Transformers) and locks in the first that succeeds. During operation, `chat()` delegates to the active client; if its circuit opens, `FallbackLLMClient` promotes to the next available backend automatically.
+
+### LM Studio Client (`backend/llm/lm_studio_client.py`) — **highest priority**
+
+**Class:** `LMStudioClient`
+
+Talks to LM Studio's OpenAI-compatible REST API (`POST /v1/chat/completions`). Requires LM Studio to be running with a model loaded. Configured via `LM_STUDIO_URL` (default `http://localhost:1234`) and `LM_STUDIO_MODEL` (default `google/gemma-4-e4b`).
+
+### Ollama Client (`backend/llm/ollama_client.py`) — **second priority**
+
+**Class:** `OllamaClient`
+
+A thin async wrapper around the Ollama REST API. Requires a locally-running Ollama process with the configured model pulled.
+
+### Transformers Client (`backend/llm/transformers_client.py`) — **fallback**
+
+**Class:** `TransformersClient`
+
+Loads a Hugging Face model locally via the `transformers` pipeline API. The model is loaded on first `probe()` call in a thread to avoid blocking the event loop. No separate server required.
+
+---
+
+### LM Studio Client details (`backend/llm/lm_studio_client.py`)
+
+**Class:** `LMStudioClient`
+
+### Constructor
+
+```python
+LMStudioClient(
+    base_url: str,  # e.g. "http://localhost:1234"
+    model: str,     # e.g. "google/gemma-4-e4b" — sent in the request but LM Studio uses whatever is loaded
+    timeout: int,   # per-request timeout in seconds (default 60)
+)
+```
+
+### `probe()`
+
+GETs `/v1/models`. Any HTTP 200 response indicates LM Studio is running. Sets `self.available = True/False`.
+
+### `chat()`
+
+POSTs to `/v1/chat/completions` with OpenAI-format body `{model, messages, stream: false}`. Parses the response at `choices[0].message.content`. Shares the same JSON repair helpers as the Ollama client.
+
+**Circuit breaker:** Same exponential-backoff behaviour as `OllamaClient` — 30 s initial delay, doubles on repeated failures, caps at 5 minutes.
+
+---
+
+### Ollama Client details (`backend/llm/ollama_client.py`)
 
 **Class:** `OllamaClient`
 
@@ -28,7 +84,7 @@ OllamaClient(
 async def probe(self) -> bool:
 ```
 
-Called once at startup from the FastAPI lifespan. GETs `/api/tags` to check if Ollama is running and the model is loaded. Sets `self.available = True/False`. Does not raise; failures are logged as warnings.
+GETs `/api/tags` to check if Ollama is running and the model is loaded. Sets `self.available = True/False`. Does not raise; failures are logged as warnings.
 
 ### `chat()`
 
@@ -60,7 +116,7 @@ Malformed model output is handled differently. If Ollama returns HTTP 200 but th
 Holds cached state and implements the three LLM workflows.
 
 ```python
-self._llm: OllamaClient
+self._llm: OllamaClient | TransformersClient  # whichever is wired in at startup
 self.latest_reflection: Optional[Reflection]    # updated hourly
 self.latest_briefing: Optional[MarketBriefing]  # updated on new news
 ```

@@ -112,7 +112,7 @@ class FrontendLayoutBDDTests(unittest.TestCase):
         sw = (FRONTEND_DIR / "sw.js").read_text(encoding="utf-8")
         backend_main = (ROOT_DIR / "backend" / "main.py").read_text(encoding="utf-8")
 
-        self.assertIn("const CACHE  = 'kraken-bot-v7';", sw)
+        self.assertIn("const CACHE  = 'trading-bot-v0.4.0';", sw)
         self.assertIn("if (req.mode === 'navigate' || acceptsHtml) {", sw)
         self.assertIn("event.respondWith(networkFirst(req));", sw)
         self.assertNotIn("c.addAll(['/'])", sw)
@@ -215,8 +215,31 @@ class FrontendLayoutBDDTests(unittest.TestCase):
         self.assertIn("Active Strategy", index)
         self.assertIn("activeStrategyLabel", index)
         self.assertIn("_strategyLabel(", index)
-        self.assertIn("<th style=\"padding:6px 10px;color:var(--muted);font-weight:600;\">Strategy</th>", index)
+        self.assertIn('<th style="padding:6px 10px;color:var(--muted);font-weight:600;">Strategy</th>', index)
         self.assertIn("this._strategyLabel(t.strategy)", index)
+
+
+    # GIVEN the header LLM status indicator WHEN markup is inspected
+    # THEN the dot is inside a flex metric-block so width/height apply,
+    # and the model label is bound to llmModel with a fallback.
+    def test_given_header_llm_indicator_when_markup_inspected_then_dot_is_in_flex_container(self) -> None:
+        index = (FRONTEND_DIR / "index.html").read_text(encoding="utf-8")
+
+        # Locate the header section
+        header_start = index.index('<header class="app-header')
+        header_end = index.index("</header>", header_start) + len("</header>")
+        header_markup = index[header_start:header_end]
+
+        # The dot must exist and its colour binding must use llmAvailable
+        self.assertIn('class="llm-dot"', header_markup)
+        self.assertIn("llmAvailable", header_markup)
+
+        # The metric-block containing the dot must opt into flex layout so the
+        # 8×8 span dimensions actually render (inline elements ignore width/height)
+        self.assertIn('display:flex', header_markup)
+
+        # Model text must be bound with a "Not configured" fallback
+        self.assertIn("llmModel || 'Not configured'", header_markup)
 
 
 if __name__ == "__main__":

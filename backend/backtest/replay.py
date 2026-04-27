@@ -16,7 +16,7 @@ from execution.paper import PaperExecutionEngine
 from ingestion.kraken_adapter import KrakenMarketAdapter
 from risk.engine import RiskEngine
 from strategy.basic_strategy import BasicStrategy
-from strategy.indicator_only_strategy import IndicatorOnlyStrategy
+from strategy.basic_and_llm_strategy import BasicAndLLMStrategy
 from strategy.llm_only_strategy import LLMOnlyStrategy
 
 
@@ -86,9 +86,7 @@ def write_replay_report(result: ReplayResult, path: Path) -> None:
 def enforce_profit_requirement(result: ReplayResult, require_profit: bool) -> None:
     """Validate explicit replay profit acceptance."""
     if require_profit and result.realised_pnl <= 0:
-        raise ValueError(
-            f"Replay was not profitable: realised_pnl={result.realised_pnl:.6f}"
-        )
+        raise ValueError(f"Replay was not profitable: realised_pnl={result.realised_pnl:.6f}")
 
 
 # Fetch recent Kraken OHLC candles and replay them through the selected strategy.
@@ -119,11 +117,11 @@ async def run_live_kraken_replay(
 # Return the strategy instance for a replay strategy ID.
 def _strategy_for(strategy_id: str):
     """Create the selected strategy for replay."""
-    if strategy_id == "indicator_only":
-        return IndicatorOnlyStrategy()
-    if strategy_id == "combined":
+    if strategy_id == "basic_strategy":
         return BasicStrategy()
-    if strategy_id == "llm":
+    if strategy_id == "basic_and_llm_strategy":
+        return BasicAndLLMStrategy()
+    if strategy_id == "llm_only_strategy":
         return LLMOnlyStrategy()
     raise ValueError(f"Unknown strategy_id: {strategy_id}")
 
@@ -144,14 +142,16 @@ def resample_to_15m(candles: List[Dict[str, float]]) -> List[Dict[str, float]]:
         highs = np.asarray([c["h"] for c in group], dtype=np.float64)
         lows = np.asarray([c["l"] for c in group], dtype=np.float64)
         volumes = np.asarray([c.get("v", 0.0) for c in group], dtype=np.float64)
-        result.append({
-            "t": group[-1].get("t", ""),
-            "o": float(group[0]["o"]),
-            "h": float(np.max(highs)),
-            "l": float(np.min(lows)),
-            "c": float(group[-1]["c"]),
-            "v": float(np.sum(volumes)),
-        })
+        result.append(
+            {
+                "t": group[-1].get("t", ""),
+                "o": float(group[0]["o"]),
+                "h": float(np.max(highs)),
+                "l": float(np.min(lows)),
+                "c": float(group[-1]["c"]),
+                "v": float(np.sum(volumes)),
+            }
+        )
     return result
 
 
@@ -250,7 +250,7 @@ async def run_replay(
         market_data: Dict[str, Any] = {}
         prices: Dict[str, float] = {}
         for market, candles in candles_by_market.items():
-            visible = candles[:idx + 1]
+            visible = candles[: idx + 1]
             current = visible[-1]
             prices[market] = current["c"]
             closes = [c["c"] for c in visible]
@@ -266,7 +266,8 @@ async def run_replay(
                         tick_seconds=900,
                         ohlc_candles=htf_candles,
                     )
-                    if htf_candles else {}
+                    if htf_candles
+                    else {}
                 ),
                 "visible_candle_count": len(visible),
             }
@@ -300,14 +301,16 @@ async def run_replay(
                 market_price=price,
                 market_volume_24h=market_data[idea.market].get("volume"),
             )
-            signals.append({
-                "market": idea.market,
-                "strategy_id": idea.strategy_id,
-                "direction": idea.direction.value,
-                "approved": decision.approved,
-                "reason": decision.reason,
-                "visible_candle_count": market_data[idea.market]["visible_candle_count"],
-            })
+            signals.append(
+                {
+                    "market": idea.market,
+                    "strategy_id": idea.strategy_id,
+                    "direction": idea.direction.value,
+                    "approved": decision.approved,
+                    "reason": decision.reason,
+                    "visible_candle_count": market_data[idea.market]["visible_candle_count"],
+                }
+            )
             if not decision.approved:
                 continue
             size = (idea.position_sizing_proposal * equity) / price
@@ -326,11 +329,7 @@ async def run_replay(
                 trade_idea_id=idea.id,
             )
 
-    final_prices = {
-        market: candles[-1]["c"]
-        for market, candles in candles_by_market.items()
-        if candles
-    }
+    final_prices = {market: candles[-1]["c"] for market, candles in candles_by_market.items() if candles}
     for pos in list(paper_engine.open_positions()):
         await paper_engine.close_position(
             pos.position_id,
@@ -369,7 +368,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--market", default="BTC/EUR")
     parser.add_argument("--hours", type=int, default=48)
     parser.add_argument("--interval", type=int, default=5)
-    parser.add_argument("--strategy", default="combined")
+    parser.add_argument("--strategy", default="basic_and_llm_strategy")
     parser.add_argument("--starting-capital", type=float, default=500.0)
     parser.add_argument("--source", choices=["kraken"], default="kraken")
     parser.add_argument("--require-profit", action="store_true")
@@ -390,11 +389,11 @@ async def _main() -> None:
         starting_capital=args.starting_capital,
         require_profit=args.require_profit,
     )
-    report_path = Path(args.report) if args.report else Path(
-        "docs/backtests"
-    ) / (
-        f"{datetime.now(timezone.utc).date()}_"
-        f"{args.market.replace('/', '-')}_{args.strategy}_{args.hours}h.json"
+    report_path = (
+        Path(args.report)
+        if args.report
+        else Path("docs/backtests")
+        / (f"{datetime.now(timezone.utc).date()}_{args.market.replace('/', '-')}_{args.strategy}_{args.hours}h.json")
     )
     write_replay_report(result, report_path)
     print(json.dumps(replay_result_to_dict(result)["summary"], indent=2))

@@ -1,6 +1,7 @@
 """
 Configuration settings using Pydantic v2
 """
+
 from typing import List, Optional
 
 from pydantic import Field
@@ -18,7 +19,7 @@ class BotSettings(BaseSettings):
 
     # App settings
     app_name: str = Field(default="Kraken Trading Bot", validation_alias="APP_NAME")
-    version: str = Field(default="0.1.0", validation_alias="VERSION")
+    version: str = Field(default="0.3.0", validation_alias="VERSION")
     debug: bool = Field(default=False, validation_alias="DEBUG")
 
     # Server settings
@@ -26,7 +27,7 @@ class BotSettings(BaseSettings):
     port: int = Field(default=8000, validation_alias="PORT")
 
     # Database
-    database_url: str = Field(default="sqlite:///./kraken_bot.db", validation_alias="DATABASE_URL")
+    database_url: str = Field(default="sqlite:///./trading_bot.db", validation_alias="DATABASE_URL")
 
     # Trading settings
     base_currency: str = Field(default="EUR", validation_alias="BASE_CURRENCY")
@@ -72,15 +73,23 @@ class BotSettings(BaseSettings):
     dynamic_universe_source: str = Field(default="coinmarketcap", validation_alias="DYNAMIC_UNIVERSE_SOURCE")
     max_eth_ecosystem_coins: int = Field(default=10, validation_alias="MAX_ETH_ECOSYSTEM_COINS")
 
-    # Local LLM (Ollama)
+    # Local LLM — LM Studio (OpenAI-compatible, highest priority)
+    lm_studio_url: str = Field(default="http://localhost:1234", validation_alias="LM_STUDIO_URL")
+    lm_studio_model: str = Field(default="default model", validation_alias="LM_STUDIO_MODEL")
+
+    # Local LLM — Ollama (second priority)
     ollama_url: str = Field(default="http://localhost:11434", validation_alias="OLLAMA_URL")
-    ollama_model: str = Field(default="gemma4:e4b", validation_alias="OLLAMA_MODEL")
+    ollama_model: str = Field(default="default model", validation_alias="OLLAMA_MODEL")
     ollama_timeout: int = Field(default=60, validation_alias="OLLAMA_TIMEOUT")
+
+    # Local LLM — Transformers (fallback)
+    transformers_llm_model: str = Field(default="default model", validation_alias="TRANSFORMERS_LLM_MODEL")
     llm_only_max_concurrency: int = Field(default=3, validation_alias="LLM_ONLY_MAX_CONCURRENCY")
 
     # Logging
     log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
-    log_file: str = Field(default="kraken_bot.log", validation_alias="LOG_FILE")
+    log_file: str = Field(default="trading_bot.log", validation_alias="LOG_FILE")
+
 
 # Global settings instance
 settings = BotSettings()

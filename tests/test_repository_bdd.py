@@ -61,7 +61,7 @@ class RepositoryBDDTests(unittest.TestCase):
         entry_at = datetime(2026, 4, 24, 10, 0, 0)
 
         repository.save_signal_outcome(
-            strategy_id="combined",
+            strategy_id="basic_and_llm_strategy",
             market="BTC/EUR",
             direction="long",
             entry_price=100.0,
@@ -73,7 +73,7 @@ class RepositoryBDDTests(unittest.TestCase):
             entry_at=entry_at,
         )
         repository.save_signal_outcome(
-            strategy_id="combined",
+            strategy_id="basic_and_llm_strategy",
             market="ETH/EUR",
             direction="long",
             entry_price=100.0,
@@ -157,7 +157,7 @@ class RepositoryBDDTests(unittest.TestCase):
 
         ledger = repository.get_trade_ledger()
 
-        self.assertEqual(ledger[0]["strategy"], "combined")
+        self.assertEqual(ledger[0]["strategy"], "basic_and_llm_strategy")
 
     # GIVEN a close order has no direct signal WHEN the ledger is requested
     # THEN strategy falls back to the opening order's signal.
@@ -198,7 +198,7 @@ class RepositoryBDDTests(unittest.TestCase):
         ledger = repository.get_trade_ledger(limit=1)
 
         self.assertEqual(ledger[0]["id"], "close-wi")
-        self.assertEqual(ledger[0]["strategy"], "combined")
+        self.assertEqual(ledger[0]["strategy"], "basic_and_llm_strategy")
 
     # E13: GIVEN legacy rejected order rows exist WHEN the trade ledger is requested
     # THEN they are excluded from the operational ledger.
@@ -249,7 +249,7 @@ class RepositoryBDDTests(unittest.TestCase):
         self.assertEqual(rejected_trades[0]["confidence"], 0.64)
         self.assertEqual(rejected_trades[0]["reason"], "insufficient_funds")
         self.assertEqual(rejected_trades[0]["trade_idea_id"], idea.id)
-        self.assertEqual(rejected_trades[0]["strategy"], "combined")
+        self.assertEqual(rejected_trades[0]["strategy"], "basic_and_llm_strategy")
 
     # E13: GIVEN save_order receives a rejected order WHEN it persists
     # THEN the repository redirects it to the rejected-trades register.

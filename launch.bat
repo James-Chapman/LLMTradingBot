@@ -76,15 +76,104 @@ if "%NEEDS_VENV_UPDATE%"=="1" (
     echo Project virtual environment is up to date.
 )
 
-echo Starting Ollama...
-where ollama >nul 2>&1
-if %ERRORLEVEL% equ 0 (
-    start "Ollama" cmd /k "ollama serve"
-    timeout /t 3 /nobreak > nul
-) else (
-    echo WARNING: ollama not found on PATH - LLM features will be unavailable.
+echo.
+echo =========================================
+echo  Checking LLM backends...
+echo =========================================
+
+:: ── LM Studio ────────────────────────────────────────────────────────────────
+:: Priority 1: try LM Studio OpenAI-compatible server on port 1234.
+set LM_STUDIO_READY=0
+
+curl -s --max-time 3 http://localhost:1234/v1/models >nul 2>&1
+if not errorlevel 1 (
+    echo [OK] LM Studio server is already running.
+    set LM_STUDIO_READY=1
 )
 
+if "!LM_STUDIO_READY!"=="0" (
+    :: Try to start LM Studio. Prefer the headless CLI (lms) over the GUI.
+    where lms >nul 2>&1
+    if not errorlevel 1 (
+        echo LM Studio not running. Starting via lms CLI...
+        start "LM Studio Server" /min cmd /c "lms server start"
+        goto :wait_lm_studio
+    )
+
+    :: Fall back to launching the GUI application.
+    set LMS_EXE=
+    if exist "%LOCALAPPDATA%\Programs\LM Studio\LM Studio.exe" set LMS_EXE=%LOCALAPPDATA%\Programs\LM Studio\LM Studio.exe
+    if "!LMS_EXE!"=="" if exist "%PROGRAMFILES%\LM Studio\LM Studio.exe" set LMS_EXE=%PROGRAMFILES%\LM Studio\LM Studio.exe
+
+    if not "!LMS_EXE!"=="" (
+        echo LM Studio not running. Starting from "!LMS_EXE!"...
+        echo NOTE: Enable "Start server on launch" in LM Studio settings for reliable auto-start.
+        start "" "!LMS_EXE!"
+        goto :wait_lm_studio
+    )
+
+    echo LM Studio not found. Skipping.
+    goto :try_ollama
+
+    :wait_lm_studio
+    echo Waiting for LM Studio server (up to 20s)...
+    for /l %%i in (1,1,10) do (
+        if "!LM_STUDIO_READY!"=="0" (
+            timeout /t 2 /nobreak >nul
+            curl -s --max-time 3 http://localhost:1234/v1/models >nul 2>&1
+            if not errorlevel 1 set LM_STUDIO_READY=1
+        )
+    )
+    if "!LM_STUDIO_READY!"=="1" (
+        echo [OK] LM Studio server is running.
+    ) else (
+        echo [WARN] LM Studio did not respond in time. Trying Ollama...
+    )
+)
+
+if "!LM_STUDIO_READY!"=="1" goto :start_app
+
+:: ── Ollama ────────────────────────────────────────────────────────────────────
+:: Priority 2: try Ollama on port 11434.
+:try_ollama
+set OLLAMA_READY=0
+
+curl -s --max-time 3 http://localhost:11434 >nul 2>&1
+if not errorlevel 1 (
+    echo [OK] Ollama is already running.
+    set OLLAMA_READY=1
+)
+
+if "!OLLAMA_READY!"=="0" (
+    where ollama >nul 2>&1
+    if not errorlevel 1 (
+        echo Ollama not running. Starting ollama serve...
+        start "Ollama" /min cmd /c "ollama serve"
+        echo Waiting for Ollama (up to 15s)...
+        for /l %%i in (1,1,5) do (
+            if "!OLLAMA_READY!"=="0" (
+                timeout /t 3 /nobreak >nul
+                curl -s --max-time 3 http://localhost:11434 >nul 2>&1
+                if not errorlevel 1 set OLLAMA_READY=1
+            )
+        )
+        if "!OLLAMA_READY!"=="1" (
+            echo [OK] Ollama is running.
+        ) else (
+            echo [WARN] Ollama did not respond in time.
+        )
+    ) else (
+        echo Ollama not installed. Skipping.
+    )
+)
+
+if "!OLLAMA_READY!"=="0" (
+    echo [INFO] No LLM server available. Application will use local Transformers model.
+)
+
+:: ── Start the bot ─────────────────────────────────────────────────────────────
+:start_app
+echo.
 echo Starting Kraken Trading Bot...
 start "Kraken Bot" cmd /k "call ""%VENV_ACTIVATE%"" && cd /d ""%BACKEND_DIR%"" && ""%VENV_PYTHON%"" main.py"
 

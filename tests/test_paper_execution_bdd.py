@@ -1,4 +1,5 @@
 """BDD coverage for the paper execution engine."""
+
 import unittest
 from datetime import datetime, timezone
 
@@ -19,13 +20,15 @@ class CapturingRepository:
 
     # GIVEN an order is persisted WHEN save_order is called THEN capture the source ID.
     def save_order(self, order, approval_id="", fee=0.0, environment="paper", trade_idea_id="") -> None:
-        self.saved_orders.append({
-            "order": order,
-            "approval_id": approval_id,
-            "fee": fee,
-            "environment": environment,
-            "trade_idea_id": trade_idea_id,
-        })
+        self.saved_orders.append(
+            {
+                "order": order,
+                "approval_id": approval_id,
+                "fee": fee,
+                "environment": environment,
+                "trade_idea_id": trade_idea_id,
+            }
+        )
 
     # GIVEN a fill is persisted WHEN save_fill is called THEN capture the fill.
     def save_fill(self, fill) -> None:
@@ -192,7 +195,7 @@ class PaperExecutionEngineBDDTests(unittest.IsolatedAsyncioTestCase):
         engine = PaperExecutionEngine(starting_capital=500.0)
         _, position_id = await engine.execute(make_intent(direction=Direction.LONG, size=1.0), 100.0)
 
-        with self.assertLogs("kraken_bot.paper_engine", level="INFO") as captured:
+        with self.assertLogs("trading_bot.paper_engine", level="INFO") as captured:
             await engine.close_position(position_id, 110.0, approval_request_id="manual_close")
 
         self.assertIn("Position closed (manual_close)", captured.output[-1])
@@ -242,7 +245,6 @@ class PaperExecutionEngineBDDTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(outcome["pnl"], expected_pnl)
         self.assertAlmostEqual(engine.cash - 500.0, expected_pnl)
 
-
     # GIVEN starting cash of €500 WHEN a paper short opens with no existing long
     # THEN cash does NOT increase — proceeds are locked as margin (BUG-012).
     async def test_given_no_existing_long_when_paper_short_opens_then_cash_does_not_increase(self) -> None:
@@ -254,7 +256,8 @@ class PaperExecutionEngineBDDTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(order.status, "filled", "short should be filled")
         self.assertLess(
-            engine.cash, starting_cash,
+            engine.cash,
+            starting_cash,
             "Cash must decrease (not increase) when a paper short opens — fee is deducted",
         )
 
@@ -274,10 +277,10 @@ class PaperExecutionEngineBDDTests(unittest.IsolatedAsyncioTestCase):
 
         # Net cash change = profit (100-90) minus both fees; final cash should exceed starting
         self.assertGreater(
-            engine.cash, starting_cash,
+            engine.cash,
+            starting_cash,
             "Cash after closing a profitable short must exceed starting cash",
         )
-
 
     # BUG-025: GIVEN a long restored with avg_price=50,000 (watermark reset to None)
     # WHEN update_trailing_prices is called with 60,000 (price has rallied since restart)

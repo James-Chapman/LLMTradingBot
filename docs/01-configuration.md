@@ -39,7 +39,7 @@ A singleton instance `settings` is created at module level and imported everywhe
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `DATABASE_URL` | str | `"sqlite:///./kraken_bot.db"` | SQLAlchemy connection string. Only SQLite is used in practice |
+| `DATABASE_URL` | str | `"sqlite:///./trading_bot.db"` | SQLAlchemy connection string. Only SQLite is used in practice |
 
 ### Trading Behaviour
 
@@ -106,7 +106,7 @@ Market symbols use Kraken's public format (`BASE/QUOTE`). The adapter internally
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `LOG_LEVEL` | str | `"INFO"` | Python logging level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
-| `LOG_FILE` | str | `"kraken_bot.log"` | Log file path relative to the backend working directory |
+| `LOG_FILE` | str | `"trading_bot.log"` | Log file path relative to the backend working directory |
 
 ---
 

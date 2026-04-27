@@ -1,18 +1,18 @@
 # Strategy & Learning
 
-## Combined Strategy (`backend/strategy/basic_strategy.py`)
+## Indicator-Only Strategy (`backend/strategy/basic_strategy.py`)
 
 **Class:** `BasicStrategy`  
-**Strategy ID:** `"combined"`
+**Strategy ID:** `"basic_strategy"`
 
-An indicator-consensus signal generator with contextual sentiment adjustments. It compares the current price against a price from `_LOOKBACK_TICKS` (10) ticks ago for the momentum signal, confirms or rejects that signal using up to 9 additional technical indicators, then applies news sentiment, LLM briefing sentiment, learner adjustment, and the full LLM signal-analysis/veto pass in the strategy loop.
+An indicator-consensus signal generator. It compares the current price against a price from `_LOOKBACK_TICKS` (10) ticks ago for the momentum signal, confirms or rejects that signal using up to 9 additional technical indicators, then applies learner adjustment and the full LLM signal-analysis/veto pass in the strategy loop.
 
-## Indicator Only Strategy (`backend/strategy/indicator_only_strategy.py`)
+## Combined Indicator + LLM Strategy (`backend/strategy/basic_and_llm_strategy.py`)
 
-**Class:** `IndicatorOnlyStrategy`  
-**Strategy ID:** `"indicator_only"`
+**Class:** `BasicAndLLMStrategy`  
+**Strategy ID:** `"basic_and_llm_strategy"`
 
-Uses the same momentum, hard-filter, higher-timeframe, coverage, and consensus rules as `BasicStrategy`, but disables news sentiment and LLM sentiment inputs. The strategy loop also skips the LLM signal-analysis/veto pass for `indicator_only`, so technical indicators determine whether the signal is acted upon.
+Uses the same momentum, hard-filter, higher-timeframe, coverage, and consensus rules as `BasicStrategy`, then applies a full LLM signal-analysis/veto pass internally. The LLM adjusts signal confidence and can veto the signal entirely when `confidence_scale < LLM_VETO_THRESHOLD`. This is the default selected strategy.
 
 ---
 
@@ -22,8 +22,6 @@ Uses the same momentum, hard-filter, higher-timeframe, coverage, and consensus r
 async def evaluate(
     self,
     market_data: Dict[str, Any],
-    news_signals: List[Dict],
-    learner=None,
 ) -> List[TradeIdea]:
 ```
 
@@ -63,7 +61,7 @@ These fire before the consensus vote and cannot be overridden by other indicator
 Each indicator casts a vote: `+1` (agrees with signal direction), `−1` (opposes), `0` (neutral or absent).
 
 | # | Indicator | Bullish threshold | Bearish threshold |
-|---|-----------|------------------|------------------|
+|---|---|------------------|------------------|
 | 1 | RSI | < 40 (oversold) | > 60 (overbought) |
 | 2 | EMA cross | `"bullish"` (EMA9 > EMA21) | `"bearish"` |
 | 3 | BB position | < 30% (near lower band) | > 70% (near upper band) |
@@ -80,11 +78,11 @@ Each indicator casts a vote: `+1` (agrees with signal direction), `−1` (oppose
 #### 4. Indicator Support Gate
 
 ```python
-if supporting < 6:
+if supporting < 5:
     continue    # not enough indicators agree with the signal direction
 ```
 
-At least 6 indicators must agree with the proposed trade direction before the strategy can emit a trade idea. A signal with 9 available indicators but only 5 supporting and 4 opposing is blocked.
+At least 5 indicators must agree with the proposed trade direction before the strategy can emit a trade idea. A signal with 9 available indicators but only 4 supporting and 4 opposing is blocked.
 
 #### 5. Consensus Gate
 
@@ -93,21 +91,20 @@ if votes < 1:
     continue    # more indicators oppose than support
 ```
 
-Once the 6-indicator support gate is met, the net vote must also be positive (`>= 1`).
+Once the 5-indicator support gate is met, the net vote must also be positive (`>= 1`).
 
 #### 6. Confidence Calculation
 
 ```
 base  = min(abs(momentum) × 100, 0.50)          ← capped at 0.50
 bonus = clamp(votes × 0.05, −0.20, +0.40)       ← indicator agreement
-news  = +0.10 if aligned, −0.10 if opposed, 0   ← news sentiment
 atr   = −min(0.10, (atr_pct − 1.0) × 0.05)      ← volatility penalty if ATR > 1% of price
-─────────────────────────────────────────────────
-final = clamp(base + bonus + news + atr, 0.10, 0.95)
+────────────────────────────────────────────────
+final = clamp(base + bonus + atr, 0.10, 0.95)
 ```
 
-With all 9 indicators agreeing, maximum confidence = 0.50 + 0.40 + 0.10 = **1.00 → capped at 0.95**.  
-With 6 agreeing and 0 opposing: 0.50 + 0.30 + 0.10 = **0.90**.
+With all 9 indicators agreeing, maximum confidence = 0.50 + 0.40 = **0.90**.  
+With 5 agreeing and 0 opposing: 0.50 + 0.25 = **0.75**.
 
 #### 7. Learner Adjustment
 
@@ -139,13 +136,12 @@ All signals use a fixed `position_sizing_proposal = 0.20` (20% of current equity
 
 ```python
 TradeIdea(
-    strategy_id = "combined",
+    strategy_id = "basic_strategy",
     market      = symbol,
     direction   = direction,
     thesis      = "Momentum +0.42% | RSI 38 | EMA bullish | MACD bullish | support 6/7 (net +5)",
     supporting_signals = {
         "momentum":             0.00421,
-        "news_sentiment":       0.0,
         "current_price":        85420.0,
         "previous_price":       85061.0,
         "indicator_votes":      4,
@@ -196,7 +192,7 @@ _Stats.weighted_total: float        # exponentially decayed total weight
 ```
 
 Key format: `(strategy_id, market, direction)`  
-Example: `("combined", "BTC/EUR", "long")`
+Example: `("basic_and_llm_strategy", "BTC/EUR", "long")`
 
 ---
 
@@ -273,7 +269,7 @@ Returns rows for the `GET /api/learning` endpoint and dashboard:
 ```python
 [
     {
-        "strategy": "combined",
+        "strategy": "basic_and_llm_strategy",
         "market": "BTC/EUR",
         "direction": "long",
         "trades": 15,
@@ -328,7 +324,7 @@ Strategy base confidence
 |---|---|---|
 | Momentum minimum | 0.2% | No signal generated |
 | Hard filter | RSI ≥80 / ≤20, BB ≥95% / ≤5% | Signal blocked |
-| Indicator support gate | 6 agreeing indicators | Signal discarded if fewer support the trade direction |
+| Indicator support gate | 5 agreeing indicators | Signal discarded if fewer support the trade direction |
 | Consensus gate | net votes < 1 | Signal discarded |
 | Confidence minimum (strategy) | 20% | Signal discarded |
 | Confidence minimum (fully_automated) | 65% (configurable) | Signal skipped |

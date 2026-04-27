@@ -1,28 +1,91 @@
 """BDD coverage for the basic strategy signal gates."""
 import unittest
+from unittest.mock import AsyncMock
 
 from bdd_helpers import BACKEND_DIR  # noqa: F401
 from analysis.indicators import compute_all
 from domain.models import Direction
+from llm.analyser import SignalAnalysis
+from strategy.basic_and_llm_strategy import BasicAndLLMStrategy
 from strategy.basic_strategy import BasicStrategy
-from strategy.indicator_only_strategy import IndicatorOnlyStrategy
+
+
+class FakeAnalyser:
+    """Minimal analyser stub for BasicAndLLMStrategy tests."""
+
+    def __init__(self, scale: float = 1.0) -> None:
+        self.available = True
+        self.can_attempt = True
+        self.latest_briefing = None
+        self.latest_reflection = None
+        self._scale = scale
+
+    async def analyse_signal(self, **_kwargs) -> SignalAnalysis:
+        return SignalAnalysis(sentiment=0.0, confidence_scale=self._scale, reasoning="", llm_used=True)
+
+
+class BasicAndLLMStrategyBDDTests(unittest.IsolatedAsyncioTestCase):
+    # GIVEN the strategy is created WHEN the ID is read THEN it is the expected canonical ID.
+    async def test_given_basic_and_llm_strategy_when_created_then_strategy_id_is_correct(self) -> None:
+        strategy = BasicAndLLMStrategy()
+
+        self.assertEqual(strategy.strategy_id, "basic_and_llm_strategy")
+
+    # GIVEN the strategy is created WHEN the dispatch attribute is read THEN uses_llm_analysis is True.
+    async def test_given_basic_and_llm_strategy_when_created_then_uses_llm_analysis_attribute_is_set(self) -> None:
+        strategy = BasicAndLLMStrategy()
+
+        self.assertTrue(getattr(strategy, "uses_llm_analysis", False))
+
+    # GIVEN momentum below threshold WHEN strategy evaluates THEN no signal is emitted.
+    async def test_given_small_momentum_when_strategy_evaluates_then_no_signal_is_generated(self) -> None:
+        strategy = BasicAndLLMStrategy()
+        analyser = FakeAnalyser()
+        market_data = {"BTC/EUR": {"price": 100.10, "previous_price": 100.0, "indicators": {}}}
+
+        ideas = await strategy.evaluate(market_data, [], analyser)
+
+        self.assertEqual(ideas, [])
+
+    # GIVEN LLM veto scale WHEN strategy evaluates THEN signal is suppressed before leaving the strategy.
+    async def test_given_llm_veto_scale_when_strategy_evaluates_then_signal_is_blocked(self) -> None:
+        strategy = BasicAndLLMStrategy()
+        analyser = FakeAnalyser(scale=0.5)  # below LLM_VETO_THRESHOLD=0.70
+        market_data = {
+            "BTC/EUR": {
+                "price": 102.0,
+                "previous_price": 100.0,
+                "indicators": {
+                    "rsi_14": 35.0,
+                    "ema_cross": "bullish",
+                    "bb": {"position": 25.0},
+                    "macd": {"bias": "bullish", "signal_bias": "bullish", "histogram": 0.5},
+                    "stoch": {"k": 15.0, "d": 20.0},
+                    "williams_r": -85.0,
+                    "price_changes": {"5m": 1.2, "15m": 2.4},
+                    "atr_pct": 0.5,
+                },
+            }
+        }
+
+        ideas = await strategy.evaluate(market_data, [], analyser)
+
+        self.assertEqual(ideas, [], "LLM veto should block the signal inside the strategy")
 
 
 class BasicStrategyBDDTests(unittest.IsolatedAsyncioTestCase):
     # GIVEN the built-in strategies WHEN they are created THEN their public IDs match the UI labels.
     async def test_given_builtin_strategies_when_created_then_expected_strategy_ids_are_used(self) -> None:
-        combined = BasicStrategy()
-        indicator_only = IndicatorOnlyStrategy()
+        basic_strategy = BasicStrategy()
 
-        self.assertEqual(combined.strategy_id, "combined")
-        self.assertEqual(indicator_only.strategy_id, "indicator_only")
+        self.assertEqual(basic_strategy.strategy_id, "basic_strategy")
 
     # GIVEN momentum below the noise threshold WHEN strategy evaluates THEN no idea is emitted.
     async def test_given_small_momentum_when_strategy_evaluates_then_no_signal_is_generated(self) -> None:
         strategy = BasicStrategy()
         market_data = {"BTC/EUR": {"price": 100.10, "previous_price": 100.0, "indicators": {}}}
 
-        ideas = await strategy.evaluate(market_data, news_signals=[])
+        ideas = await strategy.evaluate(market_data)
 
         self.assertEqual(ideas, [])
 
@@ -37,7 +100,7 @@ class BasicStrategyBDDTests(unittest.IsolatedAsyncioTestCase):
             }
         }
 
-        ideas = await strategy.evaluate(market_data, news_signals=[])
+        ideas = await strategy.evaluate(market_data)
 
         self.assertEqual(ideas, [])
 
@@ -60,7 +123,7 @@ class BasicStrategyBDDTests(unittest.IsolatedAsyncioTestCase):
             }
         }
 
-        ideas = await strategy.evaluate(market_data, news_signals=[])
+        ideas = await strategy.evaluate(market_data)
 
         self.assertEqual(ideas, [])
 
@@ -88,7 +151,7 @@ class BasicStrategyBDDTests(unittest.IsolatedAsyncioTestCase):
             }
         }
 
-        ideas = await strategy.evaluate(market_data, news_signals=[])
+        ideas = await strategy.evaluate(market_data)
 
         # EMA, MACD_bias, MACD_sig, 5m, 15m = 5 supporting → meets MIN_INDICATORS_FOR_SIGNAL
         self.assertEqual(len(ideas), 1, "Five trend indicators in agreement should produce a signal")
@@ -115,7 +178,7 @@ class BasicStrategyBDDTests(unittest.IsolatedAsyncioTestCase):
             }
         }
 
-        ideas = await strategy.evaluate(market_data, news_signals=[])
+        ideas = await strategy.evaluate(market_data)
 
         self.assertEqual(len(ideas), 1)
         self.assertEqual(ideas[0].supporting_signals["indicators_supporting"], 6)
@@ -140,9 +203,8 @@ class BasicStrategyBDDTests(unittest.IsolatedAsyncioTestCase):
                 },
             }
         }
-        news = [{"asset_mentions": ["BTC"], "headline_sentiment": 0.4}]
 
-        ideas = await strategy.evaluate(market_data, news_signals=news)
+        ideas = await strategy.evaluate(market_data)
 
         self.assertEqual(len(ideas), 1)
         idea = ideas[0]
@@ -175,41 +237,16 @@ class BasicStrategyBDDTests(unittest.IsolatedAsyncioTestCase):
             }
         }
 
-        ideas = await strategy.evaluate(market_data, news_signals=[])
+        ideas = await strategy.evaluate(market_data)
 
         self.assertEqual(ideas, [])
 
-    # GIVEN supportive LLM sentiment WHEN a signal is generated THEN confidence is increased.
-    async def test_given_supportive_llm_sentiment_when_strategy_evaluates_then_confidence_is_boosted(self) -> None:
-        strategy = BasicStrategy()
-        base_context = {
-            "price": 102.0,
-            "previous_price": 100.0,
-            "indicators": {
-                "rsi_14": 35.0,
-                "ema_cross": "bullish",
-                "bb": {"position": 25.0},
-                "macd": {"bias": "bullish", "signal_bias": "bullish", "histogram": 0.5},
-                "stoch": {"k": 15.0, "d": 20.0},
-                "williams_r": -85.0,
-                "price_changes": {"5m": 1.2, "15m": 2.4},
-                "atr_pct": 0.5,
-            },
-        }
-
-        neutral = await strategy.evaluate({"BTC/EUR": base_context}, news_signals=[])
-        supportive = await strategy.evaluate({
-            "BTC/EUR": {**base_context, "llm_sentiment": 0.7},
-        }, news_signals=[])
-
-        self.assertGreater(supportive[0].confidence, neutral[0].confidence)
-
     # GIVEN indicator-only mode and hostile non-indicator context WHEN a signal is generated
     # THEN the strategy uses technical indicators only for confidence.
-    async def test_given_indicator_only_strategy_when_context_is_hostile_then_non_indicator_sentiment_is_ignored(
+    async def test_given_basic_strategy_strategy_when_context_is_hostile_then_non_indicator_sentiment_is_ignored(
         self,
     ) -> None:
-        strategy = IndicatorOnlyStrategy()
+        strategy = BasicStrategy()
         base_context = {
             "price": 102.0,
             "previous_price": 100.0,
@@ -225,16 +262,13 @@ class BasicStrategyBDDTests(unittest.IsolatedAsyncioTestCase):
                 "atr_pct": 0.5,
             },
         }
-        hostile_news = [{"asset_mentions": ["BTC"], "headline_sentiment": -0.9}]
 
-        ideas = await strategy.evaluate({"BTC/EUR": base_context}, news_signals=hostile_news)
+        ideas = await strategy.evaluate({"BTC/EUR": base_context})
 
         self.assertEqual(len(ideas), 1)
         idea = ideas[0]
-        self.assertEqual(idea.strategy_id, "indicator_only")
+        self.assertEqual(idea.strategy_id, "basic_strategy")
         self.assertEqual(idea.direction, Direction.LONG)
-        self.assertEqual(idea.supporting_signals["news_sentiment"], 0.0)
-        self.assertEqual(idea.supporting_signals["llm_sentiment"], 0.0)
         self.assertGreaterEqual(idea.supporting_signals["indicators_available"], 6)
 
     # GIVEN opposing indicators WHEN consensus is available THEN no idea is emitted.
@@ -253,7 +287,7 @@ class BasicStrategyBDDTests(unittest.IsolatedAsyncioTestCase):
             }
         }
 
-        ideas = await strategy.evaluate(market_data, news_signals=[])
+        ideas = await strategy.evaluate(market_data)
 
         self.assertEqual(ideas, [])
 
@@ -278,7 +312,7 @@ class BasicStrategyBDDTests(unittest.IsolatedAsyncioTestCase):
             }
         }
 
-        ideas = await strategy.evaluate(market_data, news_signals=[])
+        ideas = await strategy.evaluate(market_data)
 
         self.assertNotIn("macd", indicators, "MACD should be absent with only 20 ticks")
         self.assertEqual(ideas, [], "No signal should fire when MACD is absent — too few indicators")
@@ -333,7 +367,7 @@ class BasicStrategyBDDTests(unittest.IsolatedAsyncioTestCase):
         strategy = BasicStrategy()
         market_data = {"BTC/EUR": {"price": 50000.0, "previous_price": 0.0, "indicators": {}}}
 
-        ideas = await strategy.evaluate(market_data, news_signals=[])
+        ideas = await strategy.evaluate(market_data)
 
         self.assertEqual(ideas, [])
 
@@ -362,10 +396,93 @@ class BasicStrategyBDDTests(unittest.IsolatedAsyncioTestCase):
             }
         }
 
-        ideas = await strategy.evaluate(market_data, news_signals=[])
+        ideas = await strategy.evaluate(market_data)
 
         self.assertEqual(len(ideas), 1)
         self.assertEqual(ideas[0].direction.value, "short")
+
+
+    # GIVEN EMA cross is neutral WHEN strategy evaluates THEN EMA does not vote and is not included in thesis.
+    async def test_given_neutral_ema_cross_when_strategy_evaluates_then_signal_generates_without_ema_in_thesis(self) -> None:
+        strategy = BasicStrategy()
+        market_data = {
+            "BTC/EUR": {
+                "price": 102.0,
+                "previous_price": 100.0,
+                "indicators": {
+                    "rsi_14": 35.0,
+                    "ema_cross": "neutral",  # neutral, should not vote
+                    "bb": {"position": 25.0},
+                    "macd": {"bias": "bullish", "signal_bias": "bullish", "histogram": 0.5},
+                    "stoch": {"k": 15.0, "d": 20.0},
+                    "williams_r": -85.0,
+                    "price_changes": {"5m": 1.2, "15m": 2.4},
+                    "atr_pct": 0.5,
+                },
+            }
+        }
+
+        ideas = await strategy.evaluate(market_data)
+
+        self.assertEqual(len(ideas), 1)
+        idea = ideas[0]
+        self.assertEqual(idea.supporting_signals["indicators_supporting"], 8)  # rsi, bb, macd_bias, macd_sig, stoch, wr, 5m, 15m
+        self.assertEqual(idea.supporting_signals["ema_cross"], "neutral")
+        self.assertNotIn("EMA neutral", idea.thesis)
+
+    # GIVEN higher-timeframe EMA is neutral WHEN strategy evaluates THEN signal is not blocked.
+    async def test_given_neutral_higher_timeframe_ema_when_strategy_evaluates_then_signal_not_blocked(self) -> None:
+        strategy = BasicStrategy()
+        market_data = {
+            "BTC/EUR": {
+                "price": 102.0,
+                "previous_price": 100.0,
+                "higher_timeframe": {"ema_cross": "neutral"},  # neutral, should not block
+                "indicators": {
+                    "rsi_14": 35.0,
+                    "ema_cross": "bullish",
+                    "bb": {"position": 25.0},
+                    "macd": {"bias": "bullish", "signal_bias": "bullish", "histogram": 0.5},
+                    "stoch": {"k": 15.0, "d": 20.0},
+                    "williams_r": -85.0,
+                    "price_changes": {"5m": 1.2, "15m": 2.4},
+                    "atr_pct": 0.5,
+                },
+            }
+        }
+
+        ideas = await strategy.evaluate(market_data)
+
+        self.assertEqual(len(ideas), 1)
+
+    # GIVEN indicators only WHEN strategy evaluates THEN signal generated without news/LLM references.
+    async def test_given_indicators_only_when_strategy_evaluates_then_signal_generated_without_news_llm(self) -> None:
+        strategy = BasicStrategy()
+        market_data = {
+            "BTC/EUR": {
+                "price": 102.0,
+                "previous_price": 100.0,
+                "indicators": {
+                    "rsi_14": 35.0,
+                    "ema_cross": "bullish",
+                    "bb": {"position": 25.0},
+                    "macd": {"bias": "bullish", "signal_bias": "bullish", "histogram": 0.5},
+                    "stoch": {"k": 15.0, "d": 20.0},
+                    "williams_r": -85.0,
+                    "price_changes": {"5m": 1.2, "15m": 2.4},
+                    "atr_pct": 0.5,
+                },
+            }
+        }
+
+        ideas = await strategy.evaluate(market_data)
+
+        self.assertEqual(len(ideas), 1)
+        idea = ideas[0]
+        self.assertNotIn("news_sentiment", idea.supporting_signals)
+        self.assertNotIn("llm_sentiment", idea.supporting_signals)
+        self.assertNotIn("uses_news_sentiment", idea.supporting_signals)
+        self.assertNotIn("uses_llm_sentiment", idea.supporting_signals)
 
 
 if __name__ == "__main__":

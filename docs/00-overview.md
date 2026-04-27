@@ -27,7 +27,7 @@ The primary design goals are:
        ▼               ▼              ▼                   ▼
 ┌─────────────┐ ┌───────────┐ ┌─────────────┐ ┌──────────────────┐
 │  BasicStrat │ │ RSS feeds │ │ Kraken OHLC │ │  LLM Analyser    │
-│  Learner    │ │ CoinDesk  │ │  (cache)    │ │  (Ollama/phi3)   │
+│  Learner    │ │ CoinDesk  │ │  (cache)    │ │  (LMStudio/      │
 │  Indicators │ │ CoinTele  │ └─────────────┘ └──────────────────┘
 └──────┬──────┘ └─────┬─────┘
        │              │ new articles detected
@@ -69,8 +69,8 @@ The primary design goals are:
 | Database | SQLite via SQLAlchemy 2.x | `StaticPool`; single file |
 | Settings | Pydantic v2 / pydantic-settings | `.env` file |
 | Exchange API | krakenex + pykrakenapi | Read-only in paper mode |
-| LLM | Ollama (local) — phi3:mini default | REST at localhost:11434 |
-| HTTP client | httpx (async) | Used for Ollama only |
+| LLM | LM Studio (priority 1) → Ollama (priority 2) → Transformers (fallback) | Probe-and-lock-in at startup |
+| HTTP client | httpx (async) | Used for LM Studio and Ollama |
 | Logging | Python `logging` → JSON + file | Structured; module-level |
 | Numeric compute | numpy | Indicator reductions, replay metrics, learner statistics |
 
@@ -105,7 +105,8 @@ LLMTradingBot/
 |   |   |-- kraken_adapter.py       Kraken ticker and OHLC adapter
 |   |   `-- news_adapter.py         RSS news ingestion
 |   |-- llm/
-|   |   |-- client.py               Ollama async REST client
+|   |   |-- ollama_client.py        Ollama async REST client
+|   |   |-- transformers_client.py  Hugging Face Transformers async client
 |   |   `-- analyser.py             Signal analysis, briefing, reflection
 |   |-- observability/
 |   |   |-- activity.py             Event log, memory and DB persisted
@@ -117,9 +118,9 @@ LLMTradingBot/
 |   |   |-- models.py               SQLAlchemy ORM table definitions
 |   |   `-- repository.py           All DB read/write operations
 |   |-- strategy/
-|   |   |-- basic_strategy.py       Momentum signal generator
-|   |   |-- indicator_only_strategy.py
-|   |   |-- llm_only_strategy.py
+|   |   |-- basic_strategy.py       Indicator-only momentum strategy
+|   |   |-- basic_and_llm_strategy.py  Indicator consensus + LLM analysis strategy
+|   |   |-- llm_only_strategy.py    LLM-led strategy with no indicator gating
 |   |   `-- learner.py              Exponential-decay performance learner
 |   `-- universe/
 |       `-- resolver.py             Tradable market universe builder

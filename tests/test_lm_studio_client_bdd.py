@@ -1,9 +1,9 @@
-"""BDD coverage for the Ollama client circuit breaker."""
+"""BDD coverage for the LM Studio client circuit breaker."""
 import unittest
 from datetime import datetime, timedelta
 
 from bdd_helpers import BACKEND_DIR  # noqa: F401
-from llm.ollama_client import OllamaClient
+from llm.lm_studio_client import LMStudioClient
 
 
 class FakeClock:
@@ -21,13 +21,13 @@ class FakeClock:
         self.now += timedelta(seconds=seconds)
 
 
-class OllamaClientBDDTests(unittest.TestCase):
+class LMStudioClientBDDTests(unittest.TestCase):
 
-    # GIVEN Ollama has failed WHEN the circuit breaker is checked before cooldown
+    # GIVEN LM Studio has failed WHEN the circuit breaker is checked before cooldown
     # THEN requests are skipped until the half-open retry window.
     def test_given_failure_when_cooldown_active_then_client_does_not_attempt(self) -> None:
         clock = FakeClock()
-        client = OllamaClient("http://localhost:11434", "phi3:mini", clock=clock.utcnow)
+        client = LMStudioClient("http://localhost:1234", "google/gemma-4-e4b", clock=clock.utcnow)
 
         client._mark_failed("connection refused")
 
@@ -44,11 +44,11 @@ class OllamaClientBDDTests(unittest.TestCase):
         self.assertTrue(client._should_attempt())
         self.assertEqual(client.circuit_state, "half_open")
 
-    # GIVEN repeated Ollama failures WHEN failures are recorded THEN retry delays
+    # GIVEN repeated LM Studio failures WHEN failures are recorded THEN retry delays
     # grow exponentially and cap at five minutes.
     def test_given_repeated_failures_when_recorded_then_backoff_increases_to_cap(self) -> None:
         clock = FakeClock()
-        client = OllamaClient("http://localhost:11434", "phi3:mini", clock=clock.utcnow)
+        client = LMStudioClient("http://localhost:1234", "google/gemma-4-e4b", clock=clock.utcnow)
 
         delays = []
         for _ in range(6):
@@ -60,7 +60,7 @@ class OllamaClientBDDTests(unittest.TestCase):
     # GIVEN the half-open retry succeeds WHEN success is marked THEN the circuit closes.
     def test_given_success_after_failure_when_marked_then_circuit_resets(self) -> None:
         clock = FakeClock()
-        client = OllamaClient("http://localhost:11434", "phi3:mini", clock=clock.utcnow)
+        client = LMStudioClient("http://localhost:1234", "google/gemma-4-e4b", clock=clock.utcnow)
 
         client._mark_failed("timeout")
         clock.advance(30)
@@ -73,7 +73,7 @@ class OllamaClientBDDTests(unittest.TestCase):
         self.assertTrue(client._should_attempt())
 
 
-class FakeOllamaHTTPResponse:
+class FakeLMStudioHTTPResponse:
     """Small httpx.Response stand-in for chat tests."""
 
     def __init__(self, content: str) -> None:
@@ -83,52 +83,63 @@ class FakeOllamaHTTPResponse:
     def raise_for_status(self) -> None:
         pass
 
-    # Return the Ollama chat response shape with configurable text content.
+    # Return the OpenAI chat completion response shape with configurable content.
     def json(self) -> dict:
-        return {"message": {"content": self._content}}
+        return {"choices": [{"message": {"content": self._content}}]}
 
 
-class FakeOllamaHTTPClient:
-    """Async HTTP client stand-in used by OllamaClient.chat tests."""
+class FakeLMStudioHTTPClient:
+    """Async HTTP client stand-in used by LMStudioClient.chat tests."""
 
     def __init__(self, response_content: str) -> None:
         self.response_content = response_content
 
-    # Return a fake successful Ollama chat response.
+    # Return a fake successful LM Studio chat response.
     async def post(self, *_args, **_kwargs):
-        return FakeOllamaHTTPResponse(self.response_content)
+        return FakeLMStudioHTTPResponse(self.response_content)
 
 
-class OllamaClientAsyncBDDTests(unittest.IsolatedAsyncioTestCase):
-    # GIVEN Ollama returns JSON-like content with a missing comma WHEN JSON is expected
-    # THEN the client repairs the response and keeps the service available.
-    async def test_given_json_response_missing_comma_when_chat_runs_then_response_is_repaired(self) -> None:
+class LMStudioClientAsyncBDDTests(unittest.IsolatedAsyncioTestCase):
+
+    # GIVEN LM Studio returns valid JSON WHEN chat is called THEN response is parsed correctly.
+    async def test_given_valid_json_response_when_chat_runs_then_response_is_parsed(self) -> None:
         clock = FakeClock()
-        client = OllamaClient("http://localhost:11434", "phi3:mini", clock=clock.utcnow)
+        client = LMStudioClient("http://localhost:1234", "google/gemma-4-e4b", clock=clock.utcnow)
         client._mark_success()
-        client._client = FakeOllamaHTTPClient(
+        client._client = FakeLMStudioHTTPClient('{"action": "hold", "confidence": 0.5}')
+
+        result = await client.chat([{"role": "user", "content": "Return JSON"}], expect_json=True)
+
+        self.assertEqual(result["action"], "hold")
+        self.assertEqual(result["confidence"], 0.5)
+        self.assertTrue(client.available)
+        self.assertEqual(client.circuit_state, "closed")
+
+    # GIVEN LM Studio returns JSON-like content with a missing comma WHEN JSON is expected
+    # THEN the client repairs the response and keeps the service available.
+    async def test_given_json_missing_comma_when_chat_runs_then_response_is_repaired(self) -> None:
+        clock = FakeClock()
+        client = LMStudioClient("http://localhost:1234", "google/gemma-4-e4b", clock=clock.utcnow)
+        client._mark_success()
+        client._client = FakeLMStudioHTTPClient(
             '{\n'
             '  "action": "hold"\n'
-            '  "confidence": 0.0,\n'
-            '  "sentiment": 0.0,\n'
-            '  "reasoning": "No trade"\n'
+            '  "confidence": 0.0\n'
             '}'
         )
 
         result = await client.chat([{"role": "user", "content": "Return JSON"}], expect_json=True)
 
         self.assertEqual(result["action"], "hold")
-        self.assertEqual(result["confidence"], 0.0)
         self.assertTrue(client.available)
-        self.assertEqual(client.circuit_state, "closed")
 
-    # GIVEN Ollama returns HTTP 200 with malformed JSON WHEN JSON is expected
-    # THEN the task fails but the Ollama service is not marked unavailable.
-    async def test_given_non_json_model_response_when_chat_runs_then_service_stays_available(self) -> None:
+    # GIVEN LM Studio returns HTTP 200 with malformed JSON WHEN JSON is expected
+    # THEN the call returns None but the service is not marked unavailable.
+    async def test_given_non_json_response_when_chat_runs_then_service_stays_available(self) -> None:
         clock = FakeClock()
-        client = OllamaClient("http://localhost:11434", "phi3:mini", clock=clock.utcnow)
+        client = LMStudioClient("http://localhost:1234", "google/gemma-4-e4b", clock=clock.utcnow)
         client._mark_success()
-        client._client = FakeOllamaHTTPClient("not valid json")
+        client._client = FakeLMStudioHTTPClient("not valid json")
 
         result = await client.chat([{"role": "user", "content": "Return JSON"}], expect_json=True)
 

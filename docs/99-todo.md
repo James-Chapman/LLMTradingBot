@@ -542,7 +542,7 @@ This document tracks all identified bugs, improvements, and enhancements in the 
   - **Determinism test:** GIVEN the same fixture and settings WHEN the replay runs twice THEN orders, fills, ending equity, and realised P&L are identical.
   - **No-lookahead test:** GIVEN a fixture with a known future price jump WHEN the replay is at an earlier candle THEN indicators and signals do not include candles after the current timestamp.
   - **Stop-loss test:** GIVEN a fixture where price moves below entry after a trade WHEN replay runs THEN stop-loss closes only losing positions, not positions that remain profitable versus entry.
-  - **Strategy selection test:** GIVEN `indicator_only`, `combined`, and `llm` strategy IDs WHEN replay is configured THEN exactly that strategy is used for every signal decision.
+  - **Strategy selection test:** GIVEN `basic_strategy`, `combined`, and `llm` strategy IDs WHEN replay is configured THEN exactly that strategy is used for every signal decision.
 
 - [x] **BT-004: Add an optional live Kraken 48-hour smoke backtest.**
   - **Goal:** Let us run `last 48 hours` against current Kraken data without making CI flaky.

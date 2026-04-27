@@ -50,3 +50,5 @@ This is a trading bot software project to trade crypto currencies
 - Run linter checks on madified files after code change.
 - After modifiying a file, run all unit tests for that file.
 - Run broader functionality tests to ensure change hasn't broken functionality.
+- Increment the version number on each set of changes.
+- Record changes for each version in CHANGELOG.md

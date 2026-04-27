@@ -201,7 +201,7 @@ class ControlStateModel(Base):
     emergency_stop = Column(Boolean, default=False)
     disabled_markets = Column(JSON, default=list)        # list[str]
     disabled_strategies = Column(JSON, default=list)     # list[str]
-    selected_strategy = Column(String, default="combined")
+    selected_strategy = Column(String, default="basic_and_llm_strategy")
     live_markets = Column(JSON, default=list)            # markets routed to live execution
     updated_at = Column(DateTime, default=_utcnow)
 

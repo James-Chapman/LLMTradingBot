@@ -19,5 +19,5 @@ backend/*.log
 .venv/
 __pycache__/
 .github/
-kraken_bot.db
-kraken_bot.log
+trading_bot.db
+trading_bot.log

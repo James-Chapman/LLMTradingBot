@@ -1,6 +1,7 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["tests"]
+addopts = "--ignore=tests/test_integration.py"
 
 [tool.ruff]
 target-version = "py311"

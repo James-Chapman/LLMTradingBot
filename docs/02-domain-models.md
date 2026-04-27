@@ -162,7 +162,7 @@ Processed sentiment signal extracted from a `NewsItem`. Currently populated stru
 
 ## Database Schema (`backend/storage/models.py`)
 
-All tables use SQLAlchemy's `DeclarativeBase`. The database is a single SQLite file (`kraken_bot.db`). Migrations are applied automatically at startup via `init_database()`.
+All tables use SQLAlchemy's `DeclarativeBase`. The database is a single SQLite file (`trading_bot.db`). Migrations are applied automatically at startup via `init_database()`.
 
 ---
 
@@ -330,7 +330,7 @@ Every strategy-generated signal with full context. Written by `repo.save_trade_i
 | Column | Type | Notes |
 |---|---|---|
 | `id` | String PK | UUID from `TradeIdea.id` |
-| `strategy_id` | String | e.g. `"combined"` |
+| `strategy_id` | String | e.g. `"basic_and_llm_strategy"` |
 | `market` | String | Trading pair |
 | `direction` | String | `"long"` or `"short"` |
 | `thesis` | Text | Human-readable rationale (includes LLM reasoning if available) |

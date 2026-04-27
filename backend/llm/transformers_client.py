@@ -1,20 +1,21 @@
 """
-Async Ollama client.
+Async Transformers client.
 
-Talks to a locally-running Ollama instance via its REST API.
-Falls back gracefully when Ollama is not available so the rest of the
-bot keeps running without it.
+Loads a local Hugging Face model via Transformers pipeline.
+Falls back gracefully when the model fails to load or generate.
 """
+
+import asyncio
 import json
 import re
 from datetime import datetime, timedelta
 from typing import Any, Callable, Optional
 
-import httpx
+from transformers import pipeline
 
 from observability.logging import get_logger
 
-logger = get_logger("ollama")
+logger = get_logger("transformers")
 
 _INITIAL_RETRY_DELAY = timedelta(seconds=30)
 _MAX_RETRY_DELAY = timedelta(minutes=5)
@@ -44,7 +45,7 @@ def _loads_model_json(content: str) -> dict[str, Any]:
 
     if first_error is not None:
         raise first_error
-    raise json.JSONDecodeError("Ollama JSON response was not an object", content, 0)
+    raise json.JSONDecodeError("Transformers JSON response was not an object", content, 0)
 
 
 # Remove Markdown code fences that some models still emit around JSON.
@@ -103,15 +104,13 @@ def _line_needs_field_comma(line: str, next_line: str) -> bool:
     )
 
 
-class OllamaClient:
+class TransformersClient:
     def __init__(
         self,
-        base_url: str,
         model: str,
         timeout: int = 15,
         clock: Callable[[], datetime] = datetime.utcnow,
     ):
-        self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
         self._clock = clock
@@ -121,7 +120,7 @@ class OllamaClient:
         self._failure_count = 0
         self._retry_delay = _INITIAL_RETRY_DELAY
         self._circuit_state = "closed"
-        self._client = httpx.AsyncClient(timeout=timeout)
+        self._pipeline = None  # Loaded on first probe
 
     @property
     def circuit_state(self) -> str:
@@ -140,56 +139,58 @@ class OllamaClient:
             return True
         return bool(self._next_retry_at and self._clock() >= self._next_retry_at)
 
+    @property
+    def llm_model(self) -> str:
+        """Return the model name this client is configured to use."""
+        return self.model
+
     async def probe(self) -> bool:
-        """Check whether Ollama is running and the configured model is loaded."""
-        try:
-            r = await self._client.get(f"{self.base_url}/api/tags", timeout=5)
-            if r.status_code != 200:
-                self._mark_failed(f"probe status {r.status_code}")
-                return False
-            tags = r.json().get("models", [])
-            names = [t.get("name", "").split(":")[0] for t in tags]
-            model_base = self.model.split(":")[0]
-            if model_base not in names:
-                logger.warning(
-                    f"Ollama running but model '{self.model}' not found. "
-                    f"Run: ollama pull {self.model}  |  Available: {names}"
-                )
-                self._mark_failed(f"model '{self.model}' not found")
-                return False
+        """Load the model if not already loaded."""
+        if self._pipeline is not None:
             self._mark_success()
-            logger.info(f"Ollama available - model: {self.model}")
+            logger.info(f"Transformers model available - model: {self.model}")
+            return True
+        try:
+            # Load the pipeline in a thread to avoid blocking the event loop
+            self._pipeline = await asyncio.to_thread(pipeline, "text-generation", model=self.model)
+            self._mark_success()
+            logger.info(f"Transformers model loaded - model: {self.model}")
             return True
         except Exception as e:
             self._mark_failed(str(e))
             return False
 
     async def chat(self, messages: list[dict], expect_json: bool = True) -> Optional[dict | str]:
-        """Send a chat request. Returns parsed dict if expect_json, else str. None on failure."""
-        if not self._should_attempt():
+        """Generate a response using the local model. Returns parsed dict if expect_json, else str. None on failure."""
+        if not self._should_attempt() or self._pipeline is None:
             return None
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "stream": False,
-        }
+
+        # Convert messages to a single prompt string
+        prompt_parts = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role == "system":
+                prompt_parts.append(f"System: {content}")
+            elif role == "user":
+                prompt_parts.append(f"User: {content}")
+            elif role == "assistant":
+                prompt_parts.append(f"Assistant: {content}")
+        prompt = "\n".join(prompt_parts)
         if expect_json:
-            payload["format"] = "json"
+            prompt += "\nRespond with valid JSON only."
+
         try:
-            r = await self._client.post(
-                f"{self.base_url}/api/chat",
-                json=payload,
-                timeout=self.timeout,
-            )
-            r.raise_for_status()
-            content = r.json()["message"]["content"]
+            # Generate in a thread to keep async
+            outputs = await asyncio.to_thread(self._pipeline, prompt, max_length=512, num_return_sequences=1)
+            content = outputs[0]["generated_text"].strip()
             self._mark_success()
             if expect_json:
                 return _loads_model_json(content)
             return content
         except json.JSONDecodeError as e:
             logger.warning(
-                f"Ollama returned non-JSON: {e}",
+                f"Transformers returned non-JSON: {e}",
                 extra={"raw_response": content},
             )
             return None
@@ -215,13 +216,13 @@ class OllamaClient:
 
     def _mark_failed(self, reason: str) -> None:
         delay_seconds = min(
-            int(_INITIAL_RETRY_DELAY.total_seconds()) * (2 ** self._failure_count),
+            int(_INITIAL_RETRY_DELAY.total_seconds()) * (2**self._failure_count),
             int(_MAX_RETRY_DELAY.total_seconds()),
         )
         self._retry_delay = timedelta(seconds=delay_seconds)
         self._failure_count += 1
         if self.available:
-            logger.warning(f"Ollama unavailable: {reason}; retry in {self._retry_delay}")
+            logger.warning(f"Transformers unavailable: {reason}; retry in {self._retry_delay}")
         self.available = False
         self._last_failure = self._clock()
         self._next_retry_at = self._last_failure + self._retry_delay

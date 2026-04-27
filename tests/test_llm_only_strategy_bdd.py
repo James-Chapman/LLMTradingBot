@@ -89,7 +89,7 @@ class LLMOnlyStrategyBDDTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(len(ideas), 1)
-        self.assertEqual(ideas[0].strategy_id, "llm")
+        self.assertEqual(ideas[0].strategy_id, "llm_only_strategy")
         self.assertEqual(ideas[0].direction, Direction.LONG)
         self.assertEqual(ideas[0].confidence, 0.81)
         self.assertTrue(ideas[0].supporting_signals["llm_only"])
