@@ -19,7 +19,7 @@ class BotSettings(BaseSettings):
 
     # App settings
     app_name: str = Field(default="Kraken Trading Bot", validation_alias="APP_NAME")
-    version: str = Field(default="0.5.0", validation_alias="VERSION")
+    version: str = Field(default="0.5.2", validation_alias="VERSION")
     debug: bool = Field(default=False, validation_alias="DEBUG")
 
     # Server settings

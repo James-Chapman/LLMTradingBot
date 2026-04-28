@@ -19,7 +19,7 @@
         <div class="app-shell dashboard-shell header-bar">
             <div class="header-brand">
                 <span class="brand-title">⚡ LLM Trading Bot</span>
-                <span class="version-label">v0.4.0</span>
+                <span class="version-label">v0.5.2</span>
                 <!-- Emergency stop banner -->
                 <span x-show="emergencyStop" class="pill pill-red"
                     style="font-size:12px;font-weight:700;letter-spacing:.04em;">■ EMERGENCY STOP</span>
@@ -301,10 +301,12 @@
                                 <!-- Strategy badge — maps raw strategy_id to a readable label with a colour pill -->
                                 <div style="margin-bottom:7px;">
                                     <span
-                                        x-text="{combined:'Combined · Indicator + LLM', basic_strategy:'Indicator Only', llm:'LLM Only'}[signalModal.strategy_id] || signalModal.strategy_id"
+                                        x-text="{basic_and_llm_strategy:'Combined · Indicator + LLM', combined:'Combined · Indicator + LLM', basic_strategy:'Indicator Only', llm_only_strategy:'LLM Only', llm:'LLM Only'}[signalModal.strategy_id] || signalModal.strategy_id"
                                         :style="{
+                                          basic_and_llm_strategy: 'background:#1d4ed8;color:#bfdbfe;',
                                           combined: 'background:#1d4ed8;color:#bfdbfe;',
                                           basic_strategy: 'background:#0f766e;color:#99f6e4;',
+                                          llm_only_strategy: 'background:#92400e;color:#fde68a;',
                                           llm: 'background:#92400e;color:#fde68a;'
                                       }[signalModal.strategy_id] || 'background:var(--border);color:var(--muted);'"
                                         style="display:inline-block;font-size:11px;font-weight:600;letter-spacing:.04em;padding:3px 10px;border-radius:20px;text-transform:uppercase;"></span>
@@ -1574,9 +1576,11 @@
 
                 _strategyLabel(strategyId) {
                     const labels = {
-                        combined: 'Combined',
                         basic_strategy: 'Indicator Only',
-                        llm: 'LLM Only',
+                        basic_and_llm_strategy: 'Combined',
+                        llm_only_strategy: 'LLM Only',
+                        combined: 'Combined',   // legacy alias
+                        llm: 'LLM Only',        // legacy alias
                     };
                     return labels[strategyId] || strategyId || '--';
                 },

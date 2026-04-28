@@ -433,42 +433,50 @@ async def _strategy_loop() -> None:
                     if pos.size > 0
                     else (market_price - pos.avg_price) / pos.avg_price
                 )
-                stop_hit = paper_engine.stop_loss_triggered(
-                    pos.position_id, market_price, STOP_LOSS_ASSUMPTION
-                )
+                # Calculate hit conditions
+                stop_hit = paper_engine.stop_loss_triggered(pos.position_id, market_price, STOP_LOSS_ASSUMPTION)
                 trail_hit = not stop_hit and paper_engine.trailing_stop_triggered(
                     pos.position_id, market_price, settings.trailing_stop_pct
                 )
-                if stop_hit or trail_hit:
-                    close_reason = "stop_loss" if stop_hit else "trailing_stop"
-                    order = await paper_engine.close_position(pos.position_id, market_price)
-                    if order:
-                        pnl = paper_engine.record_closed_trade(
-                            pos.position_id,
-                            order.price,
-                            close_reason,
-                        )
-                        if pnl is None:
-                            continue
-                        _record_trade_result(pnl)
-                        repo.update_order_pnl(order.id, pnl)
-                        meta = paper_engine._position_meta.get(pos.position_id, {})
-                        learner.record_outcome(
-                            meta.get("strategy_id", "unknown"),
-                            pos.market,
-                            meta.get("direction", "long"),
-                            pnl,
-                        )
-                        label = "STOP-LOSS" if stop_hit else "TRAILING-STOP"
-                        activity.warn(
-                            f"{label}: {pos.market} [{pos.position_id[:8]}] closed at "
-                            f"{CURRENCY_SYMBOL}{order.price:,.2f} ({loss_pct:.1%} loss)",
-                            f"Entry {CURRENCY_SYMBOL}{pos.avg_price:,.2f}  PnL {CURRENCY_SYMBOL}{pnl:+,.2f}",
-                        )
-                        await _send_alert(
-                            close_reason,
-                            {"market": pos.market, "position_id": pos.position_id, "pnl": pnl},
-                        )
+
+                # Early exit if no hit
+                if not (stop_hit or trail_hit):
+                    continue
+
+                # Ensure position still exists for closure
+                if pos.position_id not in paper_engine.positions:
+                    # Already closed by another mechanism
+                    continue
+
+                close_reason = "stop_loss" if stop_hit else "trailing_stop"
+                order = await paper_engine.close_position(pos.position_id, market_price)
+                if order:
+                    pnl = paper_engine.record_closed_trade(
+                        pos.position_id,
+                        order.price,
+                        close_reason,
+                    )
+                    if pnl is None:
+                        continue
+                    _record_trade_result(pnl)
+                    repo.update_order_pnl(order.id, pnl)
+                    meta = paper_engine._position_meta.get(pos.position_id, {})
+                    learner.record_outcome(
+                        meta.get("strategy_id", "unknown"),
+                        pos.market,
+                        meta.get("direction", "long"),
+                        pnl,
+                    )
+                    label = "STOP-LOSS" if stop_hit else "TRAILING-STOP"
+                    activity.warn(
+                        f"{label}: {pos.market} [{pos.position_id[:8]}] closed at "
+                        f"{CURRENCY_SYMBOL}{order.price:,.2f} ({loss_pct:.1%} loss)",
+                        f"Entry {CURRENCY_SYMBOL}{pos.avg_price:,.2f}  PnL {CURRENCY_SYMBOL}{pnl:+,.2f}",
+                    )
+                    await _send_alert(
+                        close_reason,
+                        {"market": pos.market, "position_id": pos.position_id, "pnl": pnl},
+                    )
 
             # Detect the active strategy type early so warmup logic can exclude LLM-only.
             _selected = _strategy_by_id(control.selected_strategy_id)
@@ -981,9 +989,7 @@ async def lifespan(app: FastAPI):
         ("TRANSFORMERS_LLM_MODEL", settings.transformers_llm_model),
     ]:
         if _val == _placeholder:
-            logger.warning(
-                "LLM model not configured — set %s in .env to a real model name", _name
-            )
+            logger.warning("LLM model not configured — set %s in .env to a real model name", _name)
 
     ok = await _llm_client.probe()
     if not ok:

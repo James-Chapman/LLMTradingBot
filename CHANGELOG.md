@@ -7,6 +7,25 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.5.2] — 2026-04-28
+
+### Fixed
+
+- **UI: strategy labels in Trade Ledger and Rejected Trades** — `_strategyLabel()` mapped only the old `combined`/`llm` IDs, so current strategy IDs (`basic_and_llm_strategy`, `llm_only_strategy`) rendered as raw strings. Added the current IDs; kept legacy aliases for any historic records.
+- **UI: signal modal strategy badge** — badge text and colour map used the same stale IDs, leaving `basic_and_llm_strategy` and `llm_only_strategy` with an unstyled grey badge. Both the text and `:style` maps now include all current and legacy IDs.
+- **UI: version label** — header showed `v0.4.0`; corrected to `v0.5.1` (current release).
+
+---
+
+## [0.5.1] — 2026-04-28
+
+### Fixed
+
+- **LLM Assessment — Scale always × 1.00**: `BasicAndLLMStrategy` applies the LLM `confidence_scale` correctly inside the strategy, but the outer signal loop in `main.py` was hardcoding `confidence_scale=1.0` when reconstructing the `SignalAnalysis` for DB storage. The dashboard therefore always showed `Scale × 1.00` regardless of what the LLM actually returned. The reconstruction now reads the real scale from `supporting_signals["llm_confidence_scale"]` (where the strategy stores it) and removes the now-dead outer multiplication block that would have double-applied the scale.
+- **LLM Assessment — empty reasoning**: Same reconstruction bug; `reasoning` was hardcoded to `""` with a comment "already in thesis; empty prevents duplication". The fix passes the actual reasoning text from `supporting_signals["llm_reasoning"]` through to storage so the signal detail modal displays it. The frontend reasoning box is now wrapped in `x-if="signalModal.llm_reasoning"` so it is hidden when the model genuinely returns an empty string rather than rendering `""`.
+
+---
+
 ## [0.5.0] — 2026-04-28
 
 ### Fixed (T2 Codebase Audit — Bugs)

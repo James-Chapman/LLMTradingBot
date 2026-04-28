@@ -81,7 +81,7 @@ echo =========================================
 echo  Checking LLM backends...
 echo =========================================
 
-:: ── LM Studio ────────────────────────────────────────────────────────────────
+:: -- LM Studio ------------------------------------------------------------------
 :: Priority 1: try LM Studio OpenAI-compatible server on port 1234.
 set LM_STUDIO_READY=0
 
@@ -91,49 +91,52 @@ if not errorlevel 1 (
     set LM_STUDIO_READY=1
 )
 
-if "!LM_STUDIO_READY!"=="0" (
-    :: Try to start LM Studio. Prefer the headless CLI (lms) over the GUI.
-    where lms >nul 2>&1
-    if not errorlevel 1 (
-        echo LM Studio not running. Starting via lms CLI...
-        start "LM Studio Server" /min cmd /c "lms server start"
-        goto :wait_lm_studio
-    )
+if "!LM_STUDIO_READY!"=="1" goto :after_lm_studio_check
 
-    :: Fall back to launching the GUI application.
-    set LMS_EXE=
-    if exist "%LOCALAPPDATA%\Programs\LM Studio\LM Studio.exe" set LMS_EXE=%LOCALAPPDATA%\Programs\LM Studio\LM Studio.exe
-    if "!LMS_EXE!"=="" if exist "%PROGRAMFILES%\LM Studio\LM Studio.exe" set LMS_EXE=%PROGRAMFILES%\LM Studio\LM Studio.exe
-
-    if not "!LMS_EXE!"=="" (
-        echo LM Studio not running. Starting from "!LMS_EXE!"...
-        echo NOTE: Enable "Start server on launch" in LM Studio settings for reliable auto-start.
-        start "" "!LMS_EXE!"
-        goto :wait_lm_studio
-    )
-
-    echo LM Studio not found. Skipping.
-    goto :try_ollama
-
-    :wait_lm_studio
-    echo Waiting for LM Studio server (up to 20s)...
-    for /l %%i in (1,1,10) do (
-        if "!LM_STUDIO_READY!"=="0" (
-            timeout /t 2 /nobreak >nul
-            curl -s --max-time 3 http://localhost:1234/v1/models >nul 2>&1
-            if not errorlevel 1 set LM_STUDIO_READY=1
-        )
-    )
-    if "!LM_STUDIO_READY!"=="1" (
-        echo [OK] LM Studio server is running.
-    ) else (
-        echo [WARN] LM Studio did not respond in time. Trying Ollama...
-    )
+:: LM Studio not running ? try to start it.
+:: Prefer the headless CLI (lms) over the GUI.
+where lms >nul 2>&1
+if not errorlevel 1 (
+    echo LM Studio not running. Starting via lms CLI...
+    start "LM Studio Server" /min cmd /c "lms server start"
+    goto :wait_lm_studio
 )
 
+:: Fall back to launching the GUI application.
+set LMS_EXE=
+if exist "%LOCALAPPDATA%\Programs\LM Studio\LM Studio.exe" set LMS_EXE=%LOCALAPPDATA%\Programs\LM Studio\LM Studio.exe
+if "%LMS_EXE%"=="" if exist "%PROGRAMFILES%\LM Studio\LM Studio.exe" set LMS_EXE=%PROGRAMFILES%\LM Studio\LM Studio.exe
+
+if not "%LMS_EXE%"=="" (
+    echo LM Studio not running. Starting from "%LMS_EXE%"...
+    echo NOTE: Enable "Start server on launch" in LM Studio settings for reliable auto-start.
+    start "" "%LMS_EXE%"
+    goto :wait_lm_studio
+)
+
+echo LM Studio not found. Skipping.
+goto :try_ollama
+
+:wait_lm_studio
+echo Waiting for LM Studio server (up to 20s)...
+for /l %%i in (1,1,10) do (
+    if "!LM_STUDIO_READY!"=="0" (
+        timeout /t 2 /nobreak >nul
+        curl -s --max-time 3 http://localhost:1234/v1/models >nul 2>&1
+        if not errorlevel 1 set LM_STUDIO_READY=1
+    )
+)
+if "!LM_STUDIO_READY!"=="1" (
+    echo [OK] LM Studio server is running.
+) else (
+    echo [WARN] LM Studio did not respond in time. Trying Ollama...
+    goto :try_ollama
+)
+
+:after_lm_studio_check
 if "!LM_STUDIO_READY!"=="1" goto :start_app
 
-:: ── Ollama ────────────────────────────────────────────────────────────────────
+:: -- Ollama ----------------------------------------------------------------------
 :: Priority 2: try Ollama on port 11434.
 :try_ollama
 set OLLAMA_READY=0
@@ -171,7 +174,7 @@ if "!OLLAMA_READY!"=="0" (
     echo [INFO] No LLM server available. Application will use local Transformers model.
 )
 
-:: ── Start the bot ─────────────────────────────────────────────────────────────
+:: -- Start the bot ---------------------------------------------------------------
 :start_app
 echo.
 echo Starting Kraken Trading Bot...
