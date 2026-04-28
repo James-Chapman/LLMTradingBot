@@ -181,7 +181,7 @@ if exist "%ENV_FILE%" (
         echo FIXED_MARKETS=["BTC/EUR", "ETH/EUR", "SOL/EUR", "XRP/EUR", "ADA/EUR"]
         echo.
         echo # ── Local LLM ^(Transformers^) ────────────────────────────────────────────────
-        echo # Set to a HuggingFace model ID, e.g. google/gemma-4-E4B-it
+        echo # Set to a HuggingFace model ID, e.g. google/gemma-4-E2B-it
         echo TRANSFORMERS_LLM_MODEL=
         echo TRANSFORMERS_TIMEOUT=60
         echo LLM_ONLY_MAX_CONCURRENCY=3
