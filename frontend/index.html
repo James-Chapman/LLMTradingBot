@@ -606,8 +606,10 @@
                                                 :style="signalModal.llm_confidence_scale>=1?'color:var(--green)':'color:var(--red)'"
                                                 x-text="'× '+signalModal.llm_confidence_scale.toFixed(2)"></span>
                                         </div>
-                                        <div style="padding:7px 10px;background:rgba(139,148,158,.08);border-radius:5px;font-style:italic;font-size:12px;color:var(--muted);"
-                                            x-text="'&ldquo;'+signalModal.llm_reasoning+'&rdquo;'"></div>
+                                        <template x-if="signalModal.llm_reasoning">
+                                            <div style="padding:7px 10px;background:rgba(139,148,158,.08);border-radius:5px;font-style:italic;font-size:12px;color:var(--muted);"
+                                                x-text="'&ldquo;'+signalModal.llm_reasoning+'&rdquo;'"></div>
+                                        </template>
                                     </div>
                                 </template>
                                 <template x-if="!signalModal.llm_used">

@@ -561,13 +561,14 @@ async def _strategy_loop() -> None:
                         llm_used=True,
                     )
                 elif idea.strategy_id == "basic_and_llm_strategy":
-                    # LLM analysis already applied internally by BasicAndLLMStrategy;
-                    # reconstruct from supporting_signals so save_trade_idea gets correct data
+                    # Veto, confidence scaling, and thesis are already applied inside
+                    # BasicAndLLMStrategy._evaluate_market — just reconstruct from
+                    # supporting_signals so save_trade_idea stores the real LLM values.
                     _llm_scale = idea.supporting_signals.get("llm_confidence_scale")
                     llm_analysis = SignalAnalysis(
                         sentiment=float(idea.supporting_signals.get("llm_sentiment") or 0.0),
-                        confidence_scale=1.0,  # already baked into idea.confidence
-                        reasoning="",  # already in thesis; empty prevents duplication
+                        confidence_scale=float(_llm_scale) if _llm_scale is not None else 1.0,
+                        reasoning=str(idea.supporting_signals.get("llm_reasoning") or ""),
                         llm_used=_llm_scale is not None,
                     )
                 else:
@@ -577,20 +578,6 @@ async def _strategy_loop() -> None:
                         reasoning="",
                         llm_used=False,
                     )
-
-                if llm_analysis.llm_used and idea.strategy_id == "basic_and_llm_strategy":
-                    # Veto: if LLM strongly opposes this signal, skip it entirely
-                    if settings.llm_veto_threshold > 0 and llm_analysis.confidence_scale < settings.llm_veto_threshold:
-                        direction_label = "LONG" if idea.direction.value == "long" else "SHORT"
-                        activity.warn(
-                            f"Signal {idea.market} {direction_label} vetoed by LLM",
-                            f"Scale {llm_analysis.confidence_scale:.2f} < threshold "
-                            f"{settings.llm_veto_threshold:.2f} - {llm_analysis.reasoning}",
-                        )
-                        continue
-                    idea.confidence = min(0.95, idea.confidence * llm_analysis.confidence_scale)
-                    if llm_analysis.reasoning:
-                        idea.thesis = f"{idea.thesis} | LLM: {llm_analysis.reasoning}"
 
                 risk_decision = await risk_engine.evaluate_trade(
                     idea,
