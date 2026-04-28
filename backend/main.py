@@ -89,7 +89,7 @@ strategies = [basic_strategy, basic_and_llm_strategy, llm_only_strategy]
 STRATEGY_LABELS = {
     "basic_strategy": "Basic Strategy (Just market indicators, no LLM)",
     "basic_and_llm_strategy": "Basic + LLM Combined (LLM analysis augments indicator-based signals)",
-    "llm_only_strategy": "All LLM (LLM generates signals directly from price and news context, no indicators)",
+    "llm_only_strategy": "All LLM (LLM generates signals from price, indicators, and news — no indicator consensus gate)",
 }
 risk_engine = RiskEngine()
 approval_service = ApprovalService(repository=repo)
@@ -1319,8 +1319,10 @@ async def get_control():
 
 @app.post("/api/control/emergency-stop")
 async def activate_emergency_stop():
+    global _dashboard_version
     control.activate_stop()
     cleared = approval_service.clear_pending()
+    _dashboard_version += 1
     logger.warning("Emergency stop activated - approval queue cleared", extra={"cleared": cleared})
     await _send_alert("emergency_stop_activated", {"cleared_approvals": cleared})
     return {"status": "stopped", "timestamp": datetime.now(timezone.utc).isoformat()}
@@ -1328,43 +1330,53 @@ async def activate_emergency_stop():
 
 @app.post("/api/control/resume")
 async def resume_bot():
+    global _dashboard_version
     control.resume()
+    _dashboard_version += 1
     return {"status": "resumed", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
 @app.post("/api/control/markets/{market:path}/toggle")
 async def toggle_market(market: str):
+    global _dashboard_version
     if control.is_market_enabled(market):
         control.disable_market(market)
         enabled = False
     else:
         control.enable_market(market)
         enabled = True
+    _dashboard_version += 1
     return {"market": market, "enabled": enabled}
 
 
 @app.post("/api/control/markets/{market:path}/live-toggle")
 async def toggle_market_live(market: str):
+    global _dashboard_version
     live = not control.is_market_live(market)
     control.set_market_live(market, live)
+    _dashboard_version += 1
     return {"market": market, "live": live}
 
 
 @app.post("/api/control/strategies/{strategy_id}/toggle")
 async def toggle_strategy(strategy_id: str):
+    global _dashboard_version
     strategy = _strategy_by_id(strategy_id)
     if strategy is None:
         raise HTTPException(status_code=404, detail="Strategy not found")
     control.select_strategy(strategy.strategy_id)
+    _dashboard_version += 1
     return {"strategy_id": strategy.strategy_id, "enabled": True, "selected": True}
 
 
 @app.post("/api/control/strategies/{strategy_id}/select")
 async def select_strategy(strategy_id: str):
+    global _dashboard_version
     strategy = _strategy_by_id(strategy_id)
     if strategy is None:
         raise HTTPException(status_code=404, detail="Strategy not found")
     control.select_strategy(strategy.strategy_id)
+    _dashboard_version += 1
     return {"strategy_id": strategy.strategy_id, "selected": True}
 
 

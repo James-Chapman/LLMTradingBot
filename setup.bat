@@ -120,10 +120,21 @@ if not exist "%REQUIREMENTS%" (
     goto failed
 )
 
-echo       This may take a minute on first run.
+echo       This may take a few minutes on first run.
 echo.
 call "%VENV_DIR%\Scripts\activate.bat"
 pip install --quiet --upgrade pip
+
+:: Install PyTorch with CUDA 12.8 support (RTX 40/50 series).
+:: Without this flag pip pulls the CPU-only wheel from PyPI.
+echo       Installing PyTorch (CUDA 12.8)...
+pip install --quiet torch --index-url https://download.pytorch.org/whl/cu128
+if errorlevel 1 (
+    echo %YELLOW%  ⚠  CUDA torch install failed — falling back to CPU build.%RESET%
+    echo %YELLOW%     GPU acceleration will not be available.%RESET%
+    pip install --quiet torch
+)
+
 pip install --quiet -r "%REQUIREMENTS%"
 if errorlevel 1 (
     echo %RED%  ✗  pip install failed. See error above.%RESET%

@@ -156,8 +156,17 @@ class TransformersClient:
             logger.info(f"Transformers model available - model: {self.model}")
             return True
         try:
-            # Load the pipeline in a thread to avoid blocking the event loop
-            self._pipeline = await asyncio.to_thread(pipeline, "text-generation", model=self.model)
+            # Load the pipeline in a thread to avoid blocking the event loop.
+            # device_map="auto" places layers on GPU when available; torch_dtype="auto"
+            # uses the model's native dtype (bfloat16/float16) instead of float32,
+            # cutting VRAM usage roughly in half.
+            self._pipeline = await asyncio.to_thread(
+                pipeline,
+                "text-generation",
+                model=self.model,
+                device_map="auto",
+                dtype="auto",
+            )
             self._mark_success()
             logger.info(f"Transformers model loaded - model: {self.model}")
             return True

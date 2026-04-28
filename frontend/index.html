@@ -19,7 +19,7 @@
         <div class="app-shell dashboard-shell header-bar">
             <div class="header-brand">
                 <span class="brand-title">⚡ LLM Trading Bot</span>
-                <span class="version-label">v0.5.2</span>
+                <span class="version-label">v0.5.3</span>
                 <!-- Emergency stop banner -->
                 <span x-show="emergencyStop" class="pill pill-red"
                     style="font-size:12px;font-weight:700;letter-spacing:.04em;">■ EMERGENCY STOP</span>
@@ -1262,16 +1262,25 @@
 
                 async activateStop() {
                     if (!confirm('Activate emergency stop? This will halt all trading and clear the approval queue.')) return;
+                    this.emergencyStop = true;
                     await fetch('/api/control/emergency-stop', { method: 'POST' });
                     this.loadDashboard();
                 },
 
                 async resumeBot() {
+                    this.emergencyStop = false;
                     await fetch('/api/control/resume', { method: 'POST' });
                     this.loadDashboard();
                 },
 
                 async selectStrategy(id) {
+                    // Optimistic update so the button flips immediately without waiting for the dashboard poll.
+                    this.strategies = this.strategies.map(s => ({ ...s, selected: s.id === id }));
+                    const selected = this.strategies.find(s => s.id === id);
+                    if (selected) {
+                        this.activeStrategyId = id;
+                        this.activeStrategyLabel = selected.label || this._strategyLabel(id);
+                    }
                     await fetch(`/api/control/strategies/${encodeURIComponent(id)}/select`, { method: 'POST' });
                     this.loadDashboard();
                 },

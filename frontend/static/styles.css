@@ -282,6 +282,11 @@ body {
     opacity: 1 !important;
 }
 
+.news-filter-chip:active {
+    transform: scale(0.94);
+    opacity: .7 !important;
+}
+
 .approval-details {
     margin-bottom: 20px;
 }
@@ -549,7 +554,12 @@ body {
     border-radius: 4px;
     cursor: pointer;
     border: 1px solid;
-    transition: opacity .15s;
+    transition: opacity .15s, transform .08s;
+}
+
+.toggle-btn:active {
+    transform: scale(0.94);
+    opacity: .7;
 }
 
 .toggle-on {
@@ -595,6 +605,11 @@ body {
     background: rgba(248, 81, 73, .2);
 }
 
+.estop-btn:active {
+    transform: scale(0.96);
+    opacity: .7;
+}
+
 .resume-btn {
     padding: 7px 18px;
     font-size: 13px;
@@ -610,6 +625,11 @@ body {
     background: rgba(63, 185, 80, .25);
 }
 
+.resume-btn:active {
+    transform: scale(0.96);
+    opacity: .7;
+}
+
 .btn {
     padding: 8px 20px;
     font-size: 13px;
@@ -617,11 +637,16 @@ body {
     border-radius: 6px;
     cursor: pointer;
     border: 1px solid;
-    transition: opacity .15s;
+    transition: opacity .15s, transform .08s;
 }
 
 .btn:hover {
     opacity: .8;
+}
+
+.btn:active {
+    transform: scale(0.96);
+    opacity: .7;
 }
 
 .btn-approve {
