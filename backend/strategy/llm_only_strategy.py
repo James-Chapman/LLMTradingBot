@@ -51,6 +51,8 @@ class LLMOnlyStrategy:
         semaphore = asyncio.Semaphore(self.max_concurrency)
         logger.debug("Initialized LLMOnlyStrategy with max concurrency set to %d.", self.max_concurrency)
 
+        logger.info("Starting evaluation across %d markets.", len(market_data))
+
         async def _bounded_evaluate(symbol: str, data: Dict[str, Any]):
             """Evaluate one market while respecting the configured concurrency limit."""
             logger.debug("Starting evaluation for %s within semaphore slot.", symbol)

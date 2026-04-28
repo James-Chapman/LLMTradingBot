@@ -384,8 +384,8 @@ async def _strategy_loop() -> None:
             market_data: Dict[str, Any] = {}
             for sym, snap in snapshots.items():
                 hist = _price_history[sym]
-                # previous_price is 2 ticks back (60 s ago) for short-term momentum.
-                prev = hist[-3] if len(hist) >= 3 else snap.price
+                # previous_price is 10 ticks back (5 mins ago) for short-term momentum.
+                prev = hist[-11] if len(hist) >= 11 else snap.price
                 # Pass 5-min OHLC candles when available so ATR/Stochastic use true H/L
                 ohlc = _ohlc_cache_5.get(sym, {}).get("candles")
                 ohlc_15 = _ohlc_cache_15.get(sym, {}).get("candles") or []

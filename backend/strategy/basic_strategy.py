@@ -62,7 +62,7 @@ class BasicStrategy:
         market_data: Dict[str, Any],
     ) -> List[TradeIdea]:
         """Evaluate all markets and return trade ideas."""
-        logger.debug("Starting evaluation for %d market(s).", len(market_data))
+        logger.info("Starting evaluation across %d markets.", len(market_data))
         ideas = []
 
         for symbol, data in market_data.items():
@@ -110,8 +110,11 @@ class BasicStrategy:
         if abs(momentum) < effective_threshold:
             logger.debug(
                 "%s momentum %.4f%% below threshold %.4f%% (ATR-based=%.4f%%, fixed=%.4f%%)",
-                symbol, momentum * 100, effective_threshold * 100,
-                dynamic_threshold * 100, MOMENTUM_THRESHOLD * 100,
+                symbol,
+                momentum * 100,
+                effective_threshold * 100,
+                dynamic_threshold * 100,
+                MOMENTUM_THRESHOLD * 100,
             )
             return None
 
