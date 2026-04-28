@@ -21,7 +21,7 @@ from observability.logging import get_logger
 
 @runtime_checkable
 class LLMClientProtocol(Protocol):
-    """Structural interface satisfied by LMStudioClient, OllamaClient, TransformersClient, and FallbackLLMClient."""
+    """Structural interface satisfied by TransformersClient."""
 
     @property
     def available(self) -> bool: ...

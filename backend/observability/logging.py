@@ -63,6 +63,17 @@ def setup_logging(log_level: str = "INFO", log_file: str = "trading_bot.log") ->
     # Prevent duplicate logs
     logger.propagate = False
 
+    # Dedicated LLM log — Transformers client and LLM analyser write here in
+    # addition to the main log so LLM activity can be tailed separately.
+    llm_log_path = log_path.with_name("llm.log")
+    llm_handler = logging.FileHandler(llm_log_path)
+    llm_handler.setFormatter(formatter)
+    for _name in ("trading_bot.transformers", "trading_bot.llm_analyser"):
+        _child = logging.getLogger(_name)
+        for _h in list(_child.handlers):
+            _child.removeHandler(_h)
+        _child.addHandler(llm_handler)
+
 
 def get_logger(name: str) -> logging.Logger:
     """Get a logger instance"""

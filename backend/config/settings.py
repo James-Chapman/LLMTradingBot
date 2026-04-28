@@ -19,7 +19,7 @@ class BotSettings(BaseSettings):
 
     # App settings
     app_name: str = Field(default="Kraken Trading Bot", validation_alias="APP_NAME")
-    version: str = Field(default="0.5.2", validation_alias="VERSION")
+    version: str = Field(default="0.5.3", validation_alias="VERSION")
     debug: bool = Field(default=False, validation_alias="DEBUG")
 
     # Server settings
@@ -33,7 +33,9 @@ class BotSettings(BaseSettings):
     base_currency: str = Field(default="EUR", validation_alias="BASE_CURRENCY")
     starting_capital: float = Field(default=500.0, validation_alias="STARTING_CAPITAL")
     target_trade_amount: float = Field(default=100.0, validation_alias="TARGET_TRADE_AMOUNT")
-    max_loss_per_trade_percent: float = Field(default=5.0, validation_alias="MAX_LOSS_PER_TRADE_PERCENT")
+    max_loss_per_trade_percent: float = Field(
+        default=5.0, validation_alias="MAX_LOSS_PER_TRADE_PERCENT"
+    )
     max_daily_loss_percent: float = Field(default=5.0, validation_alias="MAX_DAILY_LOSS_PERCENT")
     min_trade_size: float = Field(default=50.0, validation_alias="MIN_TRADE_SIZE")
     stop_loss_pct: float = Field(default=0.05, validation_alias="STOP_LOSS_PCT")
@@ -72,20 +74,16 @@ class BotSettings(BaseSettings):
         default_factory=lambda: ["BTC/EUR", "ETH/EUR"],
         validation_alias="FIXED_MARKETS",
     )
-    dynamic_universe_source: str = Field(default="coinmarketcap", validation_alias="DYNAMIC_UNIVERSE_SOURCE")
+    dynamic_universe_source: str = Field(
+        default="coinmarketcap", validation_alias="DYNAMIC_UNIVERSE_SOURCE"
+    )
     max_eth_ecosystem_coins: int = Field(default=10, validation_alias="MAX_ETH_ECOSYSTEM_COINS")
 
-    # Local LLM — LM Studio (OpenAI-compatible, highest priority)
-    lm_studio_url: str = Field(default="http://localhost:1234", validation_alias="LM_STUDIO_URL")
-    lm_studio_model: str = Field(default="default model", validation_alias="LM_STUDIO_MODEL")
+    # Local LLM — Transformers (HuggingFace model loaded in-process)
+    transformers_llm_model: str = Field(default="", validation_alias="TRANSFORMERS_LLM_MODEL")
+    transformers_timeout: int = Field(default=60, validation_alias="TRANSFORMERS_TIMEOUT")
 
-    # Local LLM — Ollama (second priority)
-    ollama_url: str = Field(default="http://localhost:11434", validation_alias="OLLAMA_URL")
-    ollama_model: str = Field(default="default model", validation_alias="OLLAMA_MODEL")
-    ollama_timeout: int = Field(default=60, validation_alias="OLLAMA_TIMEOUT")
-
-    # Local LLM — Transformers (fallback)
-    transformers_llm_model: str = Field(default="default model", validation_alias="TRANSFORMERS_LLM_MODEL")
+    # LLM-only strategy concurrency cap
     llm_only_max_concurrency: int = Field(default=3, validation_alias="LLM_ONLY_MAX_CONCURRENCY")
 
     # CORS

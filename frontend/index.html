@@ -33,7 +33,7 @@
                 <div class="metric-separator"></div>
                 <div class="metric-block" style="display:flex;align-items:center;gap:6px;">
                     <span class="llm-dot"
-                        :style="llmAvailable ? 'background:var(--green);box-shadow:0 0 6px var(--green);' : 'background:var(--muted);'"></span>
+                        :style="llmStatus==='available' ? 'background:var(--green);box-shadow:0 0 6px var(--green);' : llmStatus==='unavailable' ? 'background:var(--gold);box-shadow:0 0 6px var(--gold);' : 'background:var(--muted);'"></span>
                     <span style="font-size:12px;color:var(--muted);">LLM:</span>
                     <span style="font-size:12px;color:var(--muted);" x-text="llmModel || 'Not configured'"></span>
                 </div>
@@ -833,7 +833,7 @@
                     <div class="llm-status">
                         <div class="llm-row llm-heading">
                             <span class="llm-dot"
-                                :style="llmAvailable ? 'background:var(--green);box-shadow:0 0 6px var(--green);' : 'background:var(--muted);'"></span>
+                                :style="llmStatus==='available' ? 'background:var(--green);box-shadow:0 0 6px var(--green);' : llmStatus==='unavailable' ? 'background:var(--gold);box-shadow:0 0 6px var(--gold);' : 'background:var(--muted);'"></span>
                             <span class="label">Local LLM</span>
                         </div>
                         <div class="llm-row">
@@ -844,8 +844,8 @@
                         <div class="llm-row">
                             <span class="llm-key">Status</span>
                             <span style="font-size:12px;font-weight:600;"
-                                :style="llmAvailable ? 'color:var(--green)' : 'color:var(--muted)'"
-                                x-text="llmAvailable ? 'Available' : 'Unavailable'"></span>
+                                :style="llmStatus==='available' ? 'color:var(--green)' : llmStatus==='unavailable' ? 'color:var(--gold)' : 'color:var(--muted)'"
+                                x-text="llmStatus==='available' ? 'Available' : llmStatus==='unavailable' ? 'Unavailable' : 'Not configured'"></span>
                         </div>
                     </div>
                     <span style="color:var(--muted);font-size:13px;" x-text="panels.llm ? '▲' : '▼'"></span>
@@ -1044,6 +1044,7 @@
                 rejectedTrades: [],
                 activityLog: [],
                 llmAvailable: false,
+                llmStatus: 'not_configured',
                 llmModel: '',
                 llmReflection: null,
                 llmBriefing: null,
@@ -1221,6 +1222,7 @@
                     this.riskRejections = d.risk_rejections || [];
                     this.activityLog = d.activity || [];
                     this.llmAvailable = d.llm?.available ?? false;
+                    this.llmStatus = d.llm?.status ?? (this.llmAvailable ? 'available' : 'not_configured');
                     this.llmModel = d.llm?.model ?? '';
                     this.llmReflection = d.llm?.reflection ?? null;
                     this.llmBriefing = d.llm?.briefing ?? null;

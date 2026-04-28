@@ -47,9 +47,6 @@ try:
         normalise_news_item,
     )
     from llm.analyser import LLMAnalyser, SignalAnalysis
-    from llm.fallback_client import FallbackLLMClient
-    from llm.lm_studio_client import LMStudioClient
-    from llm.ollama_client import OllamaClient
     from llm.transformers_client import TransformersClient
     from observability.activity import activity
     from observability.logging import get_logger, setup_logging
@@ -80,13 +77,7 @@ init_database(settings.database_url)
 
 repo = Repository()
 learner = PerformanceLearner()
-_llm_client = FallbackLLMClient(
-    [
-        LMStudioClient(settings.lm_studio_url, settings.lm_studio_model, settings.ollama_timeout),
-        OllamaClient(settings.ollama_url, settings.ollama_model, settings.ollama_timeout),
-        TransformersClient(settings.transformers_llm_model, settings.ollama_timeout),
-    ]
-)
+_llm_client = TransformersClient(settings.transformers_llm_model, settings.transformers_timeout)
 _analyser = LLMAnalyser(_llm_client)
 
 kraken_adapter = KrakenMarketAdapter(settings.kraken_api_key, settings.kraken_api_secret)
@@ -240,6 +231,14 @@ def _record_trade_result(pnl: float) -> None:
     the bot could exceed the configured limit by restarting mid-day.
     """
     record_trade_result_and_persist(risk_engine, repo, pnl)
+
+
+# Return a three-state LLM status string for the dashboard.
+def _llm_status() -> str:
+    """Return 'not_configured', 'available', or 'unavailable'."""
+    if not settings.transformers_llm_model:
+        return "not_configured"
+    return "available" if _llm_client.available else "unavailable"
 
 
 # Safely extract the numeric LLM briefing score for a market.
@@ -981,19 +980,12 @@ async def _equity_ticker_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Warn when any LLM backend is configured with the unconfigured placeholder value.
-    _placeholder = "default model"
-    for _name, _val in [
-        ("LM_STUDIO_MODEL", settings.lm_studio_model),
-        ("OLLAMA_MODEL", settings.ollama_model),
-        ("TRANSFORMERS_LLM_MODEL", settings.transformers_llm_model),
-    ]:
-        if _val == _placeholder:
-            logger.warning("LLM model not configured — set %s in .env to a real model name", _name)
+    if not settings.transformers_llm_model:
+        logger.warning("LLM model not configured — set TRANSFORMERS_LLM_MODEL in .env")
 
     ok = await _llm_client.probe()
     if not ok:
-        logger.error("LLM probe failed for all backends (LM Studio, Ollama, Transformers)")
+        logger.error("LLM probe failed — Transformers model unavailable")
     asyncio.create_task(_strategy_loop())
     asyncio.create_task(_news_loop())
     asyncio.create_task(_ohlc_loop())
@@ -1152,6 +1144,7 @@ async def get_dashboard(request: Request, response: Response):
             "learning": learner.summary(),
             "llm": {
                 "available": _llm_client.available,
+                "status": _llm_status(),
                 "model": _llm_client.llm_model,
                 "reflection": {
                     "pattern": ref.pattern,
@@ -1581,7 +1574,7 @@ async def health_check():
     return {
         "llm_available": _llm_client.available,
         "llm_state": _llm_client.circuit_state,
-        "transformers_llm_model": settings.transformers_llm_model,
+        "llm_model": _llm_client.llm_model,
     }
 
 

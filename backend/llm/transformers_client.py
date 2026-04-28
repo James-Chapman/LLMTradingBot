@@ -8,7 +8,7 @@ Falls back gracefully when the model fails to load or generate.
 import asyncio
 import json
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
 from transformers import pipeline
@@ -32,7 +32,7 @@ def _loads_model_json(content: str) -> dict[str, Any]:
     ]
     for candidate in attempts:
         try:
-            loaded = json.loads(candidate)
+            loaded: Any = json.loads(candidate)
             if isinstance(loaded, dict):
                 return loaded
         except json.JSONDecodeError as exc:
@@ -68,7 +68,7 @@ def _extract_first_json_object(content: str) -> Optional[dict[str, Any]]:
         if character != "{":
             continue
         try:
-            loaded, _end = decoder.raw_decode(content[index:])
+            loaded, _ = decoder.raw_decode(content[index:])
         except json.JSONDecodeError:
             continue
         if isinstance(loaded, dict):
@@ -80,7 +80,7 @@ def _extract_first_json_object(content: str) -> Optional[dict[str, Any]]:
 def _repair_missing_field_commas(content: str) -> str:
     """Return content with obvious missing field separators repaired."""
     lines = content.splitlines()
-    repaired = []
+    repaired: list[str] = []
     for index, line in enumerate(lines):
         next_line = lines[index + 1] if index + 1 < len(lines) else ""
         if _line_needs_field_comma(line, next_line):
@@ -104,12 +104,17 @@ def _line_needs_field_comma(line: str, next_line: str) -> bool:
     )
 
 
+def _utc_now() -> datetime:
+    """Return the current UTC time as a timezone-aware datetime."""
+    return datetime.now(timezone.utc)
+
+
 class TransformersClient:
     def __init__(
         self,
         model: str,
         timeout: int = 15,
-        clock: Callable[[], datetime] = datetime.utcnow,
+        clock: Callable[[], datetime] = _utc_now,
     ):
         self.model = model
         self.timeout = timeout
@@ -157,19 +162,30 @@ class TransformersClient:
             logger.info(f"Transformers model loaded - model: {self.model}")
             return True
         except Exception as e:
-            self._mark_failed(str(e))
+            reason = str(e)
+            # GGUF-only repos have no config.json/model_type and cannot be loaded
+            # via pipeline(). Set TRANSFORMERS_LLM_MODEL to a standard HuggingFace
+            # model such as Qwen/Qwen2.5-1.5B-Instruct or google/gemma-2-2b-it.
+            if "model_type" in reason or "config.json" in reason:
+                reason = (
+                    f"GGUF-only repository '{self.model}' is not supported by the "
+                    f"transformers pipeline. Set TRANSFORMERS_LLM_MODEL to a standard "
+                    f"HuggingFace model (e.g. Qwen/Qwen2.5-1.5B-Instruct)."
+                )
+            logger.error(f"Transformers probe failed — model: {self.model} — {reason}")
+            self._mark_failed(reason)
             return False
 
-    async def chat(self, messages: list[dict], expect_json: bool = True) -> Optional[dict | str]:
+    async def chat(self, messages: list[dict[str, Any]], expect_json: bool = True) -> Optional[dict[str, Any] | str]:
         """Generate a response using the local model. Returns parsed dict if expect_json, else str. None on failure."""
         if not self._should_attempt() or self._pipeline is None:
             return None
 
         # Convert messages to a single prompt string
-        prompt_parts = []
+        prompt_parts: list[str] = []
         for msg in messages:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
+            role: str = str(msg.get("role", "user"))
+            content: str = str(msg.get("content", ""))
             if role == "system":
                 prompt_parts.append(f"System: {content}")
             elif role == "user":
@@ -180,18 +196,19 @@ class TransformersClient:
         if expect_json:
             prompt += "\nRespond with valid JSON only."
 
+        raw_output = ""
         try:
             # Generate in a thread to keep async
             outputs = await asyncio.to_thread(self._pipeline, prompt, max_length=512, num_return_sequences=1)
-            content = outputs[0]["generated_text"].strip()
+            raw_output = outputs[0]["generated_text"].strip()
             self._mark_success()
             if expect_json:
-                return _loads_model_json(content)
-            return content
+                return _loads_model_json(raw_output)
+            return raw_output
         except json.JSONDecodeError as e:
             logger.warning(
                 f"Transformers returned non-JSON: {e}",
-                extra={"raw_response": content},
+                extra={"raw_response": raw_output},
             )
             return None
         except Exception as e:
@@ -221,8 +238,7 @@ class TransformersClient:
         )
         self._retry_delay = timedelta(seconds=delay_seconds)
         self._failure_count += 1
-        if self.available:
-            logger.warning(f"Transformers unavailable: {reason}; retry in {self._retry_delay}")
+        logger.warning(f"Transformers unavailable: {reason}; retry in {self._retry_delay}")
         self.available = False
         self._last_failure = self._clock()
         self._next_retry_at = self._last_failure + self._retry_delay

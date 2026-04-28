@@ -7,6 +7,21 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.5.3] — 2026-04-28
+
+### Changed
+
+- **LLM backend consolidated to Transformers only** — removed `OllamaClient`, `LMStudioClient`, `LlamacppClient`, and `FallbackLLMClient`. `TransformersClient` is now wired directly into `main.py` with no fallback chain.
+- **Settings cleaned up** — removed `OLLAMA_URL`, `OLLAMA_MODEL`, `OLLAMA_TIMEOUT`, `LM_STUDIO_URL`, `LM_STUDIO_MODEL`, `LLAMA_CPP_URL`, `LLAMA_CPP_MODEL`, `LLAMA_CPP_TIMEOUT`. Added `TRANSFORMERS_LLM_MODEL`, `TRANSFORMERS_TIMEOUT`, and `LLM_ONLY_MAX_CONCURRENCY` (previously missing from `BotSettings`).
+- **`.env.example` synced** — now matches `BotSettings` field aliases exactly so the settings BDD test passes cleanly.
+
+### Removed
+
+- `backend/llm/ollama_client.py`, `lm_studio_client.py`, `llamacpp_client.py`, `fallback_client.py`
+- `tests/test_ollama_client_bdd.py`, `test_lm_studio_client_bdd.py`, `test_fallback_client_bdd.py`
+
+---
+
 ## [0.5.2] — 2026-04-28
 
 ### Fixed

@@ -81,7 +81,7 @@ If you want LLM analysis, install Ollama and pull the default model:
 ollama pull phi3:mini
 ```
 
-The full configuration reference is in [docs/01-configuration.md](docs/01-configuration.md).
+If using Llama.cpp (recommended for local deployment), ensure the server is running and the model is pulled via its respective tool/CLI. The full configuration reference is in [docs/01-configuration.md](docs/01-configuration.md).
 
 ## Run
 
