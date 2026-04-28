@@ -19,7 +19,7 @@ class BotSettings(BaseSettings):
 
     # App settings
     app_name: str = Field(default="Kraken Trading Bot", validation_alias="APP_NAME")
-    version: str = Field(default="0.3.0", validation_alias="VERSION")
+    version: str = Field(default="0.5.0", validation_alias="VERSION")
     debug: bool = Field(default=False, validation_alias="DEBUG")
 
     # Server settings
@@ -37,6 +37,8 @@ class BotSettings(BaseSettings):
     max_daily_loss_percent: float = Field(default=5.0, validation_alias="MAX_DAILY_LOSS_PERCENT")
     min_trade_size: float = Field(default=50.0, validation_alias="MIN_TRADE_SIZE")
     stop_loss_pct: float = Field(default=0.05, validation_alias="STOP_LOSS_PCT")
+    trailing_stop_pct: float = Field(default=0.03, validation_alias="TRAILING_STOP_PCT")
+    momentum_lookback_ticks: int = Field(default=10, validation_alias="MOMENTUM_LOOKBACK_TICKS")
     fee_and_slippage: float = Field(default=0.0036, validation_alias="FEE_AND_SLIPPAGE")
     min_signal_confidence: float = Field(default=0.65, validation_alias="MIN_SIGNAL_CONFIDENCE")
     llm_veto_threshold: float = Field(default=0.70, validation_alias="LLM_VETO_THRESHOLD")
@@ -85,6 +87,12 @@ class BotSettings(BaseSettings):
     # Local LLM — Transformers (fallback)
     transformers_llm_model: str = Field(default="default model", validation_alias="TRANSFORMERS_LLM_MODEL")
     llm_only_max_concurrency: int = Field(default=3, validation_alias="LLM_ONLY_MAX_CONCURRENCY")
+
+    # CORS
+    cors_origins: List[str] = Field(
+        default_factory=lambda: ["http://localhost:8000", "http://127.0.0.1:8000"],
+        validation_alias="CORS_ORIGINS",
+    )
 
     # Logging
     log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")

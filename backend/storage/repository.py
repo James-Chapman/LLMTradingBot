@@ -44,6 +44,8 @@ logger = get_logger("repository")
 
 # Trim price ticks older than this many rows per symbol to keep the DB lean
 _MAX_PRICE_ROWS_PER_SYMBOL = 5_760  # 48 h at 30 s intervals
+# Trim equity snapshots older than this many rows (6 rows/min × 60 × 48 h)
+_MAX_EQUITY_ROWS = 17_280  # 48 h at 10 s intervals
 
 
 class Repository:
@@ -123,22 +125,26 @@ class Repository:
         idea = request.trade_idea
         risk = request.risk_decision
         with get_session() as s:
-            s.merge(
-                TradeIdeaModel(
-                    id=idea.id,
-                    strategy_id=idea.strategy_id,
-                    market=idea.market,
-                    direction=idea.direction.value,
-                    thesis=idea.thesis,
-                    supporting_signals=idea.supporting_signals,
-                    confidence=idea.confidence,
-                    entry_plan=idea.entry_plan,
-                    exit_plan=idea.exit_plan,
-                    stop_or_invalidation=idea.stop_or_invalidation,
-                    position_sizing_proposal=idea.position_sizing_proposal,
-                    mode_eligibility=[mode.value for mode in idea.mode_eligibility],
+            # Only insert if the row doesn't already exist — save_trade_idea may have
+            # written the full signal context first, and merge would overwrite those
+            # fields (indicators, llm_used, etc.) with None.
+            if s.get(TradeIdeaModel, idea.id) is None:
+                s.add(
+                    TradeIdeaModel(
+                        id=idea.id,
+                        strategy_id=idea.strategy_id,
+                        market=idea.market,
+                        direction=idea.direction.value,
+                        thesis=idea.thesis,
+                        supporting_signals=idea.supporting_signals,
+                        confidence=idea.confidence,
+                        entry_plan=idea.entry_plan,
+                        exit_plan=idea.exit_plan,
+                        stop_or_invalidation=idea.stop_or_invalidation,
+                        position_sizing_proposal=idea.position_sizing_proposal,
+                        mode_eligibility=[mode.value for mode in idea.mode_eligibility],
+                    )
                 )
-            )
             existing = s.get(ApprovalRequestModel, request.id)
             risk_row = None
             if existing and existing.risk_decision_id:
@@ -557,6 +563,24 @@ class Repository:
                     """
                 ),
                 {"symbol": symbol, "keep": _MAX_PRICE_ROWS_PER_SYMBOL},
+            )
+
+    def trim_old_equity_snapshots(self, keep: int = _MAX_EQUITY_ROWS) -> None:
+        """Delete equity snapshot rows beyond the `keep` most recent."""
+        with get_session() as s:
+            s.execute(
+                text(
+                    """
+                    DELETE FROM equity_snapshots
+                    WHERE id NOT IN (
+                        SELECT id
+                        FROM equity_snapshots
+                        ORDER BY timestamp DESC, id DESC
+                        LIMIT :keep
+                    )
+                    """
+                ),
+                {"keep": keep},
             )
 
     # ── News ──────────────────────────────────────────────────────────────

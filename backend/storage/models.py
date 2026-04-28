@@ -3,7 +3,7 @@ SQLAlchemy database models
 """
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase
 
 
@@ -31,7 +31,7 @@ class NewsItemModel(Base):
     title = Column(String)
     content = Column(Text)
     published_at = Column(DateTime)
-    url = Column(String, nullable=True, unique=True)
+    url = Column(String, nullable=True)
 
 class NewsSignalModel(Base):
     __tablename__ = "news_signals"
@@ -47,9 +47,12 @@ class NewsSignalModel(Base):
 
 class MarketSnapshotModel(Base):
     __tablename__ = "market_snapshots"
+    __table_args__ = (
+        Index("ix_market_snapshots_symbol_timestamp", "symbol", "timestamp"),
+    )
     id = Column(Integer, primary_key=True, autoincrement=True)
-    symbol = Column(String, index=True)
-    timestamp = Column(DateTime, index=True)
+    symbol = Column(String)
+    timestamp = Column(DateTime)
     price = Column(Float)
     volume = Column(Float, nullable=True)
 

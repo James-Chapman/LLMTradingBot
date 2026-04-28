@@ -18,7 +18,7 @@ ensure_project_venv(__file__)
 try:
     import httpx
     import uvicorn
-    from fastapi import FastAPI, HTTPException, Query
+    from fastapi import FastAPI, HTTPException, Query, Request
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, Response
     from fastapi.staticfiles import StaticFiles
@@ -28,7 +28,7 @@ try:
     from config.currency import currency_symbol
     from config.settings import settings
     from control.state import LEGACY_STRATEGY_IDS, ControlState
-    from domain.models import ExecutionIntent, MarketSnapshot
+    from domain.models import ExecutionIntent, MarketSnapshot, TradeIdea
     from execution.kraken import KrakenExecutionEngine
     from execution.operator_reset import close_positions_for_operator_reset
     from execution.paper import PaperExecutionEngine
@@ -148,6 +148,10 @@ approval_service.load_pending_from_repository()
 # In-memory state updated by the background loop
 _latest_signals: List[Dict[str, Any]] = []  # rolling buffer, newest first
 _current_prices: Dict[str, float] = {}
+# Monotonic counter incremented whenever dashboard-visible state changes.
+# The dashboard endpoint returns this as an ETag so the browser can skip
+# parsing when nothing has changed.
+_dashboard_version: int = 0
 _latest_market_snapshots: Dict[str, MarketSnapshot] = {}
 _active_markets: List[str] = []
 
@@ -277,20 +281,12 @@ def _record_equity_snapshot(prices: Dict[str, float]) -> Dict[str, Any]:
 
 
 # Cache the latest streamed market snapshot for strategy ticks.
-# Global lock for all shared state access (Goal 1 & 2)
-STATE_LOCK = asyncio.Lock()
-
-
+# asyncio is single-threaded and cooperative — direct dict mutation from a
+# callback in the same event loop is safe without a lock.
 def _cache_market_snapshot(snapshot: MarketSnapshot) -> None:
     """Store the most recent ticker snapshot from Kraken streaming."""
-
-    async def update_state():
-        async with STATE_LOCK:
-            _latest_market_snapshots[snapshot.symbol] = snapshot
-            _current_prices[snapshot.symbol] = snapshot.price
-
-    # Since this function is called from a callback (kraken_adapter), we must run the async update in the event loop context.
-    asyncio.create_task(update_state())
+    _latest_market_snapshots[snapshot.symbol] = snapshot
+    _current_prices[snapshot.symbol] = snapshot.price
 
 
 async def _send_alert(event_type: str, payload: Dict[str, Any]) -> None:
@@ -313,7 +309,7 @@ async def _send_alert(event_type: str, payload: Dict[str, Any]) -> None:
 
 async def _strategy_loop() -> None:
     """Background task: poll market data, run strategy, and act based on trading mode."""
-    global _latest_signals, _current_prices, _active_markets, _session_tick
+    global _latest_signals, _current_prices, _active_markets, _session_tick, _dashboard_version
 
     universe = await universe_resolver.resolve_universe()
     all_markets = universe.fixed_markets + universe.dynamic_markets
@@ -384,8 +380,9 @@ async def _strategy_loop() -> None:
             market_data: Dict[str, Any] = {}
             for sym, snap in snapshots.items():
                 hist = _price_history[sym]
-                # previous_price is 10 ticks back (5 mins ago) for short-term momentum.
-                prev = hist[-11] if len(hist) >= 11 else snap.price
+                # previous_price is settings.momentum_lookback_ticks back for momentum.
+                _lb = settings.momentum_lookback_ticks + 1
+                prev = hist[-_lb] if len(hist) >= _lb else snap.price
                 # Pass 5-min OHLC candles when available so ATR/Stochastic use true H/L
                 ohlc = _ohlc_cache_5.get(sym, {}).get("candles")
                 ohlc_15 = _ohlc_cache_15.get(sym, {}).get("candles") or []
@@ -408,6 +405,7 @@ async def _strategy_loop() -> None:
                 }
 
             _current_prices = prices
+            _dashboard_version += 1
             paper_engine.update_mark_prices(prices)
             paper_engine.update_trailing_prices(prices)
 
@@ -416,11 +414,13 @@ async def _strategy_loop() -> None:
                 repo.save_price_tick(sym, price)
             _record_equity_snapshot(prices)
 
-            # Trim old price ticks and activity log periodically (every ~5 min = 10 ticks).
-            # Offloaded to a thread: DELETE+subquery scans can take 5–50 ms on a busy DB.
+            # Trim old price ticks, equity snapshots, and activity log periodically
+            # (every ~5 min = 10 ticks).  Offloaded to a thread: DELETE+subquery scans
+            # can take 5–50 ms on a busy DB.
             if tick % 10 == 0:
                 for sym in active:
                     await _async_db(repo.trim_old_price_ticks, sym)
+                await _async_db(repo.trim_old_equity_snapshots)
                 await _async_db(repo.trim_old_activity, keep=2_000)
 
             # Stop-loss check: auto-close any position down at least 5%.
@@ -433,17 +433,20 @@ async def _strategy_loop() -> None:
                     if pos.size > 0
                     else (market_price - pos.avg_price) / pos.avg_price
                 )
-                if paper_engine.stop_loss_triggered(
-                    pos.position_id,
-                    market_price,
-                    STOP_LOSS_ASSUMPTION,
-                ):
+                stop_hit = paper_engine.stop_loss_triggered(
+                    pos.position_id, market_price, STOP_LOSS_ASSUMPTION
+                )
+                trail_hit = not stop_hit and paper_engine.trailing_stop_triggered(
+                    pos.position_id, market_price, settings.trailing_stop_pct
+                )
+                if stop_hit or trail_hit:
+                    close_reason = "stop_loss" if stop_hit else "trailing_stop"
                     order = await paper_engine.close_position(pos.position_id, market_price)
                     if order:
                         pnl = paper_engine.record_closed_trade(
                             pos.position_id,
                             order.price,
-                            "stop_loss",
+                            close_reason,
                         )
                         if pnl is None:
                             continue
@@ -456,19 +459,25 @@ async def _strategy_loop() -> None:
                             meta.get("direction", "long"),
                             pnl,
                         )
+                        label = "STOP-LOSS" if stop_hit else "TRAILING-STOP"
                         activity.warn(
-                            f"STOP-LOSS: {pos.market} [{pos.position_id[:8]}] closed at "
+                            f"{label}: {pos.market} [{pos.position_id[:8]}] closed at "
                             f"{CURRENCY_SYMBOL}{order.price:,.2f} ({loss_pct:.1%} loss)",
                             f"Entry {CURRENCY_SYMBOL}{pos.avg_price:,.2f}  PnL {CURRENCY_SYMBOL}{pnl:+,.2f}",
                         )
                         await _send_alert(
-                            "stop_loss_triggered",
+                            close_reason,
                             {"market": pos.market, "position_id": pos.position_id, "pnl": pnl},
                         )
 
-            # Session trade warmup: block all new trades for the first _TRADE_WARMUP_TICKS ticks
-            # after startup to let price history stabilise before the strategy acts.
-            if tick <= _TRADE_WARMUP_TICKS:
+            # Detect the active strategy type early so warmup logic can exclude LLM-only.
+            _selected = _strategy_by_id(control.selected_strategy_id)
+            _uses_llm = bool(getattr(_selected, "uses_llm_recommendation", False))  # type: ignore[arg-type]
+
+            # Session trade warmup: block indicator-based strategies for the first
+            # _TRADE_WARMUP_TICKS ticks so price history is stable before signals fire.
+            # LLM-only strategies are exempt — they need no indicator history.
+            if not _uses_llm and tick <= _TRADE_WARMUP_TICKS:
                 activity.info(
                     f"Tick #{tick} - trade warmup ({tick}/{_TRADE_WARMUP_TICKS} ticks complete, "
                     f"{_TRADE_WARMUP_TICKS - tick} remaining)",
@@ -476,10 +485,7 @@ async def _strategy_loop() -> None:
                 await asyncio.sleep(30)
                 continue
 
-            # LLM-backed strategies do not require indicator warm-up — they derive signals
-            # from the LLM's analysis of price context and news rather than from price history.
-            _selected = _strategy_by_id(control.selected_strategy_id)
-            _uses_llm = getattr(_selected, "uses_llm_recommendation", False)
+            # Block indicator-based strategies further until the full lookback window fills.
             if warming_up and not _uses_llm:
                 await asyncio.sleep(30)
                 continue
@@ -491,7 +497,7 @@ async def _strategy_loop() -> None:
                 except Exception as e:
                     logger.warning("Order reconciliation error", extra={"error": str(e)})
 
-            ideas = []
+            ideas: List[TradeIdea] = []
             active_strategy = _strategy_by_id(control.selected_strategy_id)
             if active_strategy is None:
                 control.select_strategy("basic_and_llm_strategy")
@@ -526,6 +532,13 @@ async def _strategy_loop() -> None:
 
             if not ideas:
                 activity.info("Strategies evaluated - no signals this tick")
+
+            # Apply historical performance learning before risk evaluation so that the
+            # adjusted confidence governs the min_signal_confidence gate.
+            for idea in ideas:
+                idea.confidence = learner.adjust_confidence(
+                    idea.strategy_id, idea.market, idea.direction.value, idea.confidence
+                )
 
             signals = []
             for idea in ideas:
@@ -756,7 +769,7 @@ async def _strategy_loop() -> None:
                             if pnl is not None:
                                 _record_trade_result(pnl)
                                 repo.update_order_pnl(order.id, pnl)
-                                learner.record_outcome(idea.strategy_id, idea.market, "long", pnl)
+                                learner.record_outcome(idea.strategy_id, idea.market, idea.direction.value, pnl)
 
                         # Persist cash immediately so a crash between ticks doesn't lose this trade
                         if not is_live_market and order.status == "filled":
@@ -787,6 +800,7 @@ async def _strategy_loop() -> None:
                 _new_markets = {s["market"] for s in signals}
                 _retained = [s for s in _latest_signals if s["market"] not in _new_markets]
                 _latest_signals = (signals + _retained)[:_SIGNAL_BUFFER_MAX]
+                _dashboard_version += 1
 
         except Exception as e:
             logger.error("Strategy loop error", extra={"error": str(e)}, exc_info=True)
@@ -972,6 +986,18 @@ async def _equity_ticker_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Warn when any LLM backend is configured with the unconfigured placeholder value.
+    _placeholder = "default model"
+    for _name, _val in [
+        ("LM_STUDIO_MODEL", settings.lm_studio_model),
+        ("OLLAMA_MODEL", settings.ollama_model),
+        ("TRANSFORMERS_LLM_MODEL", settings.transformers_llm_model),
+    ]:
+        if _val == _placeholder:
+            logger.warning(
+                "LLM model not configured — set %s in .env to a real model name", _name
+            )
+
     ok = await _llm_client.probe()
     if not ok:
         logger.error("LLM probe failed for all backends (LM Studio, Ollama, Transformers)")
@@ -992,7 +1018,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8000", "http://127.0.0.1:8000"],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1045,7 +1071,11 @@ async def service_worker():
 
 
 @app.get("/api/dashboard")
-async def get_dashboard():
+async def get_dashboard(request: Request, response: Response):
+    etag = str(_dashboard_version)
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304)
+    response.headers["ETag"] = etag
     try:
         ctrl = control.snapshot()
         disabled_markets = set(ctrl["disabled_markets"])
@@ -1271,7 +1301,7 @@ async def approve_trade(approval_id: str):
             if pnl is not None:
                 _record_trade_result(pnl)
                 repo.update_order_pnl(order.id, pnl)
-                learner.record_outcome(idea.strategy_id, idea.market, "long", pnl)
+                learner.record_outcome(idea.strategy_id, idea.market, idea.direction.value, pnl)
         activity.success(
             f"Manual approval: {idea.market} {direction_label} - "
             f"{'live' if is_live_market else 'paper'} order {order.status}",

@@ -7,6 +7,31 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.5.0] — 2026-04-28
+
+### Fixed (T2 Codebase Audit — Bugs)
+
+- **`save_approval_request`** no longer overwrites an existing `TradeIdeaModel` row that was already saved by `save_trade_idea` with full signal context (INSERT-if-not-exists semantics).
+- **Trailing stop** is now evaluated after the fixed stop-loss check; positions closing via trailing-stop are recorded with `close_reason="trailing_stop"` rather than being silently missed.
+- **Momentum lookback** uses `settings.momentum_lookback_ticks` instead of the former hardcoded `10`, respecting the `.env` value.
+- **`FallbackLLMClient`** "no active client" message downgraded from `WARNING` to `DEBUG` to avoid noisy log spam during normal warm-up.
+
+### Added (T2 Codebase Audit — Quality & Enhancements)
+
+- **`strategy/constants.py`** — 25 shared indicator threshold constants extracted from `BasicStrategy` and `BasicAndLLMStrategy` so a single change propagates to both.
+- **`asyncio_mode = "auto"`** in `pyproject.toml` — all async test methods now work without `run_until_complete` wrappers.
+- **`tests/conftest.py`** — shared in-memory SQLite fixtures (`in_memory_engine`, `db_session`) for unit tests.
+- **ETag caching** on the `/api/dashboard` endpoint — increments `_dashboard_version` on price and signal updates; returns HTTP 304 on `If-None-Match` match.
+- **`trim_old_equity_snapshots()`** in `storage/repository.py` — caps the `equity_snapshots` table at 17 280 rows (24 h at 5 s ticks); called every 10 ticks.
+- **Composite index** `ix_market_snapshots_symbol_timestamp` on `(symbol, timestamp)` in `MarketSnapshotModel`.
+- **`PerformanceLearner.adjust_confidence`** wired into the strategy loop — every generated `TradeIdea` has its confidence scaled by historical win rate before risk evaluation.
+- **Direction fix** — two locations in `main.py` that hardcoded `"long"` now use `idea.direction.value`.
+- **Startup warning** logged when LLM model names are set to the placeholder `"default model"`.
+- **CORS origins** read from `settings.cors_origins` (via `.env` `CORS_ORIGINS`) instead of a hardcoded list.
+- **BDD tests** — 63 unit tests across `analysis/indicators.py`, `risk/engine.py`, `strategy/basic_strategy.py`, and `strategy/learner.py`.
+
+---
+
 ## [0.4.0] — 2026-04-28
 
 ### Added

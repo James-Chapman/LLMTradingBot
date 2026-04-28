@@ -27,7 +27,7 @@ class FallbackLLMClient:
         if self._active is not None and bool(getattr(self._active, "available", False)):
             logger.debug(f"LLM fallback chain: active client {type(self._active).__name__} reports available")
             return True
-        logger.warning(f"LLM fallback chain: no active client available")
+        logger.debug("LLM fallback chain: no active client available")
         return False
 
     @property
