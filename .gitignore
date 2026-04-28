@@ -7,6 +7,10 @@ backend/*.log
 
 **/__pycache__/
 **/*.pyc
+__pycache__/
+
+*.db
+*.log
 
 # Local development files
 .claude/
@@ -17,7 +21,4 @@ backend/*.log
 .vscode/
 .tmp/
 .venv/
-__pycache__/
 .github/
-trading_bot.db
-trading_bot.log
