@@ -1,11 +1,11 @@
-"""Live Kraken execution engine."""
+"""Live Kraken execution engine using python-kraken-sdk."""
 import asyncio
 import uuid
 from datetime import datetime, timezone
 from functools import partial
-from typing import Awaitable, Callable, Optional, Tuple
+from typing import Awaitable, Callable, Optional, Tuple, TypedDict
 
-import krakenex
+from kraken.spot import Trade, User
 
 from domain.models import Direction, ExecutionIntent, OrderRecord
 from kraken_retry import call_with_kraken_backoff
@@ -16,7 +16,15 @@ logger = get_logger("kraken_execution")
 _BASE_ALIASES = {"BTC": "XBT", "DOGE": "XDG"}
 
 
-# Run a blocking Kraken client call without blocking the event loop.
+class KrakenAccountSnapshot(TypedDict):
+    """Live account valuation displayed by the dashboard."""
+
+    cash: float
+    equity: float
+    positions_value: float
+
+
+# Run a blocking SDK call in the thread pool without blocking the event loop.
 async def _in_thread(func, *args, **kwargs):
     loop = asyncio.get_running_loop()
     bound = partial(func, *args, **kwargs) if kwargs else partial(func, *args)
@@ -32,12 +40,12 @@ def _to_kraken_pair(symbol: str) -> str:
 
 
 class KrakenExecutionEngine:
-    """Submit live spot orders to Kraken.
+    """Submit live spot orders to Kraken via python-kraken-sdk.
 
-    The engine intentionally mirrors PaperExecutionEngine.execute() so the main
-    strategy flow can route per-market without changing approval/risk logic.
-    Live orders return an empty position_id because exchange balances are the
-    source of truth and fills may settle asynchronously after AddOrder accepts.
+    Mirrors PaperExecutionEngine.execute() so the main strategy flow can route
+    per-market without changing approval/risk logic.  Live orders return an empty
+    position_id because exchange balances are the source of truth and fills may
+    settle asynchronously after the order is accepted.
     """
 
     def __init__(
@@ -45,18 +53,24 @@ class KrakenExecutionEngine:
         api_key: Optional[str],
         api_secret: Optional[str],
         repository=None,
-        api_client=None,
+        user_client=None,   # injected in tests
+        trade_client=None,  # injected in tests
         backoff_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         backoff_jitter: Optional[Callable[[float], float]] = None,
     ):
         self._repo = repository
-        self._api_key = api_key
-        self._api_secret = api_secret
-        self._api = api_client or (
-            krakenex.API(api_key, api_secret) if api_key and api_secret else None
-        )
         self._backoff_sleep = backoff_sleep
         self._backoff_jitter = backoff_jitter
+
+        has_credentials = bool(api_key and api_secret)
+        self._user: Optional[User] = (
+            user_client if user_client is not None
+            else (User(key=api_key, secret=api_secret) if has_credentials else None)
+        )
+        self._trade: Optional[Trade] = (
+            trade_client if trade_client is not None
+            else (Trade(key=api_key, secret=api_secret) if has_credentials else None)
+        )
 
     async def execute(
         self,
@@ -79,21 +93,24 @@ class KrakenExecutionEngine:
             timestamp=datetime.now(timezone.utc),
         )
 
-        if self._api is None:
+        if self._trade is None:
             order.status = "rejected"
             order.exchange_order_id = "missing_api_credentials"
-            self._save_rejected_trade(
-                order,
-                confidence=signal_confidence,
-                reason="missing_api_credentials",
-                trade_idea_id=trade_idea_id,
-            )
+            self._save_rejected_trade(order, signal_confidence, "missing_api_credentials", trade_idea_id)
             return order, ""
 
-        payload = self._build_add_order_payload(intent)
+        payload = {
+            "ordertype": "limit" if intent.price else "market",
+            "side": "buy" if intent.direction == Direction.LONG else "sell",
+            "pair": _to_kraken_pair(intent.market),
+            "volume": f"{intent.size:.8f}",
+        }
+        if intent.price:
+            payload["price"] = f"{intent.price:.8f}"
+
         try:
-            response = await call_with_kraken_backoff(
-                lambda: _in_thread(self._api.query_private, "AddOrder", payload),
+            result = await call_with_kraken_backoff(
+                lambda: _in_thread(self._trade.create_order, **payload),
                 sleep=self._backoff_sleep,
                 jitter=self._backoff_jitter,
                 logger=logger,
@@ -102,30 +119,11 @@ class KrakenExecutionEngine:
         except Exception as exc:
             order.status = "rejected"
             order.exchange_order_id = str(exc)
-            self._save_rejected_trade(
-                order,
-                confidence=signal_confidence,
-                reason=str(exc),
-                trade_idea_id=trade_idea_id,
-            )
+            self._save_rejected_trade(order, signal_confidence, str(exc), trade_idea_id)
             logger.error("Kraken live order failed", extra={"market": intent.market, "error": str(exc)})
             return order, ""
 
-        errors = response.get("error") or []
-        if errors:
-            order.status = "rejected"
-            reason = "; ".join(errors)
-            order.exchange_order_id = reason
-            self._save_rejected_trade(
-                order,
-                confidence=signal_confidence,
-                reason=reason,
-                trade_idea_id=trade_idea_id,
-            )
-            logger.warning("Kraken live order rejected", extra={"market": intent.market, "error": errors})
-            return order, ""
-
-        txids = response.get("result", {}).get("txid") or []
+        txids = result.get("txid") or []
         order.exchange_order_id = txids[0] if txids else ""
         self._save_order(order, intent.approval_request_id, environment, trade_idea_id)
         logger.info("Kraken live order submitted", extra={
@@ -135,35 +133,48 @@ class KrakenExecutionEngine:
         })
         return order, ""
 
-    # Persist a live execution rejection without polluting the trade ledger.
-    def _save_rejected_trade(
-        self,
-        order: OrderRecord,
-        confidence: Optional[float],
-        reason: str,
-        trade_idea_id: str,
-    ) -> None:
-        """Persist a rejected live execution when a repository is configured."""
-        if self._repo:
-            self._repo.save_rejected_trade(
-                market=order.market,
-                direction=order.direction.value,
-                size=order.size,
-                price=order.price,
-                confidence=confidence,
-                reason=reason,
-                trade_idea_id=trade_idea_id,
-                timestamp=order.timestamp,
-            )
+    # Fetch live Kraken balances for cash and total equity.
+    async def get_account_snapshot(self, quote_currency: str) -> Optional[KrakenAccountSnapshot]:
+        """Return live cash and total equity from the Kraken account.
+
+        cash  — fiat balance in the quote currency (e.g. ZEUR → EUR amount).
+        equity — equivalent balance reported by Kraken TradeBalance (includes all
+                 open positions marked to market by Kraken itself).
+        """
+        if self._user is None:
+            logger.warning("Kraken account snapshot unavailable: missing API credentials")
+            return None
+
+        cash_asset = f"Z{quote_currency.upper()}"  # EUR → ZEUR, USD → ZUSD, GBP → ZGBP
+        bare_asset = quote_currency.upper()        # fallback: "EUR" for accounts without Z-prefix
+
+        try:
+            balances = await _in_thread(self._user.get_account_balance)
+            # Kraken uses Z-prefixed keys (ZEUR) for most accounts; some return bare keys (EUR).
+            cash = float(balances.get(cash_asset) or balances.get(bare_asset, 0.0))
+        except Exception as exc:
+            logger.warning("Kraken get_account_balance failed", extra={"error": str(exc)})
+            return None
+
+        try:
+            tb = await _in_thread(self._user.get_trade_balance, asset=cash_asset)
+            equity = float(tb.get("eb", cash))
+        except Exception as exc:
+            logger.warning("Kraken get_trade_balance failed", extra={"error": str(exc)})
+            equity = cash  # fall back to cash-only equity
+
+        return {
+            "cash": cash,
+            "equity": equity,
+            "positions_value": max(0.0, equity - cash),
+        }
 
     async def reconcile_pending_orders(self) -> int:
         """Query Kraken for all pending live orders and update status in the repository.
 
         Returns the count of orders whose status changed.
-        Calls QueryOrders with the txids of every pending live order and stamps
-        status="filled" (with fill price/fee) or "canceled"/"expired" as appropriate.
         """
-        if self._api is None or self._repo is None:
+        if self._user is None or self._repo is None:
             return 0
 
         pending = self._repo.get_pending_live_orders()
@@ -172,11 +183,11 @@ class KrakenExecutionEngine:
 
         txids = [o["exchange_order_id"] for o in pending]
         try:
-            response = await call_with_kraken_backoff(
+            orders_info = await call_with_kraken_backoff(
                 lambda: _in_thread(
-                    self._api.query_private,
-                    "QueryOrders",
-                    {"txid": ",".join(txids), "trades": True},
+                    self._user.get_orders_info,
+                    txid=",".join(txids),
+                    trades=True,
                 ),
                 sleep=self._backoff_sleep,
                 jitter=self._backoff_jitter,
@@ -184,21 +195,15 @@ class KrakenExecutionEngine:
                 operation_name="Kraken QueryOrders",
             )
         except Exception as exc:
-            logger.warning("Kraken QueryOrders failed", extra={"error": str(exc)})
+            logger.warning("Kraken get_orders_info failed", extra={"error": str(exc)})
             return 0
 
-        errors = response.get("error") or []
-        if errors:
-            logger.warning("Kraken QueryOrders error", extra={"errors": errors})
-            return 0
-
-        result = response.get("result", {})
         updated = 0
         for order in pending:
             txid = order["exchange_order_id"]
-            if txid not in result:
+            if txid not in orders_info:
                 continue
-            info = result[txid]
+            info = orders_info[txid]
             kraken_status = info.get("status", "")
             if kraken_status == "closed":
                 fill_price = float(info.get("price", order["price"]))
@@ -213,17 +218,24 @@ class KrakenExecutionEngine:
 
         return updated
 
-    def _build_add_order_payload(self, intent: ExecutionIntent) -> dict:
-        """Build Kraken AddOrder payload from an execution intent."""
-        payload = {
-            "pair": _to_kraken_pair(intent.market),
-            "type": "buy" if intent.direction == Direction.LONG else "sell",
-            "ordertype": "limit" if intent.price else "market",
-            "volume": f"{intent.size:.8f}",
-        }
-        if intent.price:
-            payload["price"] = f"{intent.price:.8f}"
-        return payload
+    def _save_rejected_trade(
+        self,
+        order: OrderRecord,
+        confidence: Optional[float],
+        reason: str,
+        trade_idea_id: str,
+    ) -> None:
+        if self._repo:
+            self._repo.save_rejected_trade(
+                market=order.market,
+                direction=order.direction.value,
+                size=order.size,
+                price=order.price,
+                confidence=confidence,
+                reason=reason,
+                trade_idea_id=trade_idea_id,
+                timestamp=order.timestamp,
+            )
 
     def _save_order(
         self,
@@ -232,7 +244,6 @@ class KrakenExecutionEngine:
         environment: str,
         trade_idea_id: str,
     ) -> None:
-        """Persist a live order when a repository is configured."""
         if self._repo:
             self._repo.save_order(
                 order,

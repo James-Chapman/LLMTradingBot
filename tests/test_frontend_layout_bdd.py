@@ -10,6 +10,79 @@ STATIC_CSS = FRONTEND_DIR / "static" / "styles.css"
 
 
 class FrontendLayoutBDDTests(unittest.TestCase):
+    # GIVEN the trial dashboard layouts are removed WHEN frontend files and routes are inspected
+    # THEN only the promoted primary index dashboard remains.
+    def test_given_trial_dashboard_layouts_removed_when_inspected_then_only_primary_index_remains(self) -> None:
+        backend_main = (ROOT_DIR / "backend" / "main.py").read_text(encoding="utf-8")
+        css = STATIC_CSS.read_text(encoding="utf-8")
+        index = (FRONTEND_DIR / "index.html").read_text(encoding="utf-8")
+
+        self.assertEqual(["index.html"], sorted(path.name for path in FRONTEND_DIR.glob("index*.html")))
+        self.assertIn('<body class="layout-ledger-glass" x-data="dashboard()">', index)
+
+        for token in [
+            '@app.get("/index2")',
+            '@app.get("/index3")',
+            '@app.get("/index4")',
+            '@app.get("/index5")',
+            '@app.get("/index6")',
+            '@app.get("/index7")',
+            '@app.get("/index8")',
+            '@app.get("/index9")',
+        ]:
+            self.assertNotIn(token, backend_main)
+
+        for token in [
+            "layout-radar",
+            "layout-pulse-wall",
+            "layout-incident-rail",
+            "layout-holdings-map",
+            "layout-candle-lab",
+            "layout-dispatch-flow",
+            "layout-signal-matrix",
+        ]:
+            self.assertNotIn(token, css)
+
+    # GIVEN the operator uses the primary dashboard WHEN the theme is inspected
+    # THEN index uses the cool dark ledger glass palette.
+    def test_given_primary_index_when_theme_inspected_then_default_is_ledger_glass(self) -> None:
+        css = STATIC_CSS.read_text(encoding="utf-8")
+        index = (FRONTEND_DIR / "index.html").read_text(encoding="utf-8")
+
+        theme_start = css.index("body.layout-ledger-glass {")
+        theme_end = css.index(".layout-ledger-glass .app-header {", theme_start)
+        theme_block = css[theme_start:theme_end]
+
+        self.assertIn('<body class="layout-ledger-glass" x-data="dashboard()">', index)
+        self.assertIn("--bg: #070b12;", theme_block)
+        self.assertIn("--surface: #101826;", theme_block)
+        self.assertIn("--blue: #5cc8ff;", theme_block)
+        self.assertIn("--green: #2dd4bf;", theme_block)
+        self.assertIn("background: linear-gradient(180deg, #070b12 0%, #0b1220 48%, #080d16 100%);", theme_block)
+        self.assertNotIn("--surface: #ffffff;", theme_block)
+        self.assertNotIn("--bg: #f4f7fb;", theme_block)
+
+    # GIVEN price monitoring is a primary workflow WHEN dashboard shells load
+    # THEN Price Charts start expanded and share the same fixed height as Crypto News.
+    def test_given_price_charts_when_dashboard_loads_then_panel_is_expanded_and_matches_news_height(self) -> None:
+        css = STATIC_CSS.read_text(encoding="utf-8")
+
+        for page_path in [FRONTEND_DIR / "index.html"]:
+            page = page_path.read_text(encoding="utf-8")
+            self.assertIn("priceCharts: true, news: true", page)
+            self.assertIn("<!-- Price Charts (5-min & 15-min candles, expanded by default) -->", page)
+
+        for token in [
+            "--news-chart-panel-height",
+            "--news-chart-panel-height: clamp(1140px, 126vh, 1680px);",
+            ".area-charts,\n.area-news {\n    height: var(--news-chart-panel-height);",
+            ".area-charts > .panel-body,\n.area-news > .panel-body {",
+            "overflow-y: auto;",
+            ".area-charts .chart-grid,\n.area-news .news-grid {",
+            ".area-charts .chart-pair-grid {\n    grid-template-columns: repeat(2, minmax(0, 1fr));",
+        ]:
+            self.assertIn(token, css)
+
     # GIVEN the dashboard pages WHEN they are loaded by the browser
     # THEN shared CSS is loaded from the static stylesheet instead of embedded style blocks.
     def test_given_dashboard_pages_when_loaded_then_shared_static_css_is_used(self) -> None:
@@ -115,7 +188,7 @@ class FrontendLayoutBDDTests(unittest.TestCase):
         sw = (FRONTEND_DIR / "sw.js").read_text(encoding="utf-8")
         backend_main = (ROOT_DIR / "backend" / "main.py").read_text(encoding="utf-8")
 
-        self.assertIn("const CACHE  = 'trading-bot-v0.5.14';", sw)
+        self.assertIn("const CACHE  = 'trading-bot-v0.5.25';", sw)
         self.assertIn("if (req.mode === 'navigate' || acceptsHtml) {", sw)
         self.assertIn("event.respondWith(networkFirst(req));", sw)
         self.assertNotIn("c.addAll(['/'])", sw)

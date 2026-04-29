@@ -7,6 +7,98 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.5.25] — 2026-04-30
+
+### Removed
+
+- **Trial dashboard themes** — removed `frontend/index2.html` through `frontend/index9.html`, their `/index2` through `/index9` FastAPI routes, and the unused scoped CSS for the discarded theme experiments. The promoted ledger-glass dashboard remains the single maintained `/` entry point.
+
+---
+
+## [0.5.24] — 2026-04-30
+
+### Changed
+
+- **Primary dashboard layout** — promoted the `/index3` ledger-glass dashboard to the default `/` `frontend/index.html` shell, kept `/index3` available as the same layout route, and bumped the service worker cache so browsers fetch the new HTML.
+
+---
+
+## [0.5.23] — 2026-04-29
+
+### Fixed
+
+- **Live mode Available Cash showed 0** — `get_account_snapshot` looked up the EUR fiat balance using only the Z-prefixed Kraken key (`ZEUR`). Accounts that return the bare key (`EUR`) would get `cash=0`, making the dashboard header show the wrong cash figure. The lookup now falls back to the bare currency code when the Z-prefixed key is absent.
+
+---
+
+## [0.5.22] — 2026-04-29
+
+### Changed
+
+- **News and Price Charts height** — tripled the shared Crypto News and Price Charts panel height while keeping Price Charts internally scrollable and preserving side-by-side 5-minute / 15-minute chart panes on normal widths.
+
+---
+
+## [0.5.21] — 2026-04-29
+
+### Changed
+
+- **Price Charts panel** — Price Charts now starts expanded by default, matches the Crypto News panel height, scrolls internally to fit all market graph cards, and keeps each market's 5-minute and 15-minute charts side by side on normal widths.
+
+---
+
+## [0.5.20] — 2026-04-29
+
+### Changed
+
+- **Index3 dark theme** — converted `/index3` (`layout-ledger-glass`) from a light ledger palette to a cool dark theme with midnight surfaces, cyan/teal accents, darker table contrast, and scoped panel/header treatments. The primary `/` dashboard and other alternate layouts are unchanged.
+
+---
+
+## [0.5.19] — 2026-04-29
+
+### Changed
+
+- **Alternate dashboard concepts refreshed** — overwrote `/index2` through `/index9` with new radar deck, ledger glass, pulse wall, incident rail, holdings map, candle lab, dispatch flow, and signal matrix variants. Each page keeps the shared dashboard behaviour hooks while using a new body class, layout geometry, and scoped theme so the primary `/` dashboard remains unchanged.
+
+---
+
+## [0.5.18] — 2026-04-29
+
+### Changed
+
+- **Migrated Kraken execution to `python-kraken-sdk`** — `KrakenExecutionEngine` now uses `kraken.spot.Trade` and `kraken.spot.User` from `python-kraken-sdk` instead of `krakenex`. The SDK returns clean dicts and raises exceptions on API errors, removing the manual `{"error": [], "result": {}}` response parsing. `get_account_snapshot` no longer accepts a `prices` argument; cash comes from `get_account_balance()` and total equity from `get_trade_balance(asset=...)` (`eb` field). `requirements.txt` updated to include `python-kraken-sdk>=3.0.0`.
+
+---
+
+## [0.5.17] — 2026-04-29
+
+### Fixed
+
+- **Live balance display** — Dashboard "Available Cash" and "Total Equity" were showing paper-trading figures in live mode because the dashboard endpoint made a fresh Kraken `Balance` API call on every poll; if that call failed or was rate-limited the fallback to paper values overwrote the correctly-fetched live data. The dashboard now reads from `_current_equity` and `_current_cash`, the cached globals that the equity ticker keeps fresh from Kraken every 10 seconds.
+
+---
+
+## [0.5.16] — 2026-04-29
+
+### Added
+
+- **Five new dashboard concepts** — added `/index5` through `/index9` with command ribbon, portfolio cockpit, market lab, ops flow, and signal board layouts for broader visual comparison.
+
+---
+
+## [0.5.15] — 2026-04-29
+
+### Added
+
+- **Alternate dashboard layouts** — added `/index2`, `/index3`, and `/index4` as complete dashboard variants for comparing desktop workbench, tables-first, and monitor wall arrangements without changing the main `/` dashboard.
+
+### Fixed
+
+- **Live account totals** — `/api/dashboard` now sources Available Cash and Total Equity from Kraken account balances in live mode instead of continuing to show paper-engine cash and equity.
+
+---
+
 ## [0.5.14] — 2026-04-29
 
 ### Changed

@@ -47,6 +47,20 @@ class PortfolioEquityBDDTests(unittest.IsolatedAsyncioTestCase):
             "Strategy ticks must not persist stale _current_equity values to the graph history.",
         )
 
+    # GIVEN live mode is enabled WHEN the dashboard builds account totals
+    # THEN cash and equity come from the cached globals updated by the equity ticker
+    # (not from a fresh per-poll Kraken API call and not from the paper engine).
+    def test_given_live_mode_when_dashboard_totals_built_then_kraken_snapshot_is_used(self) -> None:
+        main_source = (BACKEND_DIR / "main.py").read_text(encoding="utf-8")
+
+        # _get_account_snapshot still exists (used by equity ticker and approval endpoint)
+        self.assertIn("async def _get_account_snapshot", main_source)
+        # Dashboard serves from the globals kept fresh every 10 s — no per-poll Kraken call
+        self.assertIn('"equity": f"{_current_equity:.2f}"', main_source)
+        self.assertIn('"cash": f"{_current_cash:.2f}"', main_source)
+        # Direct paper-engine reads must not appear in the dashboard response body
+        self.assertNotIn('"cash": f"{paper_engine.cash:.2f}"', main_source)
+
     # GIVEN persisted equity snapshots WHEN the backend starts
     # THEN the dashboard restores the full in-memory graph window, not only a short slice.
     def test_given_persisted_equity_when_backend_starts_then_full_graph_window_is_loaded(self) -> None:
@@ -55,6 +69,23 @@ class PortfolioEquityBDDTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("_equity_history: deque = deque(maxlen=1440)", main_source)
         self.assertIn("repo.get_equity_history(limit=1440)", main_source)
         self.assertNotIn("repo.get_equity_history(limit=288)", main_source)
+
+    # GIVEN live mode and the Kraken Balance call fails WHEN _get_account_snapshot is called
+    # THEN it returns the last-known cached globals — never the paper engine's depleted cash.
+    def test_given_live_kraken_failure_when_snapshot_falls_back_then_paper_values_not_used(self) -> None:
+        main_source = (BACKEND_DIR / "main.py").read_text(encoding="utf-8")
+
+        # The live fallback must serve _current_cash / _current_equity, not paper_engine
+        self.assertIn('"cash": _current_cash', main_source)
+        self.assertIn('"equity": _current_equity', main_source)
+
+    # GIVEN live mode WHEN the backend starts THEN _current_cash and _current_equity
+    # are NOT seeded from the paper DB so a depleted paper balance cannot appear on screen.
+    def test_given_live_mode_when_backend_starts_then_display_globals_not_seeded_from_paper_db(self) -> None:
+        main_source = (BACKEND_DIR / "main.py").read_text(encoding="utf-8")
+
+        # In live mode the startup block must guard the display-global assignment
+        self.assertIn('trading_environment == "paper"', main_source)
 
     # GIVEN the dashboard computes a current total equity WHEN the graph history is prepared
     # THEN the final graph point matches the same total equity shown in the header.

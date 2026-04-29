@@ -14,6 +14,7 @@
     --panel-gap: clamp(12px, 1vw, 18px);
     --panel-pad-x: clamp(14px, 1vw, 20px);
     --core-panel-height: clamp(320px, 34vh, 460px);
+    --news-chart-panel-height: clamp(1140px, 126vh, 1680px);
 }
 
 * {
@@ -253,6 +254,35 @@ body {
     gap: 12px;
 }
 
+.area-charts,
+.area-news {
+    height: var(--news-chart-panel-height);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+.area-charts > .panel-header,
+.area-news > .panel-header {
+    flex: 0 0 auto;
+}
+
+.area-charts > .panel-body,
+.area-news > .panel-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.area-charts .chart-grid,
+.area-news .news-grid {
+    min-height: 0;
+}
+
+.area-charts .chart-pair-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .news-filter-chip {
     font-size: 11px;
     font-weight: 600;
@@ -290,7 +320,7 @@ body {
 }
 
 .chart-pane {
-    height: clamp(220px, 18vw, 340px);
+    height: clamp(180px, 17vh, 240px);
 }
 
 .equity-chart-shell {
@@ -605,6 +635,122 @@ body {
     opacity: .7;
 }
 
+body.layout-ledger-glass {
+    --bg: #070b12;
+    --surface: #101826;
+    --border: #24364d;
+    --subtle: #172235;
+    --text: #e9f2ff;
+    --muted: #91a8c4;
+    --green: #2dd4bf;
+    --red: #fb7185;
+    --blue: #5cc8ff;
+    --gold: #facc15;
+    --orange: #f59e0b;
+    background: linear-gradient(180deg, #070b12 0%, #0b1220 48%, #080d16 100%);
+    color-scheme: dark;
+}
+
+.layout-ledger-glass .app-header {
+    background: var(--surface);
+    border-bottom-color: rgba(92, 200, 255, .24);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, .28);
+}
+
+.layout-ledger-glass .panel {
+    background: rgba(16, 24, 38, .94);
+    border-color: rgba(92, 200, 255, .16);
+    box-shadow: 0 18px 42px rgba(0, 0, 0, .30);
+}
+
+.layout-ledger-glass .area-positions,
+.layout-ledger-glass .area-ledger,
+.layout-ledger-glass .area-closed {
+    border-color: rgba(45, 212, 191, .22);
+}
+
+.layout-ledger-glass .panel-header {
+    border-bottom: 1px solid rgba(92, 200, 255, .10);
+}
+
+.layout-ledger-glass .trade-table tbody tr:nth-child(even) {
+    background: rgba(92, 200, 255, .055);
+}
+
+.layout-ledger-glass .trade-table tbody tr:hover {
+    background: rgba(45, 212, 191, .08);
+}
+
+.layout-ledger-glass .dashboard-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.45fr) minmax(340px, .55fr);
+    grid-template-areas:
+        "positions briefing"
+        "positions mode"
+        "closed equity"
+        "ledger core"
+        "approvals activity"
+        "charts news"
+        "risk risk";
+    align-items: start;
+}
+
+.layout-ledger-glass .area-briefing {
+    grid-area: briefing;
+}
+
+.layout-ledger-glass .area-mode {
+    grid-area: mode;
+}
+
+.layout-ledger-glass .area-core {
+    grid-area: core;
+}
+
+.layout-ledger-glass .area-equity {
+    grid-area: equity;
+}
+
+.layout-ledger-glass .area-closed {
+    grid-area: closed;
+}
+
+.layout-ledger-glass .area-approvals {
+    grid-area: approvals;
+}
+
+.layout-ledger-glass .area-ledger {
+    grid-area: ledger;
+}
+
+.layout-ledger-glass .area-charts {
+    grid-area: charts;
+}
+
+.layout-ledger-glass .area-news {
+    grid-area: news;
+}
+
+.layout-ledger-glass .activity-llm-row {
+    grid-area: activity;
+}
+
+.layout-ledger-glass .area-risk {
+    grid-area: risk;
+}
+
+.layout-ledger-glass .area-positions {
+    grid-area: positions;
+}
+
+.layout-ledger-glass .dashboard-grid > * {
+    min-width: 0;
+}
+
+.layout-ledger-glass .core-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .resume-btn {
     padding: 7px 18px;
     font-size: 13px;
@@ -700,6 +846,18 @@ body {
     }
 }
 
+@media (max-width: 1200px) {
+
+    .layout-ledger-glass .dashboard-grid {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .layout-ledger-glass .core-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+}
+
 @media (max-width: 700px) {
     :root {
         --page-gutter: 10px;
@@ -731,5 +889,9 @@ body {
 
     .approval-actions .btn {
         flex: 1 1 130px;
+    }
+
+    .area-charts .chart-pair-grid {
+        grid-template-columns: 1fr;
     }
 }

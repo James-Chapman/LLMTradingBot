@@ -11,6 +11,8 @@ Per-market routing is controlled by `ControlState.live_markets`: paper markets u
 
 Kraken private REST calls use `kraken_retry.call_with_kraken_backoff()`. `AddOrder` and `QueryOrders` retry transient rate-limit, temporary-lockout, service-unavailable, and too-many-requests responses with exponential backoff before rejecting/logging the operation.
 
+In live mode, dashboard account totals use Kraken `Balance` via `KrakenExecutionEngine.get_account_snapshot()`. The selected quote currency balance becomes Available Cash, and non-quote asset balances are marked to the latest internal prices such as `BTC/EUR` to produce Total Equity. If Kraken balance lookup fails, the backend logs a warning and falls back to the paper snapshot so the dashboard endpoint remains available.
+
 ---
 
 ## Constants

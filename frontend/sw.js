@@ -17,7 +17,7 @@
  * { type: 'API_OFFLINE', endpoint: '/api/dashboard',              ts: 1234567890 }
  */
 
-const CACHE  = 'trading-bot-v0.5.14';  // update this to invalidate old caches
+const CACHE  = 'trading-bot-v0.5.25';  // update this to invalidate old caches
 
 /**
  * GET endpoints whose responses should be cached AND broadcast to clients.

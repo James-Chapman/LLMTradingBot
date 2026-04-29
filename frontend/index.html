@@ -12,14 +12,14 @@
     <link rel="stylesheet" href="/static/styles.css">
 </head>
 
-<body x-data="dashboard()">
+<body class="layout-ledger-glass" x-data="dashboard()">
 
     <!-- ── Header ─────────────────────────────────────────────────────────── -->
     <header class="app-header sticky top-0 z-50" :class="emergencyStop ? 'is-emergency' : ''">
         <div class="app-shell dashboard-shell header-bar">
             <div class="header-brand">
                 <span class="brand-title">⚡ LLM Trading Bot</span>
-                <span class="version-label" x-text="appVersion ? 'v' + appVersion : ''">v0.5.14</span>
+                <span class="version-label" x-text="appVersion ? 'v' + appVersion : ''">v0.5.25</span>
                 <!-- Emergency stop banner -->
                 <span x-show="emergencyStop" class="pill pill-red"
                     style="font-size:12px;font-weight:700;letter-spacing:.04em;">■ EMERGENCY STOP</span>
@@ -774,7 +774,7 @@
                 </div>
             </div>
 
-        <!-- Price Charts (5-min & 15-min candles, collapsed by default) -->
+        <!-- Price Charts (5-min & 15-min candles, expanded by default) -->
         <div class="card panel area-charts">
             <div class="panel-header" @click="panels.priceCharts = !panels.priceCharts">
                 <span class="label">Price Charts <span
@@ -1108,7 +1108,7 @@
                 panels: {
                     equity: true, markets: true, signals: true, positions: true,
                     tradeLedger: true, pnlSummary: true, closedTrades: true, riskRejections: false,
-                    rejectedTrades: false, priceCharts: false, news: true, llm: true, activity: true
+                    rejectedTrades: false, priceCharts: true, news: true, llm: true, activity: true
                 },
 
                 init() {
@@ -2523,3 +2523,4 @@
 </body>
 
 </html>
+

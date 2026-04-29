@@ -64,7 +64,7 @@ BACKEND_DIR = Path(__file__).parent
 FRONTEND_DIR = BACKEND_DIR.parent / "frontend"
 
 APP_NAME = "Kraken Trading Bot"
-APP_VERSION = "0.5.14"
+APP_VERSION = "0.5.25"
 
 setup_logging(settings.log_level, settings.log_file)
 logger = get_logger("main")
@@ -178,14 +178,19 @@ _price_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=200))
 # Equity snapshots for chart (max 1 440 = 4 h at 10-s resolution) - pre-loaded from DB
 _equity_history: deque = deque(maxlen=1440)
 _current_equity: float = settings.starting_capital  # updated every 10 s by equity ticker
+_current_cash: float = settings.starting_capital  # updated with the latest account snapshot
 _db_equity = repo.get_equity_history(limit=1440)
 if _db_equity:
     _equity_history.extend(_db_equity)
-    _current_equity = _db_equity[-1]["equity"]  # seed from most recent DB snapshot
-    # Restore the cash balance; positions are restored separately.
     _last_cash = repo.get_latest_cash()
     if _last_cash is not None:
-        paper_engine.cash = _last_cash
+        paper_engine.cash = _last_cash  # always restore paper engine state from DB
+    # In live mode the display globals are seeded from Kraken during lifespan startup,
+    # not from the paper DB — a depleted paper balance must not appear on screen.
+    if settings.trading_environment == "paper":
+        _current_equity = float(_db_equity[-1]["equity"])
+        if _last_cash is not None:
+            _current_cash = float(_last_cash)
 else:
     _equity_history.append({"timestamp": datetime.now(timezone.utc).isoformat(), "equity": settings.starting_capital})
 
@@ -254,16 +259,39 @@ def _briefing_sentiment_for_market(briefing: Any, market: str) -> float:
         return 0.0
 
 
+# Return account totals from Kraken in live mode, otherwise from the paper engine.
+async def _get_account_snapshot(prices: Dict[str, float]) -> Dict[str, Any]:
+    """Return current cash, equity, and position value for the active environment."""
+    if settings.trading_environment == "live":
+        snapshot = await kraken_engine.get_account_snapshot(settings.base_currency)
+        if snapshot is not None:
+            return dict(snapshot)
+        # Kraken unavailable — keep last-known live values rather than bleeding
+        # paper-engine cash (which may be near-zero from a prior paper simulation).
+        logger.warning(
+            "Kraken Balance unavailable — serving last-known live balance",
+            extra={"cash": _current_cash, "equity": _current_equity},
+        )
+        return {
+            "cash": _current_cash,
+            "equity": _current_equity,
+            "positions_value": max(0.0, _current_equity - _current_cash),
+        }
+    return build_equity_snapshot(paper_engine, prices)
+
+
 # Record a mark-to-market portfolio value point for dashboard graphing.
-def _record_equity_snapshot(prices: Dict[str, float]) -> Dict[str, Any]:
+async def _record_equity_snapshot(prices: Dict[str, float]) -> Dict[str, Any]:
     """Compute, cache, and persist cash plus current position value."""
-    global _current_equity
-    snapshot = build_equity_snapshot(paper_engine, prices)
+    global _current_cash, _current_equity
+    snapshot = await _get_account_snapshot(prices)
     _current_equity = float(snapshot["equity"])
+    _current_cash = float(snapshot["cash"])
     risk_engine.update_equity(_current_equity)
+    snapshot_time = snapshot.get("timestamp") or datetime.now(timezone.utc).isoformat()
     _equity_history.append(
         {
-            "timestamp": str(snapshot["timestamp"]),
+            "timestamp": str(snapshot_time),
             "equity": _current_equity,
         }
     )
@@ -407,7 +435,7 @@ async def _strategy_loop() -> None:
             # Persist price ticks and portfolio value for this market-data tick.
             for sym, price in prices.items():
                 repo.save_price_tick(sym, price)
-            _record_equity_snapshot(prices)
+            await _record_equity_snapshot(prices)
 
             # Trim old price ticks, equity snapshots, and activity log periodically
             # (every ~5 min = 10 ticks).  Offloaded to a thread: DELETE+subquery scans
@@ -513,7 +541,7 @@ async def _strategy_loop() -> None:
                         _latest_news,
                         analyser=_analyser,
                         equity=_current_equity,
-                        cash=paper_engine.cash,
+                        cash=_current_cash,
                         open_positions=paper_engine.open_positions(),
                     )
                 elif getattr(active_strategy, "uses_llm_analysis", False):
@@ -524,7 +552,7 @@ async def _strategy_loop() -> None:
                         _analyser,
                         portfolio_data={
                             "equity": _current_equity,
-                            "cash": paper_engine.cash,
+                            "cash": _current_cash,
                             "open_positions": paper_engine.open_positions(),
                         },
                     )
@@ -585,7 +613,7 @@ async def _strategy_loop() -> None:
                 risk_decision = await risk_engine.evaluate_trade(
                     idea,
                     open_positions=paper_engine.open_positions(),
-                    available_cash=paper_engine.cash,
+                    available_cash=_current_cash,
                     market_price=prices.get(idea.market),
                     market_volume_24h=(market_data.get(idea.market) or {}).get("volume"),
                 )
@@ -973,7 +1001,7 @@ async def _equity_ticker_loop() -> None:
         if not _current_prices:
             continue
         try:
-            _record_equity_snapshot(_current_prices)
+            await _record_equity_snapshot(_current_prices)
         except Exception as e:
             logger.warning("Equity ticker error", extra={"error": str(e)}, exc_info=True)
 
@@ -1113,10 +1141,10 @@ async def get_dashboard(request: Request, response: Response):
         pending = approval_service.get_pending()
         approvals = [_approval_to_dict(req) for req in pending]
 
-        # get_total_equity uses avg_price as fallback when a market has no live price,
-        # so this is safe to call even when _current_prices is empty on first startup.
-        equity = paper_engine.get_total_equity(_current_prices)
-        equity_history = align_equity_history_with_current(_equity_history, equity)
+        equity_history = align_equity_history_with_current(
+            _equity_history,
+            _current_equity,
+        )
 
         strategy_states = [
             {
@@ -1136,8 +1164,8 @@ async def get_dashboard(request: Request, response: Response):
             "environment": settings.trading_environment,
             "base_currency": settings.base_currency,
             "currency_symbol": CURRENCY_SYMBOL,
-            "equity": f"{equity:.2f}",
-            "cash": f"{paper_engine.cash:.2f}",
+            "equity": f"{_current_equity:.2f}",
+            "cash": f"{_current_cash:.2f}",
             "open_position_ids": open_pos_ids,
             "markets": markets,
             "signals": _latest_signals,
@@ -1229,7 +1257,9 @@ async def approve_trade(approval_id: str):
             "detail": f"No live price for {idea.market}; trade logged but not executed",
         }
 
-    equity = paper_engine.get_total_equity(_current_prices)
+    account_snapshot = await _get_account_snapshot(_current_prices)
+    equity = float(account_snapshot["equity"])
+    cash = float(account_snapshot["cash"])
     if req.risk_decision.proposed_size_eur is not None:
         size_base = req.risk_decision.proposed_size_eur / market_price
     else:
@@ -1277,7 +1307,7 @@ async def approve_trade(approval_id: str):
     if order.status == "rejected":
         activity.error(
             f"Manual approval: {idea.market} {direction_label} - order REJECTED (insufficient funds)",
-            f"Equity {CURRENCY_SYMBOL}{equity:.2f}  Cash {CURRENCY_SYMBOL}{paper_engine.cash:.2f}  "
+            f"Equity {CURRENCY_SYMBOL}{equity:.2f}  Cash {CURRENCY_SYMBOL}{cash:.2f}  "
             f"Needed {CURRENCY_SYMBOL}{size_base * market_price:.2f}",
         )
     else:

@@ -4,6 +4,8 @@
 
 A single-page application served directly by FastAPI. Uses **Alpine.js** for reactive UI state, chart libraries from CDNs, and a shared local stylesheet at `/static/styles.css` for theme, utility classes, responsive layout, panels, buttons, grids, tables, and charts. No build step, bundler, or Node.js toolchain is required.
 
+The primary dashboard remains available at `/` and uses the `layout-ledger-glass` workspace promoted from the former trial layouts. The `/index2` through `/index9` trial theme shells have been removed, so the dashboard has a single maintained HTML entry point with the shared Alpine component, DOM IDs, API calls, and stylesheet.
+
 ---
 
 ## Technology Stack
@@ -30,6 +32,7 @@ The dashboard and approvals page load `/static/styles.css`. This file contains t
 - `.chart-pair-grid` is the only content grid that may place items side by side; it is reserved for the 5-minute and 15-minute chart panes inside each market chart card.
 - `.panel`, `.panel-header`, `.panel-body`, `.responsive-table`, `.trade-table`, `.activity-list`, `.core-panel`, `.core-scroll`, `.llm-status`, and `.llm-row` standardise panel structure while preserving existing Alpine state and DOM IDs.
 - `.chart-pane` and `.equity-chart-shell` use `clamp()` so widescreen users get larger charts while mobile users avoid horizontal page scroll.
+- `.area-charts` and `.area-news` share `--news-chart-panel-height`; Price Charts starts expanded, both panels are three times taller than the previous chart/news height, Price Charts scrolls vertically inside the panel, and the 5-minute and 15-minute panes stay side by side until the mobile breakpoint.
 
 Breakpoint coverage used for layout verification:
 
@@ -42,8 +45,6 @@ Breakpoint coverage used for layout verification:
 | `2560x1440` | Dashboard still uses the available width, with readable gutters and full-width blocks |
 
 The CSS keeps the existing theme palette and visual treatment. Functional hooks such as `equity-chart`, `markets-list`, `signals-list`, `positions-list`, `approvals-queue`, `ledger-body`, `closed-body`, `candle-grid`, and `news-grid` are intentionally retained.
-
----
 
 ## Component Initialisation
 
@@ -100,7 +101,7 @@ function dashboard() {
 
 ## Service Worker Caching
 
-`/sw.js` uses a versioned cache (`trading-bot-v0.5.14`) and claims open tabs as soon as the new worker activates. Navigation and other `text/html` requests are network-first, so the dashboard shell does not keep running stale inline scripts after frontend fixes. API dashboard endpoints remain network-first with client broadcasts, while non-HTML static assets use stale-while-revalidate.
+`/sw.js` uses a versioned cache (`trading-bot-v0.5.25`) and claims open tabs as soon as the new worker activates. Navigation and other `text/html` requests are network-first, so the dashboard shell does not keep running stale inline scripts after frontend fixes. API dashboard endpoints remain network-first with client broadcasts, while non-HTML static assets use stale-while-revalidate.
 
 ---
 
@@ -329,7 +330,7 @@ This panel is for intents that never became trades, such as paper insufficient-f
 
 ### Price Charts (`loadCharts` / `refreshCharts`)
 
-**Collapsed by default.** Uses the **Lightweight Charts** library to render candlestick charts per market.
+**Expanded by default.** Uses the **Lightweight Charts** library to render candlestick charts per market. The panel has the same fixed height as Crypto News, both are three times taller than before, and Price Charts scrolls internally when there are more market cards than fit on screen.
 
 Each market gets a single card containing **two side-by-side charts** — 5-min candles on the left and 15-min candles on the right. Charts are created lazily the first time a market appears; subsequent calls to `refreshCharts()` only update the series data.
 

@@ -42,7 +42,7 @@ async def lifespan(app: FastAPI):
 14. Dashboard state update         → _latest_signals, _current_prices
 ```
 
-> **Note:** `_record_equity_snapshot(prices)` runs during every strategy tick immediately after fresh market prices arrive. It computes `paper_engine.get_total_equity(prices)`, updates `_current_equity`, updates the risk engine, appends the point to `_equity_history`, and persists `total_equity`, `cash`, and `positions_value` to SQLite. The Equity Graph therefore records cash plus current holdings value on each market-data tick, and `/api/dashboard` aligns the final graph point with the same `Total Equity` value shown in the header.
+> **Note:** `_record_equity_snapshot(prices)` runs during every strategy tick immediately after fresh market prices arrive. In paper mode it builds the snapshot from `PaperExecutionEngine`; in live mode it reads Kraken `Balance` through `KrakenExecutionEngine.get_account_snapshot()`. It updates `_current_equity`, `_current_cash`, and the risk engine, appends the point to `_equity_history`, and persists `total_equity`, `cash`, and `positions_value` to SQLite. The Equity Graph therefore records the same account source used by the dashboard header.
 
 `kraken_adapter.start_subscription(_active_markets, _cache_market_snapshot)` starts Kraken WebSocket ticker streaming after the active market list is validated. The 30-second strategy tick consumes cached WebSocket snapshots and only calls `get_tickers_batch()` for symbols that have not produced a stream update yet, preserving REST polling as a fallback.
 
@@ -251,9 +251,9 @@ The `GET /api/ohlc/{market}?interval=5` and `?interval=15` endpoint reads from `
 ```
 1.  Sleep 10s
 2.  If _current_prices is empty → skip (prices not yet fetched)
-3.  Record portfolio value      → _record_equity_snapshot(_current_prices)
-4.  Compute equity              → paper_engine.get_total_equity(_current_prices)
-5.  Update _current_equity      → shared global read by strategy sizing
+3.  Record portfolio value      → await _record_equity_snapshot(_current_prices)
+4.  Compute account snapshot    → paper engine in paper mode, Kraken Balance in live mode
+5.  Update _current_equity/_current_cash → shared globals read by strategy sizing and risk
 6.  Update risk engine          → risk_engine.update_equity(equity)
 7.  Append and persist snapshot → _equity_history + repo.save_equity_snapshot(...)
 8.  Repeat

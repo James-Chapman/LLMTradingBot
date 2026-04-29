@@ -24,7 +24,7 @@ Returns a basic liveness check. Does not probe LLM or Kraken connectivity.
 ```json
 {
     "status": "ok",
-    "version": "0.5.14"
+    "version": "0.5.25"
 }
 ```
 
@@ -159,7 +159,7 @@ Returns the full dashboard state in a single payload. Polled every 5 seconds by 
 - `equity_history` is limited to the last 1 440 snapshots (4 hours at 10-second resolution, produced by `_equity_ticker_loop`).
 - `activity` returns the most recent 60 entries from the 200-entry rolling buffer.
 - `llm.briefing` and `llm.reflection` are `null` if the LLM has not yet produced results.
-- `cash` is the current available paper cash balance (distinct from total equity, which includes unrealised P&L on open positions).
+- In paper mode, `cash` and `equity` come from `PaperExecutionEngine`. In live mode, both come from Kraken account balances: `cash` is the selected quote-currency balance and `equity` is quote cash plus non-quote balances marked to the latest known prices.
 - `open_position_ids` is a list of full UUIDs for all currently open positions. The frontend uses this to display OPEN/CLOSED status in the trade ledger without a separate API call.
 
 ---
