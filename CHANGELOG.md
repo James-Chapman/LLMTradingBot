@@ -7,6 +7,59 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.5.14] — 2026-04-29
+
+### Changed
+
+- **Trade tables** — aligned Open Positions, Closed Positions, Trade Ledger, and Rejected Trades columns to the requested operational order.
+- **Rejected Trades panel** — now uses the same subtle zebra-striping as the other trade tables.
+- **Dashboard API** — open positions now expose strategy, source, and open status metadata for the expanded table.
+
+---
+
+## [0.5.13] — 2026-04-29
+
+### Changed
+
+- **Trade tables** — Open Positions, Closed Positions, and Trade Ledger now use subtle alternate-row contrast for easier scanning.
+
+---
+
+## [0.5.12] — 2026-04-29
+
+### Fixed
+
+- **Open Positions panel** — Time Opened now falls back to the matching ledger open trade timestamp when the dashboard position payload does not include `opened_at`.
+
+---
+
+## [0.5.11] — 2026-04-29
+
+### Changed
+
+- **Open Positions panel** — added a leading Time Opened column and market/direction filter chips matching the Closed Positions panel.
+- **Dashboard API** — open-position rows now include `opened_at` for UI display and filtering context.
+
+---
+
+## [0.5.10] — 2026-04-29
+
+### Changed
+
+- **Dashboard status row** — Markets, P&L Summary, and Signals now remain equal 1/3-width panels until the small-mobile breakpoint instead of collapsing at tablet widths.
+
+---
+
+## [0.5.9] — 2026-04-29
+
+### Changed
+
+- **Dashboard layout** — Markets, P&L Summary, and Signals now share the top status row, with Open Positions, Closed Positions, and Trade Ledger rendered as full-width panels below.
+- **Open Positions table** — open positions now render as single-line table rows matching the closed-position panel style, including market, direction, size, entry price, value, unrealised P&L, position ID, signal, and close action.
+- **BDD coverage** — updated frontend layout tests for the new panel order, full-width placement, and single-line open-position rows.
+
+---
+
 ## [0.5.8] — 2026-04-29
 
 ### Changed

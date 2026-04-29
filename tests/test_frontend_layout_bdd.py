@@ -59,7 +59,9 @@ class FrontendLayoutBDDTests(unittest.TestCase):
             "width: calc(100% - (var(--page-gutter) * 2));",
             ".dashboard-grid {\n    display: flex;\n    flex-direction: column;",
             ".core-grid {\n    display: grid;",
-            "grid-template-columns: repeat(2, minmax(0, 1fr));",
+            "grid-template-columns: repeat(3, minmax(0, 1fr));",
+            "@media (max-width: 1100px) {\n    .activity-llm-row",
+            "@media (max-width: 700px) {\n    :root",
             "height: var(--core-panel-height);",
             "overflow-y: auto;",
             ".approval-details,\n.chart-grid,\n.raw-signal-grid {\n    display: flex;\n    flex-direction: column;",
@@ -71,6 +73,7 @@ class FrontendLayoutBDDTests(unittest.TestCase):
 
         self.assertNotIn("grid-template-columns: repeat(12", css)
         self.assertNotIn("grid-column: span", css)
+        self.assertNotIn("@media (max-width: 1100px) {\n    .core-grid", css)
         self.assertNotIn("max-width:1280px", index)
         self.assertNotIn("max-width:900px", approvals)
 
@@ -112,35 +115,127 @@ class FrontendLayoutBDDTests(unittest.TestCase):
         sw = (FRONTEND_DIR / "sw.js").read_text(encoding="utf-8")
         backend_main = (ROOT_DIR / "backend" / "main.py").read_text(encoding="utf-8")
 
-        self.assertIn("const CACHE  = 'trading-bot-v0.4.0';", sw)
+        self.assertIn("const CACHE  = 'trading-bot-v0.5.14';", sw)
         self.assertIn("if (req.mode === 'navigate' || acceptsHtml) {", sw)
         self.assertIn("event.respondWith(networkFirst(req));", sw)
         self.assertNotIn("c.addAll(['/'])", sw)
         self.assertIn('"Cache-Control": "no-store, max-age=0"', backend_main)
 
     # GIVEN dense status panels WHEN dashboard structure is inspected
-    # THEN markets and signals share the core-grid row, while open and closed positions
-    # occupy their own positions-row (1/3 + 2/3 split) directly below.
+    # THEN markets, P&L, and signals share the core-grid row, while open positions,
+    # closed positions, and trade ledger are full-width panels below.
     def test_given_status_panels_when_markup_inspected_then_core_panels_share_row(self) -> None:
         index = (FRONTEND_DIR / "index.html").read_text(encoding="utf-8")
 
-        # core-grid contains only Markets and Signals (2 panels)
+        # core-grid contains Markets, P&L Summary, and Signals (3 panels)
         core_start = index.index('<div class="core-grid area-core">')
         core_end = index.index("<!-- Open Positions", core_start)
         core_markup = index[core_start:core_end]
         self.assertIn("<!-- Markets -->", core_markup)
+        self.assertIn("<!-- P&L Summary -->", core_markup)
         self.assertIn("<!-- Signals -->", core_markup)
         self.assertNotIn("<!-- Open Positions", core_markup)
-        self.assertEqual(core_markup.count('class="card panel core-panel'), 2)
+        self.assertEqual(core_markup.count('class="card panel core-panel'), 3)
 
-        # positions-row holds Open Positions (1/3) and Closed Positions (2/3)
-        pos_start = index.index('<div class="positions-row">')
-        pos_end = index.index("<!-- P&L Summary", pos_start)
-        pos_markup = index[pos_start:pos_end]
-        self.assertIn("<!-- Open Positions (1/3) -->", pos_markup)
-        self.assertIn("<!-- Closed Positions (2/3)", pos_markup)
-        self.assertIn('id="positions-list"', pos_markup)
-        self.assertIn('id="closed-body"', pos_markup)
+        open_start = index.index("<!-- Open Positions -->")
+        closed_start = index.index("<!-- Closed Positions", open_start)
+        ledger_start = index.index("<!-- Trade Ledger -->", closed_start)
+        self.assertLess(open_start, closed_start)
+        self.assertLess(closed_start, ledger_start)
+        self.assertNotIn('<div class="positions-row">', index)
+        self.assertNotIn('<div class="pnl-ledger-row">', index)
+        self.assertIn('class="card panel area-positions"', index[open_start:closed_start])
+        self.assertIn('id="positions-filter"', index[open_start:closed_start])
+        self.assertIn('id="positions-body"', index[open_start:closed_start])
+        self.assertIn('class="card panel area-closed"', index[closed_start:ledger_start])
+        self.assertIn('id="closed-body"', index[closed_start:ledger_start])
+        self.assertIn('class="card panel area-ledger"', index[ledger_start:])
+        self.assertIn('id="ledger-body"', index[ledger_start:])
+
+    # GIVEN open positions are rendered WHEN dashboard code is inspected
+    # THEN open positions use single-line table rows like closed positions.
+    def test_given_open_positions_when_markup_inspected_then_single_line_table_rows_are_used(self) -> None:
+        index = (FRONTEND_DIR / "index.html").read_text(encoding="utf-8")
+        open_start = index.index("<!-- Open Positions -->")
+        closed_start = index.index("<!-- Closed Positions", open_start)
+        open_markup = index[open_start:closed_start]
+        render_start = index.index("renderPositions(positions)")
+        render_end = index.index("renderApprovals(approvals)", render_start)
+        render_markup = index[render_start:render_end]
+        backend_main = (ROOT_DIR / "backend" / "main.py").read_text(encoding="utf-8")
+
+        self.assertIn("<table class=\"responsive-table trade-table\">", open_markup)
+        self.assertIn("Date Time</th>", open_markup)
+        self.assertIn("Opened</th>", open_markup)
+        self.assertIn("Strategy</th>", open_markup)
+        self.assertIn("Source</th>", open_markup)
+        self.assertIn("Status</th>", open_markup)
+        self.assertIn('id="positions-body"', open_markup)
+        self.assertIn("_renderTradeFilter('positions')", render_markup)
+        self.assertIn("_applyPositionsFilter()", render_markup)
+        self.assertIn("_positionOpenedAt(p)", render_markup)
+        self.assertIn("position.opened_at || position.timestamp || position.entry_at", render_markup)
+        self.assertIn("t.trade_type === 'open'", render_markup)
+        self.assertIn("t.position_id_full === fullId", render_markup)
+        self.assertIn("t.position_id === shortId", render_markup)
+        self.assertIn("_applyPositionsFilter();", index[index.index("renderLedger(trades)") :])
+        self.assertIn("tbody.innerHTML = positions.map", render_markup)
+        self.assertIn("return `<tr", render_markup)
+        self.assertIn("fmtTime(openedDt)", render_markup)
+        self.assertIn("fmtDuration(Date.now() - openedDt)", render_markup)
+        self.assertIn("this._positionStrategy(p)", render_markup)
+        self.assertIn("this._positionSource(p)", render_markup)
+        self.assertIn("statusBadge", render_markup)
+        self.assertIn('"opened_at": pos.timestamp.isoformat()', backend_main)
+        self.assertIn('"strategy": meta.get("strategy_id", "")', backend_main)
+        self.assertIn('"status": "open"', backend_main)
+        self.assertNotIn('<div class="row-sep"', render_markup)
+
+    # GIVEN trade-heavy tables WHEN dashboard styles are inspected
+    # THEN open, closed, and ledger rows use subtle alternate-row contrast.
+    def test_given_trade_tables_when_styles_loaded_then_rows_are_zebra_striped(self) -> None:
+        index = (FRONTEND_DIR / "index.html").read_text(encoding="utf-8")
+        css = (FRONTEND_DIR / "static" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertEqual(index.count('class="responsive-table trade-table"'), 4)
+        self.assertIn('<tbody id="positions-body">', index)
+        self.assertIn('<tbody id="closed-body">', index)
+        self.assertIn('<tbody id="ledger-body">', index)
+        self.assertIn('<tbody id="rejected-trades-body">', index)
+        self.assertIn(".trade-table tbody tr:nth-child(even)", css)
+        self.assertIn("background: rgba(139, 148, 158, 0.055);", css)
+
+    # GIVEN dashboard trade tables WHEN their headers are inspected
+    # THEN they expose the requested operational columns in order.
+    def test_given_trade_tables_when_markup_inspected_then_columns_match_requested_order(self) -> None:
+        index = (FRONTEND_DIR / "index.html").read_text(encoding="utf-8")
+
+        expected_headers = {
+            "positions": [
+                "Date Time", "Opened", "Market", "Direction", "Size", "Avg Price", "Value",
+                "Unrealised P&amp;L", "Strategy", "Source", "Status", "Pos ID", "Signal", "Action",
+            ],
+            "closed": [
+                "Date Time Closed", "Date Time Opened", "Duration", "Market", "Direction", "Size",
+                "Price", "Value", "P&amp;L", "Strategy", "Source", "Status", "Pos ID",
+                "Open Signal", "Close Signal",
+            ],
+            "ledger": [
+                "Date Time", "Market", "Strategy", "Action", "Direction", "Size", "Price",
+                "Value", "P&amp;L", "Strategy", "Source", "Status", "Pos ID", "Signal",
+            ],
+            "rejected-trades": [
+                "Date Time", "Market", "Direction", "Size", "Price", "Value", "Strategy",
+                "Source", "Status", "Reason", "Confidence", "Signal",
+            ],
+        }
+
+        for table_id, headers in expected_headers.items():
+            table_start = index.rfind("<table", 0, index.index(f'id="{table_id}-body"'))
+            thead = " ".join(index[table_start:index.index("</thead>", table_start)].split())
+            cursor = 0
+            for header in headers:
+                cursor = thead.index(header, cursor) + len(header)
 
     # GIVEN Local LLM status data WHEN dashboard markup is inspected
     # THEN model, availability, briefing, and reflection rows each render on their own line.
@@ -203,8 +298,11 @@ class FrontendLayoutBDDTests(unittest.TestCase):
         self.assertIn("fetch('/api/rejected-trades')", index)
         self.assertIn("'/api/rejected-trades'", sw)
         self.assertIn('id="rejected-trades-body"', index)
+        self.assertIn('class="responsive-table trade-table"', index)
         self.assertIn("r.confidence", index)
         self.assertIn("r.strategy", index)
+        self.assertIn("r.source || 'system'", index)
+        self.assertIn("Rejected</span>", index)
         self.assertIn("(r.reason || '').replace", index)
 
     # GIVEN strategy context is available WHEN dashboard markup is inspected
@@ -230,9 +328,9 @@ class FrontendLayoutBDDTests(unittest.TestCase):
         header_end = index.index("</header>", header_start) + len("</header>")
         header_markup = index[header_start:header_end]
 
-        # The dot must exist and its colour binding must use llmAvailable
+        # The dot must exist and its colour binding must use llmStatus
         self.assertIn('class="llm-dot"', header_markup)
-        self.assertIn("llmAvailable", header_markup)
+        self.assertIn("llmStatus", header_markup)
 
         # The metric-block containing the dot must opt into flex layout so the
         # 8×8 span dimensions actually render (inline elements ignore width/height)

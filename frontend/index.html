@@ -19,7 +19,7 @@
         <div class="app-shell dashboard-shell header-bar">
             <div class="header-brand">
                 <span class="brand-title">⚡ LLM Trading Bot</span>
-                <span class="version-label" x-text="appVersion ? 'v' + appVersion : ''">v0.5.8</span>
+                <span class="version-label" x-text="appVersion ? 'v' + appVersion : ''">v0.5.14</span>
                 <!-- Emergency stop banner -->
                 <span x-show="emergencyStop" class="pill pill-red"
                     style="font-size:12px;font-weight:700;letter-spacing:.04em;">■ EMERGENCY STOP</span>
@@ -154,7 +154,7 @@
             </div>
         </div>
 
-        <!-- Markets / Signals -->
+        <!-- Markets / P&L / Signals -->
         <div class="core-grid area-core">
 
             <!-- Markets -->
@@ -185,6 +185,39 @@
                 </div>
             </div>
 
+            <!-- P&L Summary -->
+            <div class="card panel core-panel area-pnl">
+                <div class="panel-header" @click="panels.pnlSummary = !panels.pnlSummary">
+                    <span class="label">P&L Summary</span>
+                    <div class="panel-header-meta">
+                        <span style="font-size:11px;color:var(--muted);" x-text="pnlStatus"></span>
+                        <span style="color:var(--muted);font-size:13px;" x-text="panels.pnlSummary ? '▲' : '▼'"></span>
+                    </div>
+                </div>
+                <div x-show="panels.pnlSummary" class="panel-body core-scroll">
+                    <div class="card-list">
+                        <table class="responsive-table">
+                            <thead>
+                                <tr style="border-bottom:1px solid var(--border);">
+                                    <th style="padding:6px;text-align:left;color:var(--muted);">Day</th>
+                                    <th style="padding:6px;text-align:right;color:var(--muted);">P&L</th>
+                                </tr>
+                            </thead>
+                            <tbody id="pnl-day-body"></tbody>
+                        </table>
+                        <table class="responsive-table">
+                            <thead>
+                                <tr style="border-bottom:1px solid var(--border);">
+                                    <th style="padding:6px;text-align:left;color:var(--muted);">Market</th>
+                                    <th style="padding:6px;text-align:right;color:var(--muted);">P&L</th>
+                                </tr>
+                            </thead>
+                            <tbody id="pnl-market-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
             <!-- Signals -->
             <div class="card panel core-panel">
                 <div class="panel-header" @click="panels.signals = !panels.signals">
@@ -199,30 +232,52 @@
             </div>
         </div>
 
-        <!-- Open Positions / Closed Positions -->
-        <div class="positions-row">
-
-            <!-- Open Positions (1/3) -->
-            <div class="card panel core-panel">
-                <div class="panel-header" @click="panels.positions = !panels.positions">
-                    <div class="label">Open Positions</div>
-                    <div class="flex items-center gap-2" @click.stop>
-                        <button x-show="environment === 'paper'" @click="resetPositions()"
-                            style="font-size:10px;font-weight:600;padding:3px 9px;border-radius:4px;cursor:pointer;color:var(--orange);background:rgba(227,119,58,.1);border:1px solid rgba(227,119,58,.3);">
-                            Reset
-                        </button>
-                        <span style="color:var(--muted);font-size:13px;" x-text="panels.positions ? '▲' : '▼'"></span>
-                    </div>
-                </div>
-                <div x-show="panels.positions" class="panel-body core-scroll">
-                    <div id="positions-list">
-                        <div style="color:var(--muted);font-size:13px;">No open positions</div>
-                    </div>
+        <!-- Open Positions -->
+        <div class="card panel area-positions">
+            <div class="panel-header" @click="panels.positions = !panels.positions">
+                <div class="label">Open Positions</div>
+                <div class="flex items-center gap-2" @click.stop>
+                    <button x-show="environment === 'paper'" @click="resetPositions()"
+                        style="font-size:10px;font-weight:600;padding:3px 9px;border-radius:4px;cursor:pointer;color:var(--orange);background:rgba(227,119,58,.1);border:1px solid rgba(227,119,58,.3);">
+                        Reset
+                    </button>
+                    <span style="color:var(--muted);font-size:13px;" x-text="panels.positions ? '▲' : '▼'"></span>
                 </div>
             </div>
+            <div x-show="panels.positions" class="panel-body">
+                <div id="positions-list" style="overflow-x:auto;">
+                    <div id="positions-filter"></div>
+                    <table class="responsive-table trade-table">
+                        <thead>
+                            <tr style="border-bottom:1px solid var(--border);text-align:left;">
+                                <th style="padding:6px 10px;color:var(--muted);font-weight:600;white-space:nowrap;">Date Time</th>
+                                <th style="padding:6px 10px;color:var(--muted);font-weight:600;white-space:nowrap;">Opened</th>
+                                <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Market</th>
+                                <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Direction</th>
+                                <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">Size</th>
+                                <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">Avg Price</th>
+                                <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">Value</th>
+                                <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">Unrealised P&amp;L</th>
+                                <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Strategy</th>
+                                <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Source</th>
+                                <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Status</th>
+                                <th style="padding:6px 10px;color:var(--muted);font-weight:600;font-family:monospace;">Pos ID</th>
+                                <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Signal</th>
+                                <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="positions-body">
+                            <tr>
+                                <td colspan="14" style="padding:20px 10px;color:var(--muted);text-align:center;">No open positions</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
 
-            <!-- Closed Positions (2/3) — signal outcomes with P&L -->
-            <div class="card panel core-panel area-closed">
+        <!-- Closed Positions — signal outcomes with P&L -->
+        <div class="card panel area-closed">
                 <div class="panel-header" @click="panels.closedTrades = !panels.closedTrades">
                     <span class="label">Closed Positions</span>
                     <div class="panel-header-meta">
@@ -234,13 +289,13 @@
                 <div x-show="panels.closedTrades" class="panel-body core-scroll">
                     <div id="closed-filter"></div>
                     <div style="overflow-x:auto;">
-                        <table class="responsive-table">
+                        <table class="responsive-table trade-table">
                             <thead>
                                 <tr style="border-bottom:1px solid var(--border);text-align:left;">
                                     <th style="padding:6px 10px;color:var(--muted);font-weight:600;white-space:nowrap;">
-                                        Time Closed</th>
+                                        Date Time Closed</th>
                                     <th style="padding:6px 10px;color:var(--muted);font-weight:600;white-space:nowrap;">
-                                        Time Opened</th>
+                                        Date Time Opened</th>
                                     <th style="padding:6px 10px;color:var(--muted);font-weight:600;"
                                         title="How long the position was open">Duration</th>
                                     <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Market</th>
@@ -253,6 +308,7 @@
                                         title="Size × entry price">Value</th>
                                     <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">
                                         P&amp;L</th>
+                                    <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Strategy</th>
                                     <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Source</th>
                                     <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Status</th>
                                     <th style="padding:6px 10px;color:var(--muted);font-weight:600;font-family:monospace;"
@@ -265,7 +321,7 @@
                             </thead>
                             <tbody id="closed-body">
                                 <tr>
-                                    <td colspan="14" style="padding:20px 10px;color:var(--muted);text-align:center;">
+                                    <td colspan="15" style="padding:20px 10px;color:var(--muted);text-align:center;">
                                         Loading…</td>
                                 </tr>
                             </tbody>
@@ -273,7 +329,6 @@
                     </div>
                 </div>
             </div>
-        </div>
 
         <!-- Pending Approvals (hidden when empty or stopped) -->
         <div class="card panel area-approvals" style="padding:20px;" x-show="pendingCount > 0 && !emergencyStop">
@@ -668,44 +723,8 @@
             </div>
         </div>
 
-        <!-- P&L Summary + Trade Ledger -->
-        <div class="pnl-ledger-row">
-
-            <!-- P&L Summary (1/3) -->
-            <div class="card panel area-pnl">
-                <div class="panel-header" @click="panels.pnlSummary = !panels.pnlSummary">
-                    <span class="label">P&L Summary</span>
-                    <div class="panel-header-meta">
-                        <span style="font-size:11px;color:var(--muted);" x-text="pnlStatus"></span>
-                        <span style="color:var(--muted);font-size:13px;" x-text="panels.pnlSummary ? '▲' : '▼'"></span>
-                    </div>
-                </div>
-                <div x-show="panels.pnlSummary" class="panel-body">
-                    <div class="card-list">
-                        <table class="responsive-table">
-                            <thead>
-                                <tr style="border-bottom:1px solid var(--border);">
-                                    <th style="padding:6px;text-align:left;color:var(--muted);">Day</th>
-                                    <th style="padding:6px;text-align:right;color:var(--muted);">P&L</th>
-                                </tr>
-                            </thead>
-                            <tbody id="pnl-day-body"></tbody>
-                        </table>
-                        <table class="responsive-table">
-                            <thead>
-                                <tr style="border-bottom:1px solid var(--border);">
-                                    <th style="padding:6px;text-align:left;color:var(--muted);">Market</th>
-                                    <th style="padding:6px;text-align:right;color:var(--muted);">P&L</th>
-                                </tr>
-                            </thead>
-                            <tbody id="pnl-market-body"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Trade Ledger (2/3) -->
-            <div class="card panel area-ledger">
+        <!-- Trade Ledger -->
+        <div class="card panel area-ledger">
                 <div class="panel-header" @click="panels.tradeLedger = !panels.tradeLedger">
                     <span class="label">Trade Ledger</span>
                     <div class="panel-header-meta">
@@ -716,11 +735,11 @@
                 <div x-show="panels.tradeLedger" class="panel-body">
                     <div id="ledger-filter"></div>
                     <div style="overflow-x:auto;">
-                        <table class="responsive-table">
+                        <table class="responsive-table trade-table">
                             <thead>
                                 <tr style="border-bottom:1px solid var(--border);text-align:left;">
                                     <th style="padding:6px 10px;color:var(--muted);font-weight:600;white-space:nowrap;">
-                                        Time</th>
+                                        Date Time</th>
                                     <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Market</th>
                                     <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Strategy</th>
                                     <th style="padding:6px 10px;color:var(--muted);font-weight:600;"
@@ -735,6 +754,7 @@
                                         Value</th>
                                     <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;"
                                         title="Realised P&L on close orders">P&amp;L</th>
+                                    <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Strategy</th>
                                     <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Source</th>
                                     <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Status</th>
                                     <th style="padding:6px 10px;color:var(--muted);font-weight:600;font-family:monospace;"
@@ -745,7 +765,7 @@
                             </thead>
                             <tbody id="ledger-body">
                                 <tr>
-                                    <td colspan="13" style="padding:20px 10px;color:var(--muted);text-align:center;">
+                                    <td colspan="14" style="padding:20px 10px;color:var(--muted);text-align:center;">
                                         Loading…</td>
                                 </tr>
                             </tbody>
@@ -753,8 +773,6 @@
                     </div>
                 </div>
             </div>
-
-        </div>
 
         <!-- Price Charts (5-min & 15-min candles, collapsed by default) -->
         <div class="card panel area-charts">
@@ -971,20 +989,22 @@
                 <span style="color:var(--muted);font-size:13px;" x-text="panels.rejectedTrades ? '▲' : '▼'"></span>
             </div>
             <div x-show="panels.rejectedTrades" class="panel-body panel-body-scroll">
-                <table class="responsive-table">
+                <table class="responsive-table trade-table">
                     <thead>
                         <tr style="border-bottom:1px solid var(--border);text-align:left;">
-                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;white-space:nowrap;">Time
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;white-space:nowrap;">Date Time
                             </th>
                             <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Market</th>
-                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Strategy</th>
                             <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Direction</th>
                             <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">Size</th>
-                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">Confidence
-                            </th>
                             <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">Price</th>
                             <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">Value</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Strategy</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Source</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Status</th>
                             <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Reason</th>
+                            <th style="padding:6px 10px;color:var(--muted);font-weight:600;text-align:right;">Confidence
+                            </th>
                             <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Signal</th>
                         </tr>
                     </thead>
@@ -992,11 +1012,9 @@
                         <template x-for="(r, i) in rejectedTrades" :key="r.id || i">
                             <tr style="border-bottom:1px solid var(--subtle);">
                                 <td style="padding:7px 10px;color:var(--muted);font-size:11px;white-space:nowrap;"
-                                    x-text="new Date(r.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})">
+                                    x-text="new Date(r.timestamp).toLocaleDateString('en-GB', {day:'2-digit',month:'short'}) + ' ' + new Date(r.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})">
                                 </td>
                                 <td style="padding:7px 10px;font-weight:600;" x-text="r.market"></td>
-                                <td style="padding:7px 10px;color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap;"
-                                    x-text="_strategyLabel(r.strategy)"></td>
                                 <td style="padding:7px 10px;">
                                     <span class="pill" :class="r.direction === 'long' ? 'pill-green' : 'pill-red'"
                                         x-text="(r.direction === 'long' ? '▲ ' : '▼ ') + r.direction.toUpperCase()"></span>
@@ -1004,15 +1022,22 @@
                                 <td style="padding:7px 10px;text-align:right;font-family:monospace;"
                                     x-text="parseFloat(r.size).toFixed(6)"></td>
                                 <td style="padding:7px 10px;text-align:right;font-family:monospace;"
-                                    x-text="r.confidence == null ? '--' : Math.round(r.confidence * 100) + '%'"></td>
-                                <td style="padding:7px 10px;text-align:right;font-family:monospace;"
                                     x-text="parseFloat(r.price).toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2})">
                                 </td>
                                 <td style="padding:7px 10px;text-align:right;font-family:monospace;"
                                     x-text="(parseFloat(r.size) * parseFloat(r.price)).toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2})">
                                 </td>
+                                <td style="padding:7px 10px;color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap;"
+                                    x-text="_strategyLabel(r.strategy)"></td>
+                                <td style="padding:7px 10px;color:var(--muted);font-size:11px;font-weight:600;"
+                                    x-text="r.source || 'system'"></td>
+                                <td style="padding:7px 10px;">
+                                    <span style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;color:var(--red);background:rgba(248,81,73,.10);border:1px solid rgba(248,81,73,.25);">Rejected</span>
+                                </td>
                                 <td style="padding:7px 10px;color:var(--red);font-size:12px;"
                                     x-text="(r.reason || '').replace(/_/g,' ')"></td>
+                                <td style="padding:7px 10px;text-align:right;font-family:monospace;"
+                                    x-text="r.confidence == null ? '--' : Math.round(r.confidence * 100) + '%'"></td>
                                 <td style="padding:7px 10px;">
                                     <button x-show="r.trade_idea_id" @click="showSignal(r.trade_idea_id)"
                                         style="font-size:10px;padding:3px 9px;border-radius:4px;background:rgba(139,148,158,.12);border:1px solid rgba(139,148,158,.25);color:var(--muted);cursor:pointer;white-space:nowrap;">
@@ -1062,6 +1087,9 @@
                 _allLedgerTrades: [],
                 ledgerMarketFilter: new Set(),
                 ledgerDirFilter: '',
+                _allOpenPositions: [],
+                positionsMarketFilter: new Set(),
+                positionsDirFilter: '',
                 closedStatus: 'Loading…',
                 _allClosedTrades: [],
                 closedMarketFilter: new Set(),
@@ -1124,6 +1152,24 @@
                         this.ledgerDirFilter = e.detail;
                         this._renderTradeFilter('ledger');
                         this._applyLedgerFilter();
+                    });
+                    // Open positions filters
+                    document.addEventListener('positions-market-toggle', e => {
+                        const f = new Set(this.positionsMarketFilter);
+                        f.has(e.detail) ? f.delete(e.detail) : f.add(e.detail);
+                        this.positionsMarketFilter = f;
+                        this._renderTradeFilter('positions');
+                        this._applyPositionsFilter();
+                    });
+                    document.addEventListener('positions-market-clear', () => {
+                        this.positionsMarketFilter = new Set();
+                        this._renderTradeFilter('positions');
+                        this._applyPositionsFilter();
+                    });
+                    document.addEventListener('positions-dir-set', e => {
+                        this.positionsDirFilter = e.detail;
+                        this._renderTradeFilter('positions');
+                        this._applyPositionsFilter();
                     });
                     // Closed positions filters
                     document.addEventListener('closed-market-toggle', e => {
@@ -1385,47 +1431,120 @@
                 },
 
                 renderPositions(positions) {
-                    const el = document.getElementById('positions-list');
-                    if (!positions.length) {
-                        el.innerHTML = '<div style="color:var(--muted);font-size:13px;">No open positions</div>';
+                    this._allOpenPositions = positions;
+                    this._renderTradeFilter('positions');
+                    this._applyPositionsFilter();
+                },
+
+                _applyPositionsFilter() {
+                    const tbody = document.getElementById('positions-body');
+                    if (!tbody) return;
+                    if (!this._allOpenPositions.length) {
+                        tbody.innerHTML = '<tr><td colspan="14" style="padding:20px 10px;color:var(--muted);text-align:center;">No open positions</td></tr>';
                         return;
                     }
-                    el.innerHTML = positions.map(p => {
+                    let positions = this._allOpenPositions;
+                    if (this.positionsMarketFilter.size > 0)
+                        positions = positions.filter(p => this.positionsMarketFilter.has(p.market));
+                    if (this.positionsDirFilter)
+                        positions = positions.filter(p => p.direction === this.positionsDirFilter);
+                    this._renderPositionRows(positions);
+                },
+
+                _positionOpeningTrade(position) {
+                    const fullId = position.position_id_full || '';
+                    const shortId = position.position_id || '';
+                    return this._allLedgerTrades.find(t =>
+                        t.trade_type === 'open' &&
+                        ((fullId && t.position_id_full === fullId) || (shortId && t.position_id === shortId))
+                    );
+                },
+
+                _positionOpenedAt(position) {
+                    const direct = position.opened_at || position.timestamp || position.entry_at || '';
+                    if (direct) return direct;
+                    const openingTrade = this._positionOpeningTrade(position);
+                    return openingTrade?.timestamp || '';
+                },
+
+                _positionStrategy(position) {
+                    return position.strategy || position.strategy_id || this._positionOpeningTrade(position)?.strategy || '';
+                },
+
+                _positionSource(position) {
+                    return position.source || this._positionOpeningTrade(position)?.source || 'system';
+                },
+
+                _positionStatus(position) {
+                    return position.status || this._positionOpeningTrade(position)?.status || 'open';
+                },
+
+                _renderPositionRows(positions) {
+                    const tbody = document.getElementById('positions-body');
+                    if (!tbody) return;
+                    if (!positions.length) {
+                        tbody.innerHTML = '<tr><td colspan="14" style="padding:20px 10px;color:var(--muted);text-align:center;">No open positions match the current filter</td></tr>';
+                        return;
+                    }
+                    const fmtDuration = ms => {
+                        if (!Number.isFinite(ms) || ms < 0) return '--';
+                        const totalSec = Math.floor(ms / 1000);
+                        const d = Math.floor(totalSec / 86400);
+                        const h = Math.floor((totalSec % 86400) / 3600);
+                        const m = Math.floor((totalSec % 3600) / 60);
+                        if (d > 0) return `${d}d ${h}h`;
+                        if (h > 0) return `${h}h ${m}m`;
+                        return `${m}m`;
+                    };
+                    const fmtTime = dt => dt && !Number.isNaN(dt.getTime())
+                        ? dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) + ' ' +
+                        dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                        : '—';
+                    tbody.innerHTML = positions.map(p => {
                         const pnl = parseFloat(p.unrealized_pnl);
                         const cost = (parseFloat(p.size) * parseFloat(p.avg_price));
                         const pnlCol = pnl >= 0 ? 'var(--green)' : 'var(--red)';
                         const long = p.direction === 'long';
                         const dirCol = long ? 'var(--green)' : 'var(--red)';
-                        const dirLbl = long ? '▲ LONG' : '▼ SHORT';
+                        const dirLbl = long ? '▲ Long' : '▼ Short';
                         const fmt2 = v => parseFloat(v).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-                        return `
-                <div class="row-sep" style="padding:10px 0;">
-                    <div class="flex items-center justify-between" style="margin-bottom:3px;">
-                        <div class="flex items-center gap-2">
-                            <span style="font-size:13px;font-weight:700;">${p.market}</span>
-                            <span style="font-size:10px;font-weight:700;color:${dirCol};">${dirLbl}</span>
-                        </div>
-                        <div class="mono" style="font-size:13px;font-weight:600;color:${pnlCol};">${pnl >= 0 ? '+' : ''}${this.currencySymbol}${fmt2(pnl)}</div>
-                    </div>
-                    <div class="flex items-center justify-between" style="margin-bottom:4px;">
-                        <div class="mono" style="font-size:11px;color:var(--muted);">${parseFloat(p.size).toFixed(6)} @ ${this.currencySymbol}${fmt2(p.avg_price)}</div>
-                        <div class="mono" style="font-size:11px;color:var(--muted);">Cost ${this.currencySymbol}${fmt2(cost)}</div>
-                    </div>
-                    <div class="flex items-center justify-between">
-                        <div style="font-size:10px;color:var(--muted);font-family:monospace;">#${p.position_id}</div>
-                        <div class="flex items-center gap-2">
-                            ${p.trade_idea_id
-                                ? `<button class="sig-btn" data-signal-id="${p.trade_idea_id}"
-                                           style="font-size:10px;padding:2px 8px;border-radius:4px;background:rgba(139,148,158,.12);border:1px solid rgba(139,148,158,.25);color:var(--muted);cursor:pointer;white-space:nowrap;"
-                                           title="View the signal that opened this position">📊 Signal</button>`
-                                : ''}
-                            <button onclick="window._closePos('${p.position_id_full}')"
-                                    style="font-size:10px;font-weight:600;padding:3px 10px;border-radius:4px;cursor:pointer;color:var(--red);background:rgba(248,81,73,.1);border:1px solid rgba(248,81,73,.3);">
-                                ✕ Close
-                            </button>
-                        </div>
-                    </div>
-                </div>`;
+                        const fmt6 = v => parseFloat(v).toFixed(6);
+                        const openedRaw = this._positionOpenedAt(p);
+                        const openedDt = openedRaw ? new Date(openedRaw) : null;
+                        const openedAge = openedDt && !Number.isNaN(openedDt.getTime()) ? fmtDuration(Date.now() - openedDt) : '--';
+                        const strategyLabel = this._strategyLabel(this._positionStrategy(p));
+                        const sourceLabel = (this._positionSource(p) || 'system').replace(/_/g, ' ');
+                        const statusLabel = this._positionStatus(p);
+                        const statusBadge = `<span style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;color:var(--green);background:rgba(63,185,80,.10);border:1px solid rgba(63,185,80,.25);">${statusLabel}</span>`;
+                        const posId = p.position_id
+                            ? `<span style="font-family:monospace;font-size:10px;color:var(--muted);">#${p.position_id}</span>`
+                            : '—';
+                        const signalBtn = p.trade_idea_id
+                            ? `<button class="sig-btn" data-signal-id="${p.trade_idea_id}"
+                                       style="font-size:10px;padding:2px 8px;border-radius:4px;background:rgba(139,148,158,.12);border:1px solid rgba(139,148,158,.25);color:var(--muted);cursor:pointer;white-space:nowrap;"
+                                       title="View the signal that opened this position">📊 Signal</button>`
+                            : `<span style="font-size:11px;color:var(--muted);">—</span>`;
+                        return `<tr style="border-bottom:1px solid var(--subtle);">
+                    <td style="padding:7px 10px;color:var(--muted);white-space:nowrap;font-size:11px;">${fmtTime(openedDt)}</td>
+                    <td style="padding:7px 10px;color:var(--muted);white-space:nowrap;font-size:11px;">${openedAge}</td>
+                    <td style="padding:7px 10px;font-weight:700;">${p.market}</td>
+                    <td style="padding:7px 10px;font-weight:700;color:${dirCol};font-size:11px;">${dirLbl}</td>
+                    <td style="padding:7px 10px;text-align:right;font-family:monospace;">${fmt6(p.size)}</td>
+                    <td style="padding:7px 10px;text-align:right;font-family:monospace;">${this.currencySymbol}${fmt2(p.avg_price)}</td>
+                    <td style="padding:7px 10px;text-align:right;font-family:monospace;">${this.currencySymbol}${fmt2(cost)}</td>
+                    <td style="padding:7px 10px;text-align:right;font-family:monospace;font-weight:700;color:${pnlCol};">${pnl >= 0 ? '+' : ''}${this.currencySymbol}${fmt2(Math.abs(pnl))}</td>
+                    <td style="padding:7px 10px;color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap;">${strategyLabel}</td>
+                    <td style="padding:7px 10px;color:var(--muted);font-size:11px;font-weight:600;">${sourceLabel}</td>
+                    <td style="padding:7px 10px;">${statusBadge}</td>
+                    <td style="padding:7px 10px;">${posId}</td>
+                    <td style="padding:7px 10px;">${signalBtn}</td>
+                    <td style="padding:7px 10px;text-align:right;">
+                        <button onclick="window._closePos('${p.position_id_full}')"
+                                style="font-size:10px;font-weight:600;padding:3px 10px;border-radius:4px;cursor:pointer;color:var(--red);background:rgba(248,81,73,.1);border:1px solid rgba(248,81,73,.3);white-space:nowrap;">
+                            ✕ Close
+                        </button>
+                    </td>
+                </tr>`;
                     }).join('');
                     window._closePos = (id) => this.closePosition(id);
                 },
@@ -1818,17 +1937,23 @@
                     } catch (e) { console.error('Ledger:', e); }
                 },
 
-                // Shared filter strip renderer for ledger and closed-trades panels.
-                // `panel` is 'ledger' or 'closed'.
+                // Shared filter strip renderer for trade-like panels.
+                // `panel` is 'positions', 'ledger', or 'closed'.
                 _renderTradeFilter(panel) {
                     const el = document.getElementById(`${panel}-filter`);
                     if (!el) return;
-                    const trades = panel === 'ledger' ? this._allLedgerTrades : this._allClosedTrades;
-                    const mktFilter = panel === 'ledger' ? this.ledgerMarketFilter : this.closedMarketFilter;
-                    const dirFilter = panel === 'ledger' ? this.ledgerDirFilter : this.closedDirFilter;
-                    if (!trades.length) { el.innerHTML = ''; return; }
+                    const rows = panel === 'positions'
+                        ? this._allOpenPositions
+                        : panel === 'ledger' ? this._allLedgerTrades : this._allClosedTrades;
+                    const mktFilter = panel === 'positions'
+                        ? this.positionsMarketFilter
+                        : panel === 'ledger' ? this.ledgerMarketFilter : this.closedMarketFilter;
+                    const dirFilter = panel === 'positions'
+                        ? this.positionsDirFilter
+                        : panel === 'ledger' ? this.ledgerDirFilter : this.closedDirFilter;
+                    if (!rows.length) { el.innerHTML = ''; return; }
 
-                    const markets = [...new Set(trades.map(t => t.market).filter(Boolean))].sort();
+                    const markets = [...new Set(rows.map(t => t.market).filter(Boolean))].sort();
 
                     const allMktStyle = mktFilter.size === 0
                         ? 'color:var(--text);background:var(--surface);border-color:var(--muted);'
@@ -1874,7 +1999,7 @@
                     const tbody = document.getElementById('ledger-body');
                     if (!tbody) return;
                     if (!this._allLedgerTrades.length) {
-                        tbody.innerHTML = '<tr><td colspan="13" style="padding:20px 10px;color:var(--muted);text-align:center;">No trades recorded yet</td></tr>';
+                        tbody.innerHTML = '<tr><td colspan="14" style="padding:20px 10px;color:var(--muted);text-align:center;">No trades recorded yet</td></tr>';
                         return;
                     }
                     let trades = this._allLedgerTrades;
@@ -1889,7 +2014,7 @@
                     const tbody = document.getElementById('closed-body');
                     if (!tbody) return;
                     if (!this._allClosedTrades.length) {
-                        tbody.innerHTML = '<tr><td colspan="14" style="padding:20px 10px;color:var(--muted);text-align:center;">No closed positions yet — positions close via stop-loss or a SELL signal</td></tr>';
+                        tbody.innerHTML = '<tr><td colspan="15" style="padding:20px 10px;color:var(--muted);text-align:center;">No closed positions yet — positions close via stop-loss or a SELL signal</td></tr>';
                         return;
                     }
                     let trades = this._allClosedTrades;
@@ -1904,13 +2029,14 @@
                     this._allLedgerTrades = trades;
                     this._renderTradeFilter('ledger');
                     this._applyLedgerFilter();
+                    this._applyPositionsFilter();
                 },
 
                 _renderLedgerRows(trades) {
                     const tbody = document.getElementById('ledger-body');
                     if (!tbody) return;
                     if (!trades.length) {
-                        tbody.innerHTML = '<tr><td colspan="13" style="padding:20px 10px;color:var(--muted);text-align:center;">No trades match the current filter</td></tr>';
+                        tbody.innerHTML = '<tr><td colspan="14" style="padding:20px 10px;color:var(--muted);text-align:center;">No trades match the current filter</td></tr>';
                         return;
                     }
                     const fmt2 = v => parseFloat(v).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -1979,6 +2105,7 @@
                     <td style="padding:7px 10px;text-align:right;font-family:monospace;">${this.currencySymbol}${fmt2(t.price)}</td>
                     <td style="padding:7px 10px;text-align:right;font-family:monospace;">${this.currencySymbol}${fmt2(t.value)}</td>
                     ${pnlCell}
+                    <td style="padding:7px 10px;color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap;">${strategyLabel}</td>
                     <td style="padding:7px 10px;font-weight:600;color:${srcCol};">${t.source}</td>
                     <td style="padding:7px 10px;">${statusCell}</td>
                     <td style="padding:7px 10px;">${posId}</td>
@@ -2050,7 +2177,7 @@
                     const tbody = document.getElementById('closed-body');
                     if (!tbody) return;
                     if (!trades.length) {
-                        tbody.innerHTML = '<tr><td colspan="14" style="padding:20px 10px;color:var(--muted);text-align:center;">No closed positions match the current filter</td></tr>';
+                        tbody.innerHTML = '<tr><td colspan="15" style="padding:20px 10px;color:var(--muted);text-align:center;">No closed positions match the current filter</td></tr>';
                         return;
                     }
                     const fmt2 = v => parseFloat(v).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -2078,6 +2205,7 @@
                         const pnlCol = pnl >= 0 ? 'var(--green)' : 'var(--red)';
                         const dirCol = t.direction === 'long' ? 'var(--green)' : 'var(--red)';
                         const dirLbl = t.direction === 'long' ? '▲ Long' : '▼ Short';
+                        const strategyLabel = this._strategyLabel(t.strategy);
                         // Duration: time between entry and exit
                         const exitDt = t.exit_at ? new Date(t.exit_at) : null;
                         const entryDt = t.entry_at ? new Date(t.entry_at) : null;
@@ -2121,6 +2249,7 @@
                         ${pnl >= 0 ? '+' : ''}${this.currencySymbol}${fmt2(Math.abs(pnl))}
                         <span style="font-size:10px;font-weight:400;margin-left:3px;">(${pnl >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%)</span>
                     </td>
+                    <td style="padding:7px 10px;color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap;">${strategyLabel}</td>
                     <td style="padding:7px 10px;font-size:11px;font-weight:600;color:${srcCol};">${srcLabel}</td>
                     <td style="padding:7px 10px;">${statusBadge}</td>
                     <td style="padding:7px 10px;">${posId}</td>

@@ -64,7 +64,7 @@ BACKEND_DIR = Path(__file__).parent
 FRONTEND_DIR = BACKEND_DIR.parent / "frontend"
 
 APP_NAME = "Kraken Trading Bot"
-APP_VERSION = "0.5.8"
+APP_VERSION = "0.5.14"
 
 setup_logging(settings.log_level, settings.log_file)
 logger = get_logger("main")
@@ -1090,19 +1090,25 @@ async def get_dashboard(request: Request, response: Response):
                     }
                 )
 
-        positions = [
-            {
-                "position_id": pos.position_id[:8],  # short form for display
-                "position_id_full": pos.position_id,  # full UUID for API calls
-                "market": pos.market,
-                "direction": "long" if pos.size > 0 else "short",
-                "size": f"{abs(pos.size):.6f}",
-                "avg_price": f"{pos.avg_price:.2f}",
-                "unrealized_pnl": f"{pos.unrealized_pnl:.2f}",
-                "trade_idea_id": paper_engine._position_meta.get(pos.position_id, {}).get("trade_idea_id", ""),
-            }
-            for pos in paper_engine.open_positions()
-        ]
+        positions = []
+        for pos in paper_engine.open_positions():
+            meta = paper_engine._position_meta.get(pos.position_id, {})
+            positions.append(
+                {
+                    "position_id": pos.position_id[:8],  # short form for display
+                    "position_id_full": pos.position_id,  # full UUID for API calls
+                    "market": pos.market,
+                    "direction": "long" if pos.size > 0 else "short",
+                    "opened_at": pos.timestamp.isoformat() if pos.timestamp else "",
+                    "size": f"{abs(pos.size):.6f}",
+                    "avg_price": f"{pos.avg_price:.2f}",
+                    "unrealized_pnl": f"{pos.unrealized_pnl:.2f}",
+                    "strategy": meta.get("strategy_id", ""),
+                    "source": meta.get("source", ""),
+                    "status": "open",
+                    "trade_idea_id": meta.get("trade_idea_id", ""),
+                }
+            )
 
         pending = approval_service.get_pending()
         approvals = [_approval_to_dict(req) for req in pending]

@@ -24,11 +24,11 @@ The dashboard and approvals page load `/static/styles.css`. This file contains t
 - Local utility classes such as `.sticky`, `.top-0`, `.z-50`, `.flex`, `.items-center`, `.justify-between`, and `.gap-*` replace the previous Tailwind browser CDN script.
 - `.app-shell` with `--page-gutter` replaces fixed-width page caps and uses the full viewport width minus gutters.
 - `.dashboard-grid` is a vertical flex stack for major page sections.
-- `.core-grid` is a responsive status workspace: Markets, Signals, Open Positions, and Closed Positions sit side by side on desktop, use the same fixed panel height, and scroll internally when content is taller than the row.
+- `.core-grid` is a responsive status workspace: Markets, P&L Summary, and Signals are equal 1/3-width panels until the small-mobile breakpoint, use the same fixed panel height, and scroll internally when content is taller than the row.
 - `.approval-details` and `.chart-grid` are vertical stacks so each block uses the full available width.
 - `.news-grid` is a responsive article-card grid inside the full-width News Feed panel.
 - `.chart-pair-grid` is the only content grid that may place items side by side; it is reserved for the 5-minute and 15-minute chart panes inside each market chart card.
-- `.panel`, `.panel-header`, `.panel-body`, `.responsive-table`, `.activity-list`, `.core-panel`, `.core-scroll`, `.llm-status`, and `.llm-row` standardise panel structure while preserving existing Alpine state and DOM IDs.
+- `.panel`, `.panel-header`, `.panel-body`, `.responsive-table`, `.trade-table`, `.activity-list`, `.core-panel`, `.core-scroll`, `.llm-status`, and `.llm-row` standardise panel structure while preserving existing Alpine state and DOM IDs.
 - `.chart-pane` and `.equity-chart-shell` use `clamp()` so widescreen users get larger charts while mobile users avoid horizontal page scroll.
 
 Breakpoint coverage used for layout verification:
@@ -36,7 +36,7 @@ Breakpoint coverage used for layout verification:
 | Viewport | Expected layout |
 |---|---|
 | `390x844` | Single-column dashboard, wrapped header, no page-level horizontal scroll |
-| `768x1024` | Vertical block stack, wrapped header, panels remain touch-friendly |
+| `768x1024` | Markets, P&L Summary, and Signals remain equal thirds; other major panels stack full-width |
 | `1366x768` | Full-width vertical panels with in-panel table scrolling |
 | `1920x1080` | Main content uses the monitor width; blocks remain stacked vertically |
 | `2560x1440` | Dashboard still uses the available width, with readable gutters and full-width blocks |
@@ -100,7 +100,7 @@ function dashboard() {
 
 ## Service Worker Caching
 
-`/sw.js` uses a versioned cache (`trading-bot-v0.5.8`) and claims open tabs as soon as the new worker activates. Navigation and other `text/html` requests are network-first, so the dashboard shell does not keep running stale inline scripts after frontend fixes. API dashboard endpoints remain network-first with client broadcasts, while non-HTML static assets use stale-while-revalidate.
+`/sw.js` uses a versioned cache (`trading-bot-v0.5.14`) and claims open tabs as soon as the new worker activates. Navigation and other `text/html` requests are network-first, so the dashboard shell does not keep running stale inline scripts after frontend fixes. API dashboard endpoints remain network-first with client broadcasts, while non-HTML static assets use stale-while-revalidate.
 
 ---
 
@@ -228,24 +228,38 @@ Notification format:
 
 ### Positions Panel (`renderPositions`)
 
-One row per open position. Shows:
-- Market + direction
-- Size (units held)
-- Average entry price
-- Unrealised P&L (green if positive, red if negative)
-- A "✕ Close" button per row — calls `closePosition(position_id_full)` which confirms with the user then POSTs to `POST /api/positions/{position_id_full}/close`, and refreshes the dashboard, ledger, and closed trades panels on success.
+Full-width table with one single-line row per open position. Shows:
+
+| Column | Content |
+|--------|---------|
+| Date Time | Position open timestamp from `opened_at`, falling back to the matching ledger open trade timestamp |
+| Opened | Elapsed time since open |
+| Market | Trading pair |
+| Direction | ▲ Long (green) / ▼ Short (red) |
+| Size | Units held |
+| Avg Price | Average entry price |
+| Value | `size × avg_price` |
+| Unrealised P&L | Current mark-to-market P&L, coloured green/red |
+| Strategy | Human-readable strategy label from the position payload or matching opening ledger row |
+| Source | Opening source from the position payload or matching opening ledger row |
+| Status | Static **open** badge |
+| Pos ID | First 8 chars of position UUID |
+| Signal | `📊 Signal` button when linked |
+| Action | `✕ Close` button — calls `closePosition(position_id_full)` which confirms with the user then POSTs to `POST /api/positions/{position_id_full}/close`, and refreshes the dashboard, ledger, and closed trades panels on success |
 
 Also renders the "Reset Positions" button if `environment === 'paper'`. This button calls `resetPositions()` which POSTs to `/api/positions/reset`.
+
+The panel uses the same market and direction filter chip controls as Closed Positions. Rows use subtle alternate contrast through the shared `.trade-table` styling.
 
 ---
 
 ### Trade Ledger (`renderLedger`)
 
-Fetches `/api/trades` (200 most recent filled order records) and renders a table with columns:
+Fetches `/api/trades` (200 most recent filled order records) and renders a table with columns. Rows use subtle alternate contrast through the shared `.trade-table` styling:
 
 | Column | Content |
 |--------|---------|
-| Time | UTC time of order fill |
+| Date Time | UTC date and time of order fill |
 | Market | Trading pair |
 | Strategy | Human-readable strategy label derived from the row's `strategy` ID |
 | Action | **Buy** when the asset was purchased (long); **Sell** when it was sold (short). An inline badge shows **Open** (green) or **Close** (orange) based on `trade_type` — independent of direction. |
@@ -253,6 +267,8 @@ Fetches `/api/trades` (200 most recent filled order records) and renders a table
 | Size | Units |
 | Price | Fill price |
 | Value | `size × price` |
+| P&L | Realised close-order P&L and percentage, or `--` |
+| Strategy | Repeated human-readable strategy label for scan alignment with the source/status group |
 | Source | `auto` / `manual` / `stop-loss` coloured label |
 | Status | `filled` (green) or rejection reason (red) |
 | Pos ID | First 8 chars of position UUID — same value on paired open and close rows |
@@ -264,12 +280,12 @@ Fetches `/api/trades` (200 most recent filled order records) and renders a table
 
 ### Closed Positions Panel (`renderClosedTrades`)
 
-Fetches `/api/closed-trades` (200 most recent signal outcomes) and renders a table with columns:
+Fetches `/api/closed-trades` (200 most recent signal outcomes) and renders a table with columns. Rows use subtle alternate contrast through the shared `.trade-table` styling:
 
 | Column | Content |
 |--------|---------|
-| Time Closed | Exit timestamp (`exit_at`) |
-| Time Opened | Entry timestamp (`entry_at`) |
+| Date Time Closed | Exit timestamp (`exit_at`) |
+| Date Time Opened | Entry timestamp (`entry_at`) |
 | Duration | Time between open and close, formatted as `Xd Yh`, `Xh Ym`, `Xm Ys`, or `Xs` |
 | Market | Trading pair |
 | Direction | ▲ Long (green) / ▼ Short (red) |
@@ -277,6 +293,7 @@ Fetches `/api/closed-trades` (200 most recent signal outcomes) and renders a tab
 | Price | Entry price (avg price at open) |
 | Value | `size × entry_price` (position value at open) |
 | P&L | Absolute P&L (£) and percentage return combined in one cell, coloured green/red |
+| Strategy | Human-readable strategy label derived from the row's `strategy` ID |
 | Source | Humanised exit reason: `Stop Loss` / `Auto` / `Manual` / `Reset` / `Rejected` |
 | Status | Static **Closed** badge |
 | Pos ID | First 8 chars of position UUID |
@@ -289,19 +306,21 @@ Both signal buttons are `sig-btn` elements handled by the global click delegate 
 
 ### Rejected Trades Register
 
-Fetches `/api/rejected-trades` (100 most recent execution-level rejections) and renders a collapsed-by-default table separate from the trade ledger. Rows show:
+Fetches `/api/rejected-trades` (100 most recent execution-level rejections) and renders a collapsed-by-default zebra-striped table separate from the trade ledger. Rows show:
 
 | Column | Content |
 |--------|---------|
-| Time | Rejection timestamp |
+| Date Time | Rejection timestamp |
 | Market | Trading pair |
-| Strategy | Human-readable strategy label derived from the row's `strategy` ID |
 | Direction | Long/short pill |
 | Size | Requested base asset quantity |
-| Confidence | Signal confidence percentage, or `--` if unavailable |
 | Price | Price used when execution was attempted |
 | Value | `size x price` |
+| Strategy | Human-readable strategy label derived from the row's `strategy` ID |
+| Source | Rejection source, defaulting to `system` when the API has no source |
+| Status | Static **Rejected** badge |
 | Reason | Rejection reason with underscores shown as spaces |
+| Confidence | Signal confidence percentage, or `--` if unavailable |
 | Signal | Detail button linked by `trade_idea_id`, if present |
 
 This panel is for intents that never became trades, such as paper insufficient-funds blocks or Kraken submission errors. The main trade ledger remains limited to filled paper orders and accepted live orders.
@@ -470,9 +489,11 @@ All dashboard areas are stacked vertically in document order. The shell uses the
 | Market Briefing | Full-width block |
 | Mode Banner | Full-width block |
 | Equity Graph | Full-width block |
-| Markets, Signals, Open Positions, Closed Positions | Responsive equal-height `.core-grid` panels with internal scrolling |
+| Markets, P&L Summary, Signals | Responsive equal-height `.core-grid` panels with internal scrolling |
+| Open Positions | Full-width table panel |
+| Closed Positions | Full-width table panel |
 | Pending Approvals | Full-width block |
-| Trade Ledger, P&L Summary, Risk Rejections | Full-width blocks |
+| Trade Ledger, Risk Rejections | Full-width blocks |
 | Price Charts | Full-width block; only the 5-minute and 15-minute panes may sit side by side |
 | News Feed | Full-width panel containing a responsive article-card grid |
 | Local LLM, Bot Activity | Full-width blocks; Local LLM fields render as separate `.llm-row` lines |
