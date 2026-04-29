@@ -128,6 +128,11 @@ class TransformersClient:
         self._pipeline = None  # Loaded on first probe
 
     @property
+    def is_configured(self) -> bool:
+        """Return True when a model ID has been set."""
+        return bool(self.model)
+
+    @property
     def circuit_state(self) -> str:
         """Return the circuit breaker state: closed, open, or half_open."""
         return self._circuit_state
@@ -146,8 +151,8 @@ class TransformersClient:
 
     @property
     def llm_model(self) -> str:
-        """Return the model name this client is configured to use."""
-        return self.model
+        """Return the model name with a Local suffix for dashboard display."""
+        return f"{self.model} (Local)" if self.model else ""
 
     async def probe(self) -> bool:
         """Load the model if not already loaded."""
@@ -207,8 +212,16 @@ class TransformersClient:
 
         raw_output = ""
         try:
-            # Generate in a thread to keep async
-            outputs = await asyncio.to_thread(self._pipeline, prompt, max_length=512, num_return_sequences=1)
+            # max_new_tokens limits generated tokens only (not input length).
+            # return_full_text=False returns only the model's new output so JSON
+            # extraction never matches { characters embedded in the prompt itself.
+            outputs = await asyncio.to_thread(
+                self._pipeline,
+                prompt,
+                max_new_tokens=512,
+                num_return_sequences=1,
+                return_full_text=False,
+            )
             raw_output = outputs[0]["generated_text"].strip()
             self._mark_success()
             if expect_json:
@@ -252,3 +265,16 @@ class TransformersClient:
         self._last_failure = self._clock()
         self._next_retry_at = self._last_failure + self._retry_delay
         self._circuit_state = "open"
+
+    def unload(self) -> None:
+        """Release the in-process model pipeline to free GPU/CPU memory.
+
+        Resets the circuit to closed so the next probe() call reloads the model
+        when it is needed again (e.g. OpenAI becomes unavailable).
+        """
+        if self._pipeline is not None:
+            del self._pipeline
+            self._pipeline = None
+            self.available = False
+            self._circuit_state = "closed"
+            logger.info(f"Transformers model unloaded — model: {self.model}")

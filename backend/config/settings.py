@@ -18,8 +18,6 @@ class BotSettings(BaseSettings):
     )
 
     # App settings
-    app_name: str = Field(default="Kraken Trading Bot", validation_alias="APP_NAME")
-    version: str = Field(default="0.5.3", validation_alias="VERSION")
     debug: bool = Field(default=False, validation_alias="DEBUG")
 
     # Server settings
@@ -63,9 +61,19 @@ class BotSettings(BaseSettings):
     kraken_api_key: Optional[str] = Field(default=None, validation_alias="KRAKEN_API_KEY")
     kraken_api_secret: Optional[str] = Field(default=None, validation_alias="KRAKEN_API_SECRET")
 
-    # News sources
+    # News sources — each entry is 'Name::URL' for an RSS feed.
     news_sources: List[str] = Field(
-        default_factory=lambda: ["CoinDesk", "CoinNews", "CoinWeek"],
+        default_factory=lambda: [
+            "CoinDesk::https://www.coindesk.com/arc/outboundfeeds/rss/",
+            "CoinTelegraph::https://cointelegraph.com/rss",
+            "The Block::https://www.theblock.co/rss.xml",
+            "Decrypt::https://decrypt.co/feed",
+            "Bitcoin Magazine::https://bitcoinmagazine.com/.rss/full/",
+            "CryptoSlate::https://cryptoslate.com/feed/",
+            "The Defiant::https://thedefiant.io/feed/",
+            "CryptoPotato::https://cryptopotato.com/feed/",
+            "NewsBTC::https://www.newsbtc.com/feed/",
+        ],
         validation_alias="NEWS_SOURCES",
     )
 
@@ -78,6 +86,12 @@ class BotSettings(BaseSettings):
         default="coinmarketcap", validation_alias="DYNAMIC_UNIVERSE_SOURCE"
     )
     max_eth_ecosystem_coins: int = Field(default=10, validation_alias="MAX_ETH_ECOSYSTEM_COINS")
+
+    # External LLM — OpenAI-compatible API (preferred over local Transformers when set)
+    openai_base_url: str = Field(default="", validation_alias="OPENAI_BASE_URL")
+    openai_api_key: str = Field(default="", validation_alias="OPENAI_API_KEY")
+    openai_model: str = Field(default="", validation_alias="OPENAI_MODEL")
+    openai_timeout: int = Field(default=30, validation_alias="OPENAI_TIMEOUT")
 
     # Local LLM — Transformers (HuggingFace model loaded in-process)
     transformers_llm_model: str = Field(default="", validation_alias="TRANSFORMERS_LLM_MODEL")

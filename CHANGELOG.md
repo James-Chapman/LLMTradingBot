@@ -7,6 +7,51 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.5.6] — 2026-04-29
+
+### Changed
+
+- **`NEWS_SOURCES` is now functional** — each entry must be a `"Name::URL"` string. `build_rss_adapters()` parses the list at startup and constructs `RSSAdapter` instances dynamically, replacing the hardcoded adapter list in `main.py`. Invalid entries are skipped with a warning.
+- **`FearGreedAdapter` remains hardcoded** — always appended to the adapter list; no `NEWS_SOURCES` entry needed.
+
+### Removed
+
+- All concrete `RSSAdapter` subclasses (`CoinDeskAdapter`, `CoinTelegraphAdapter`, `TheBlockAdapter`, `DecryptAdapter`, `BitcoinMagazineAdapter`, `CryptoSlateAdapter`, `TheDefiantAdapter`, `CryptoPotaroAdapter`, `NewsBTCAdapter`) — now expressed as default `NEWS_SOURCES` entries.
+- `CoinNewsAdapter` and `CoinWeekAdapter` legacy stubs that returned empty lists.
+
+### Added
+
+- `rss_adapter_from_spec(spec)` — parses a `"Name::URL"` string into an `RSSAdapter`, or returns `None` with a warning if malformed.
+- `build_rss_adapters(specs)` — builds the full RSS adapter list from `settings.news_sources`.
+- BDD tests in `tests/test_news_adapter_bdd.py` covering spec parsing, invalid inputs, and fetch delegation.
+
+---
+
+## [0.5.5] — 2026-04-29
+
+### Added
+
+- **`OpenAiClient`** (`backend/llm/openai_client.py`) — connects to any OpenAI-compatible chat-completions endpoint (OpenAI, LM Studio, llama.cpp, Ollama OpenAI compat, etc.). Includes a circuit breaker with exponential backoff, a `probe()` method, and JSON response parsing with markdown-fence stripping.
+- **`SwitchingLLMClient`** (`backend/llm/switching_client.py`) — routes LLM calls to `OpenAiClient` when available, falls back to `TransformersClient` automatically. On startup, if OpenAI is reachable the local pipeline is unloaded to free memory; `recheck_primary()` detects availability changes each news cycle.
+- **Settings** — added `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_TIMEOUT` to `BotSettings`.
+- **`main.py`** — wired `OpenAiClient` + `SwitchingLLMClient` as the active LLM client.
+- **BDD tests** — `tests/test_openai_client_bdd.py` and `tests/test_switching_client_bdd.py` covering circuit breaker, probe, chat delegation, fallback, and backend switching.
+
+---
+
+## [0.5.4] — 2026-04-29
+
+### Fixed
+
+- **LLM briefing never generated / "Waiting for first news fetch…" stuck** — `TransformersClient.chat()` was passing `max_length=512` to the pipeline, which caps *total* tokens including the input prompt. Long briefing prompts left no room for the model to generate JSON, so `chat()` returned `None` and `latest_briefing` was never set.
+- **Signal LLM assessment always "LLM unavailable"** — same root cause: when the pipeline returned empty or truncated output, JSON parsing failed silently (JSON errors don't trip the circuit breaker), so `analyse_signal()` always fell back to `_neutral()` with `llm_used=False`.
+
+### Changed
+
+- **`TransformersClient.chat()`** now passes `max_new_tokens=512` (limits only *generated* tokens, not total) and `return_full_text=False` (returns only the model's new output, not prompt + output). This ensures sufficient generation budget for any prompt length and removes false `{` matches from the prompt text during JSON extraction.
+
+---
+
 ## [0.5.3] — 2026-04-28
 
 ### Changed

@@ -19,7 +19,7 @@
         <div class="app-shell dashboard-shell header-bar">
             <div class="header-brand">
                 <span class="brand-title">⚡ LLM Trading Bot</span>
-                <span class="version-label">v0.5.3</span>
+                <span class="version-label" x-text="appVersion ? 'v' + appVersion : ''">v0.5.5</span>
                 <!-- Emergency stop banner -->
                 <span x-show="emergencyStop" class="pill pill-red"
                     style="font-size:12px;font-weight:700;letter-spacing:.04em;">■ EMERGENCY STOP</span>
@@ -834,7 +834,12 @@
                         <div class="llm-row llm-heading">
                             <span class="llm-dot"
                                 :style="llmStatus==='available' ? 'background:var(--green);box-shadow:0 0 6px var(--green);' : llmStatus==='unavailable' ? 'background:var(--gold);box-shadow:0 0 6px var(--gold);' : 'background:var(--muted);'"></span>
-                            <span class="label">Local LLM</span>
+                            <span class="label">LLM</span>
+                        </div>
+                        <div class="llm-row">
+                            <span class="llm-key">Backend</span>
+                            <span style="font-size:12px;color:var(--muted);"
+                                x-text="llmBackend === 'openai' ? 'OpenAI' : llmBackend === 'transformers' ? 'Local' : 'None'"></span>
                         </div>
                         <div class="llm-row">
                             <span class="llm-key">Model</span>
@@ -1043,9 +1048,11 @@
                 riskRejections: [],
                 rejectedTrades: [],
                 activityLog: [],
+                appVersion: '',
                 llmAvailable: false,
                 llmStatus: 'not_configured',
                 llmModel: '',
+                llmBackend: 'none',
                 llmReflection: null,
                 llmBriefing: null,
                 signalModal: null,
@@ -1221,9 +1228,11 @@
                     this.activeStrategyLabel = selectedStrategy?.label || this._strategyLabel(this.activeStrategyId);
                     this.riskRejections = d.risk_rejections || [];
                     this.activityLog = d.activity || [];
+                    if (d.version) this.appVersion = d.version;
                     this.llmAvailable = d.llm?.available ?? false;
                     this.llmStatus = d.llm?.status ?? (this.llmAvailable ? 'available' : 'not_configured');
                     this.llmModel = d.llm?.model ?? '';
+                    this.llmBackend = d.llm?.backend ?? 'none';
                     this.llmReflection = d.llm?.reflection ?? null;
                     this.llmBriefing = d.llm?.briefing ?? null;
                     this.renderMarkets(d.markets || [], d.control?.disabled_markets || []);

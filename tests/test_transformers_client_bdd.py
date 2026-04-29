@@ -121,6 +121,26 @@ class TransformersClientAsyncBDDTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(client.can_attempt)
         self.assertEqual(client.circuit_state, "closed")
 
+    # GIVEN a long system prompt WHEN chat runs THEN the pipeline is called with
+    # max_new_tokens (not max_length) and return_full_text=False so generation
+    # is not truncated by input length and JSON is not confused with prompt text.
+    async def test_given_long_prompt_when_chat_runs_then_pipeline_uses_max_new_tokens_and_no_full_text(self) -> None:
+        clock = FakeClock()
+        client = TransformersClient(_TRANSFORMERS_LLM_MODEL, clock=clock.utcnow)
+        client._mark_success()
+
+        mock_pipeline = MagicMock()
+        mock_pipeline.return_value = [{"generated_text": '{"sentiment": 0.5, "confidence_scale": 1.2, "reasoning": "strong uptrend"}'}]
+        client._pipeline = mock_pipeline
+
+        long_system = "You are an analyst. " * 100  # simulate a long prompt
+        await client.chat([{"role": "system", "content": long_system}, {"role": "user", "content": "Analyse"}], expect_json=True)
+
+        _, call_kwargs = mock_pipeline.call_args
+        self.assertIn("max_new_tokens", call_kwargs, "must use max_new_tokens, not max_length")
+        self.assertNotIn("max_length", call_kwargs, "max_length must not be passed")
+        self.assertEqual(call_kwargs.get("return_full_text"), False)
+
 
 if __name__ == "__main__":
     unittest.main()

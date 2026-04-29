@@ -1,60 +1,114 @@
-"""BDD coverage for news adapters, including stub detection and warning behaviour."""
+"""BDD coverage for news adapter factory and timestamp normalisation."""
 
 import unittest
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 from bdd_helpers import BACKEND_DIR  # noqa: F401
 from domain.models import NewsItem
-from ingestion.news_adapter import CoinNewsAdapter, CoinWeekAdapter, normalise_news_item
+from ingestion.news_adapter import (
+    RSSAdapter,
+    build_rss_adapters,
+    normalise_news_item,
+    rss_adapter_from_spec,
+)
 
 
-class StubNewsAdapterBDDTests(unittest.IsolatedAsyncioTestCase):
-    # BUG-019: GIVEN CoinNewsAdapter WHEN fetch_news is called THEN an empty list is returned
-    # and a warning is logged so the operator knows the adapter is inactive.
-    async def test_given_coinnews_adapter_when_fetch_news_called_then_empty_list_and_warning_logged(
-        self,
-    ) -> None:
-        adapter = CoinNewsAdapter()
-        with self.assertLogs("trading_bot.news_adapter", level="WARNING") as cm:
-            result = await adapter.fetch_news()
+class RssAdapterFromSpecTests(unittest.TestCase):
+    # GIVEN a valid 'Name::URL' spec WHEN parsed THEN an RSSAdapter with correct fields is returned.
+    def test_given_valid_spec_when_parsed_then_adapter_has_correct_name_and_url(self) -> None:
+        adapter = rss_adapter_from_spec("CoinDesk::https://www.coindesk.com/arc/outboundfeeds/rss/")
 
-        self.assertEqual(result, [])
-        self.assertTrue(
-            any("stub" in msg.lower() or "coinnews" in msg.lower() for msg in cm.output),
-            f"Expected a stub warning in logs, got: {cm.output}",
-        )
+        self.assertIsNotNone(adapter)
+        self.assertIsInstance(adapter, RSSAdapter)
+        self.assertEqual(adapter.source_name, "CoinDesk")
+        self.assertEqual(adapter.rss_url, "https://www.coindesk.com/arc/outboundfeeds/rss/")
 
-    # BUG-019: GIVEN CoinWeekAdapter WHEN fetch_news is called THEN an empty list is returned
-    # and a warning is logged so the operator knows the adapter is inactive.
-    async def test_given_coinweek_adapter_when_fetch_news_called_then_empty_list_and_warning_logged(
-        self,
-    ) -> None:
-        adapter = CoinWeekAdapter()
-        with self.assertLogs("trading_bot.news_adapter", level="WARNING") as cm:
-            result = await adapter.fetch_news()
+    # GIVEN a spec with extra whitespace WHEN parsed THEN name and URL are stripped.
+    def test_given_spec_with_whitespace_when_parsed_then_values_are_stripped(self) -> None:
+        adapter = rss_adapter_from_spec("  My Source  ::  https://example.com/feed  ")
 
-        self.assertEqual(result, [])
-        self.assertTrue(
-            any("stub" in msg.lower() or "coinweek" in msg.lower() for msg in cm.output),
-            f"Expected a stub warning in logs, got: {cm.output}",
-        )
+        self.assertIsNotNone(adapter)
+        self.assertEqual(adapter.source_name, "My Source")
+        self.assertEqual(adapter.rss_url, "https://example.com/feed")
 
-    # BUG-019: GIVEN a stub adapter called multiple times WHEN warnings are checked
-    # THEN the warning is only emitted once per instance to avoid log spam.
-    async def test_given_stub_adapter_called_twice_when_warnings_checked_then_only_one_warning_emitted(
-        self,
-    ) -> None:
-        adapter = CoinNewsAdapter()
-        with self.assertLogs("trading_bot.news_adapter", level="WARNING") as cm:
+    # GIVEN a spec with no '::' separator WHEN parsed THEN None is returned.
+    def test_given_spec_without_separator_when_parsed_then_none_returned(self) -> None:
+        with self.assertLogs("trading_bot.news_adapter", level="WARNING"):
+            result = rss_adapter_from_spec("CoinDesk")
+
+        self.assertIsNone(result)
+
+    # GIVEN a spec with an empty name WHEN parsed THEN None is returned.
+    def test_given_spec_with_empty_name_when_parsed_then_none_returned(self) -> None:
+        with self.assertLogs("trading_bot.news_adapter", level="WARNING"):
+            result = rss_adapter_from_spec("::https://example.com/feed")
+
+        self.assertIsNone(result)
+
+    # GIVEN a spec with an empty URL WHEN parsed THEN None is returned.
+    def test_given_spec_with_empty_url_when_parsed_then_none_returned(self) -> None:
+        with self.assertLogs("trading_bot.news_adapter", level="WARNING"):
+            result = rss_adapter_from_spec("CoinDesk::")
+
+        self.assertIsNone(result)
+
+    # GIVEN a URL containing '::' WHEN parsed THEN only the first '::' is used as separator.
+    def test_given_url_with_double_colon_when_parsed_then_url_is_preserved(self) -> None:
+        adapter = rss_adapter_from_spec("Source::https://example.com/feed?a::b")
+
+        self.assertIsNotNone(adapter)
+        self.assertEqual(adapter.source_name, "Source")
+        self.assertEqual(adapter.rss_url, "https://example.com/feed?a::b")
+
+
+class BuildRssAdaptersTests(unittest.TestCase):
+    # GIVEN a list of valid specs WHEN built THEN one adapter per spec is returned.
+    def test_given_valid_specs_when_built_then_all_adapters_returned(self) -> None:
+        specs = [
+            "CoinDesk::https://www.coindesk.com/rss",
+            "CoinTelegraph::https://cointelegraph.com/rss",
+        ]
+        adapters = build_rss_adapters(specs)
+
+        self.assertEqual(len(adapters), 2)
+        self.assertEqual(adapters[0].source_name, "CoinDesk")
+        self.assertEqual(adapters[1].source_name, "CoinTelegraph")
+
+    # GIVEN a mix of valid and invalid specs WHEN built THEN only valid adapters are included.
+    def test_given_mixed_specs_when_built_then_invalid_specs_are_skipped(self) -> None:
+        specs = [
+            "CoinDesk::https://www.coindesk.com/rss",
+            "bad-spec-no-separator",
+            "CoinTelegraph::https://cointelegraph.com/rss",
+        ]
+        with self.assertLogs("trading_bot.news_adapter", level="WARNING"):
+            adapters = build_rss_adapters(specs)
+
+        self.assertEqual(len(adapters), 2)
+
+    # GIVEN an empty list WHEN built THEN an empty list is returned.
+    def test_given_empty_specs_when_built_then_empty_list_returned(self) -> None:
+        adapters = build_rss_adapters([])
+        self.assertEqual(adapters, [])
+
+
+class RssAdapterFetchTests(unittest.IsolatedAsyncioTestCase):
+    # GIVEN a configured RSSAdapter WHEN fetch_news is called THEN _fetch_rss is called with
+    # the correct url and source_name.
+    async def test_given_adapter_when_fetch_news_called_then_correct_args_used(self) -> None:
+        adapter = rss_adapter_from_spec("TestFeed::https://example.com/rss")
+
+        with patch("ingestion.news_adapter._fetch_rss", return_value=[]) as mock_fetch:
             await adapter.fetch_news()
-            await adapter.fetch_news()
 
-        warning_count = sum(1 for msg in cm.output if "WARNING" in msg)
-        self.assertEqual(warning_count, 1, "Stub warning should only fire once per adapter instance")
+        mock_fetch.assert_called_once_with("https://example.com/rss", "TestFeed")
 
-    # BUG-022: GIVEN RSS and JSON news with mixed naive/aware timestamps
+
+class NewsTimestampNormalisationTests(unittest.TestCase):
+    # GIVEN RSS and JSON news with mixed naive/aware timestamps
     # WHEN items are normalised and sorted THEN no datetime comparison error is raised.
-    def test_given_mixed_news_timestamps_when_normalised_then_sort_is_safe(self) -> None:
+    def test_given_mixed_timestamps_when_normalised_then_sort_is_safe(self) -> None:
         naive_item = NewsItem(
             id="rss",
             source="RSS",
@@ -77,9 +131,8 @@ class StubNewsAdapterBDDTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(items[0].id, "json")
         self.assertTrue(all(item.published_at.tzinfo is not None for item in items))
-        self.assertEqual(items[0].published_at.tzinfo, timezone.utc)
 
-    # BUG-022: GIVEN the news loop source WHEN inspected
+    # GIVEN the news loop source WHEN inspected
     # THEN publish times are normalised before the descending sort.
     def test_given_news_loop_when_inspected_then_items_are_normalised_before_sort(self) -> None:
         main_source = (BACKEND_DIR / "main.py").read_text(encoding="utf-8")

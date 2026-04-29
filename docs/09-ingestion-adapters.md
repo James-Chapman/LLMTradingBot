@@ -139,13 +139,38 @@ At two active markets, the OHLC loop sends two requests per 120-second cycle. Co
 
 ## News Feed Adapters (`backend/ingestion/news_adapter.py`)
 
+### Configurable RSS Sources
+
+RSS sources are configured via `NEWS_SOURCES` in `.env` as a JSON array of `"Name::URL"` strings:
+
+```
+NEWS_SOURCES=["CoinDesk::https://www.coindesk.com/arc/outboundfeeds/rss/","My Feed::https://example.com/rss"]
+```
+
+At startup, `build_rss_adapters(settings.news_sources)` parses each entry into an `RSSAdapter` instance. Invalid entries (missing `::`, empty name, or empty URL) are skipped with a warning log. The `FearGreedAdapter` is always appended automatically — it does not need a `NEWS_SOURCES` entry.
+
+To add a new RSS source at runtime, update `NEWS_SOURCES` in `.env` and restart the bot.
+
+---
+
+### `rss_adapter_from_spec(spec)` / `build_rss_adapters(specs)`
+
+```python
+def rss_adapter_from_spec(spec: str) -> Optional[RSSAdapter]
+def build_rss_adapters(specs: List[str]) -> List[RSSAdapter]
+```
+
+`rss_adapter_from_spec` splits on the first `::`, strips whitespace, and returns an `RSSAdapter` or `None` (with a warning) if the spec is malformed. `build_rss_adapters` calls the former for each entry and returns only the valid adapters.
+
+---
+
 ### Threading Model
 
-RSS feed parsing is synchronous (blocking HTTP + XML). All adapter `fetch_news()` methods use:
+RSS feed parsing is synchronous (blocking HTTP + XML). All `RSSAdapter.fetch_news()` calls use:
 
 ```python
 loop = asyncio.get_running_loop()
-items = await loop.run_in_executor(None, self._fetch_rss, url, source_name)
+items = await loop.run_in_executor(None, _fetch_rss, self.rss_url, self.source_name)
 ```
 
 This delegates the blocking call to the default `ThreadPoolExecutor`, preventing it from stalling the asyncio event loop during the 300-second news loop.
@@ -162,12 +187,12 @@ def _fetch_rss(
 ) -> List[NewsItem]
 ```
 
-Fetches and parses an RSS/Atom feed using Python's standard library `urllib.request` and `xml.etree.ElementTree`. No third-party HTTP or feed-parsing libraries are used.
+Fetches and parses an RSS feed using Python's standard library `urllib.request` and `xml.etree.ElementTree`. No third-party HTTP or feed-parsing libraries are used.
 
 **Parse logic:**
-1. Download feed XML with a 10-second timeout.
-2. Find all `<item>` (RSS) or `<entry>` (Atom) elements.
-3. For each item, extract: `title`, `link`, `description` (used as `content`), `pubDate` / `published`.
+1. Download feed XML with a 15-second timeout.
+2. Find all `<item>` elements.
+3. For each item, extract: `title`, `link`, `description` (used as `content`), `pubDate`.
 4. Generate a stable article ID: `sha256(title + url)[:16]` — consistent across restarts, no duplicates.
 5. Parse `pubDate` and normalise it to timezone-aware UTC before returning a `NewsItem`.
 6. Return up to `max_items` most recent items.
@@ -178,49 +203,12 @@ Fetches and parses an RSS/Atom feed using Python's standard library `urllib.requ
 @dataclass
 class NewsItem:
     id:           str       # sha256(title+url)[:16]
-    source:       str       # "CoinDesk" or "CoinTelegraph"
+    source:       str       # value of Name from the spec
     title:        str
-    content:      str       # RSS description field (full HTML body)
+    content:      str       # RSS description field
     published_at: datetime  # timezone-aware UTC
     url:          str
 ```
-
----
-
-### `CoinDeskAdapter`
-
-```python
-class CoinDeskAdapter:
-    RSS_URL = "https://www.coindesk.com/arc/outboundfeeds/rss/"
-    
-    async def fetch_news(self) -> List[NewsItem]
-```
-
-Fetches from CoinDesk's official RSS feed. Returns up to 20 most recent articles.
-
----
-
-### `CoinTelegraphAdapter`
-
-```python
-class CoinTelegraphAdapter:
-    RSS_URL = "https://cointelegraph.com/rss"
-    
-    async def fetch_news(self) -> List[NewsItem]
-```
-
-Fetches from CoinTelegraph's official RSS feed. Returns up to 20 most recent articles.
-
----
-
-### Stub Adapters (Phase 0)
-
-Two additional adapters are defined but currently return empty lists. They serve as extension points for future ingestion sources:
-
-- `CoinNewsAdapter` — ingestion method TBD
-- `CoinWeekAdapter` — ingestion method TBD
-
-To add a new source, implement `async def fetch_news(self) -> List[NewsItem]` and add the instance to the `_news_loop` fetch sequence in `main.py`.
 
 ---
 
@@ -266,8 +254,7 @@ The news loop fires `_market_briefing_task()` as an independent `asyncio.create_
 
 ```
 _news_loop tick:
-    ├── fetch CoinDesk
-    ├── fetch CoinTelegraph
+    ├── fetch each adapter in news_adapters (RSS sources + FearGreedAdapter)
     ├── upsert to DB
     ├── rebuild _latest_news cache
     ├── compute new_ids = current_ids - _briefed_news_ids

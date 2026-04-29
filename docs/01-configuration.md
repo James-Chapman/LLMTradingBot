@@ -22,10 +22,10 @@ A singleton instance `settings` is created at module level and imported everywhe
 
 ### Application
 
+`APP_NAME` and `APP_VERSION` are hard-coded constants in `backend/main.py` and are not configurable via `.env`. To change the app name or version, edit those constants directly.
+
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `APP_NAME` | str | `"Kraken Trading Bot"` | Application name (cosmetic) |
-| `VERSION` | str | `"0.1.0"` | Version string |
 | `DEBUG` | bool | `False` | Enables Uvicorn hot-reload and verbose output |
 
 ### Server
@@ -80,7 +80,7 @@ In paper mode these fields are ignored. The Kraken adapter is used for read-only
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `NEWS_SOURCES` | list[str] | `["CoinDesk", "CoinNews", "CoinWeek"]` | News/RSS source names to ingest. Use JSON array syntax in `.env` files. |
+| `NEWS_SOURCES` | list[str] | 9 built-in feeds | RSS sources to ingest. Each entry must be `"Name::URL"`. Use JSON array syntax in `.env`. `FearGreedAdapter` is always included and does not need a `NEWS_SOURCES` entry. |
 
 ### Market Universe
 

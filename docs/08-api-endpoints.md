@@ -24,7 +24,7 @@ Returns a basic liveness check. Does not probe Ollama or Kraken connectivity.
 ```json
 {
     "status": "ok",
-    "version": "0.1.0"
+    "version": "0.5.5"
 }
 ```
 

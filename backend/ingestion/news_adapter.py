@@ -1,12 +1,16 @@
 """
 News ingestion adapters.
 
-RSS-based adapters share a common _fetch_rss() helper.
-FearGreedAdapter polls the Alternative.me JSON API (updates once per day).
+RSS sources are configured via NEWS_SOURCES in settings as a JSON array of
+'Name::URL' strings. rss_adapter_from_spec() parses each entry and
+build_rss_adapters() constructs the full list at startup.
+
+FearGreedAdapter polls the Alternative.me JSON API (updates once per day) and
+is always included — it cannot be expressed as a plain RSS URL.
 
 All network calls run in a thread pool to avoid blocking the asyncio event loop.
-Article IDs are derived from sha256(title + url) so they are stable across restarts
-and the _briefed_news_ids deduplication set works correctly.
+Article IDs are derived from sha256(title + url) so they are stable across
+restarts and the _briefed_news_ids deduplication set works correctly.
 """
 
 import asyncio
@@ -116,90 +120,39 @@ class NewsAdapter:
 
 
 class RSSAdapter(NewsAdapter):
-    """Generic RSS adapter — subclass and set RSS_URL."""
+    """Generic RSS adapter. Constructed via rss_adapter_from_spec()."""
 
-    RSS_URL: str = ""
+    def __init__(self, source_name: str, rss_url: str):
+        super().__init__(source_name)
+        self.rss_url = rss_url
 
     async def fetch_news(self) -> List[NewsItem]:
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, _fetch_rss, self.RSS_URL, self.source_name)
+        return await loop.run_in_executor(None, _fetch_rss, self.rss_url, self.source_name)
 
 
-class CoinDeskAdapter(RSSAdapter):
-    RSS_URL = "https://www.coindesk.com/arc/outboundfeeds/rss/"
-
-    def __init__(self):
-        super().__init__("CoinDesk")
-
-
-class CoinTelegraphAdapter(RSSAdapter):
-    RSS_URL = "https://cointelegraph.com/rss"
-
-    def __init__(self):
-        super().__init__("CoinTelegraph")
-
-
-class TheBlockAdapter(RSSAdapter):
-    """The Block — institutional-grade crypto news, strong on exchange and regulatory stories."""
-
-    RSS_URL = "https://www.theblock.co/rss.xml"
-
-    def __init__(self):
-        super().__init__("The Block")
+def rss_adapter_from_spec(spec: str) -> Optional[RSSAdapter]:
+    """Parse a 'Name::URL' spec string into an RSSAdapter, or None if invalid."""
+    if "::" not in spec:
+        logger.warning(f"Invalid NEWS_SOURCES entry (expected 'Name::URL'): {spec!r}")
+        return None
+    name, url = spec.split("::", 1)
+    name = name.strip()
+    url = url.strip()
+    if not name or not url:
+        logger.warning(f"Invalid NEWS_SOURCES entry — name or URL is empty: {spec!r}")
+        return None
+    return RSSAdapter(name, url)
 
 
-class DecryptAdapter(RSSAdapter):
-    """Decrypt — accessible language, fast cadence, good DeFi coverage."""
-
-    RSS_URL = "https://decrypt.co/feed"
-
-    def __init__(self):
-        super().__init__("Decrypt")
-
-
-class BitcoinMagazineAdapter(RSSAdapter):
-    """Bitcoin Magazine — BTC-specific depth: halving cycles, ETF flows, miner economics."""
-
-    RSS_URL = "https://bitcoinmagazine.com/.rss/full/"
-
-    def __init__(self):
-        super().__init__("Bitcoin Magazine")
-
-
-class CryptoSlateAdapter(RSSAdapter):
-    """CryptoSlate — broad crypto coverage: altcoins, DeFi, exchange news."""
-
-    RSS_URL = "https://cryptoslate.com/feed/"
-
-    def __init__(self):
-        super().__init__("CryptoSlate")
-
-
-class TheDefiantAdapter(RSSAdapter):
-    """The Defiant — DeFi-focused reporting: protocols, yields, on-chain activity."""
-
-    RSS_URL = "https://thedefiant.io/feed/"
-
-    def __init__(self):
-        super().__init__("The Defiant")
-
-
-class CryptoPotaroAdapter(RSSAdapter):
-    """CryptoPotato — high-frequency crypto news and price analysis."""
-
-    RSS_URL = "https://cryptopotato.com/feed/"
-
-    def __init__(self):
-        super().__init__("CryptoPotato")
-
-
-class NewsBTCAdapter(RSSAdapter):
-    """NewsBTC — technical price analysis and breaking crypto news."""
-
-    RSS_URL = "https://www.newsbtc.com/feed/"
-
-    def __init__(self):
-        super().__init__("NewsBTC")
+def build_rss_adapters(specs: List[str]) -> List[RSSAdapter]:
+    """Build a list of RSSAdapters from a list of 'Name::URL' spec strings."""
+    adapters: List[RSSAdapter] = []
+    for spec in specs:
+        adapter = rss_adapter_from_spec(spec)
+        if adapter is not None:
+            adapters.append(adapter)
+    return adapters
 
 
 class FearGreedAdapter(NewsAdapter):
@@ -235,9 +188,8 @@ class FearGreedAdapter(NewsAdapter):
             return None
 
         value = int(data["value"])
-        label = data["value_classification"]  # e.g. "Extreme Fear", "Greed"
+        label = data["value_classification"]
 
-        # Only emit a new item when the value changes — it updates once per day
         if value == self._last_value:
             return None
         self._last_value = value
@@ -261,7 +213,6 @@ class FearGreedAdapter(NewsAdapter):
             f"This reading is updated daily and reflects a composite of volatility, "
             f"market momentum, social media activity, and BTC dominance."
         )
-        # ID is stable for today's value — refreshes if the score changes
         item_id = _stable_id(title, str(date.today()))
 
         logger.info(f"Fear & Greed updated: {label} ({value}/100)")
@@ -273,40 +224,3 @@ class FearGreedAdapter(NewsAdapter):
             published_at=datetime.now(timezone.utc),
             url=self.PAGE_URL,
         )
-
-
-# ── Legacy stubs (kept to avoid import breakage) ──────────────────────────────
-
-
-class CoinNewsAdapter(NewsAdapter):
-    """CoinNews stub — ingestion method TBD (Phase 0)."""
-
-    def __init__(self):
-        super().__init__("CoinNews")
-        self._stub_warned = False
-
-    async def fetch_news(self) -> List[NewsItem]:
-        if not self._stub_warned:
-            logger.warning(
-                "CoinNews adapter is a stub and returns no news. "
-                "Implement fetch_news() or remove this adapter from the news loop."
-            )
-            self._stub_warned = True
-        return []
-
-
-class CoinWeekAdapter(NewsAdapter):
-    """CoinWeek stub — ingestion method TBD (Phase 0)."""
-
-    def __init__(self):
-        super().__init__("CoinWeek")
-        self._stub_warned = False
-
-    async def fetch_news(self) -> List[NewsItem]:
-        if not self._stub_warned:
-            logger.warning(
-                "CoinWeek adapter is a stub and returns no news. "
-                "Implement fetch_news() or remove this adapter from the news loop."
-            )
-            self._stub_warned = True
-        return []

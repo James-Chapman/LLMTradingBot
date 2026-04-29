@@ -34,19 +34,13 @@ try:
     from execution.paper import PaperExecutionEngine
     from ingestion.kraken_adapter import KrakenMarketAdapter
     from ingestion.news_adapter import (
-        BitcoinMagazineAdapter,
-        CoinDeskAdapter,
-        CoinTelegraphAdapter,
-        CryptoPotaroAdapter,
-        CryptoSlateAdapter,
-        DecryptAdapter,
         FearGreedAdapter,
-        NewsBTCAdapter,
-        TheBlockAdapter,
-        TheDefiantAdapter,
+        build_rss_adapters,
         normalise_news_item,
     )
     from llm.analyser import LLMAnalyser, SignalAnalysis
+    from llm.openai_client import OpenAiClient
+    from llm.switching_client import SwitchingLLMClient
     from llm.transformers_client import TransformersClient
     from observability.activity import activity
     from observability.logging import get_logger, setup_logging
@@ -69,6 +63,9 @@ except ModuleNotFoundError as exc:
 BACKEND_DIR = Path(__file__).parent
 FRONTEND_DIR = BACKEND_DIR.parent / "frontend"
 
+APP_NAME = "Kraken Trading Bot"
+APP_VERSION = "0.5.6"
+
 setup_logging(settings.log_level, settings.log_file)
 logger = get_logger("main")
 CURRENCY_SYMBOL = currency_symbol(settings.base_currency)
@@ -77,7 +74,17 @@ init_database(settings.database_url)
 
 repo = Repository()
 learner = PerformanceLearner()
-_llm_client = TransformersClient(settings.transformers_llm_model, settings.transformers_timeout)
+_openai_client = OpenAiClient(
+    settings.openai_base_url,
+    settings.openai_api_key,
+    settings.openai_model,
+    settings.openai_timeout,
+)
+_transformers_client = TransformersClient(
+    settings.transformers_llm_model,
+    settings.transformers_timeout,
+)
+_llm_client = SwitchingLLMClient(_openai_client, _transformers_client)
 _analyser = LLMAnalyser(_llm_client)
 
 kraken_adapter = KrakenMarketAdapter(settings.kraken_api_key, settings.kraken_api_secret)
@@ -100,18 +107,7 @@ kraken_engine = KrakenExecutionEngine(
     repository=repo,
 )
 control = ControlState()
-news_adapters = [
-    CoinDeskAdapter(),
-    CoinTelegraphAdapter(),
-    TheBlockAdapter(),
-    DecryptAdapter(),
-    BitcoinMagazineAdapter(),
-    CryptoSlateAdapter(),
-    TheDefiantAdapter(),
-    CryptoPotaroAdapter(),
-    NewsBTCAdapter(),
-    FearGreedAdapter(),
-]
+news_adapters = build_rss_adapters(settings.news_sources) + [FearGreedAdapter()]
 
 
 def _reload_strategy_instances() -> List[str]:
@@ -236,7 +232,7 @@ def _record_trade_result(pnl: float) -> None:
 # Return a three-state LLM status string for the dashboard.
 def _llm_status() -> str:
     """Return 'not_configured', 'available', or 'unavailable'."""
-    if not settings.transformers_llm_model:
+    if not settings.openai_base_url and not settings.transformers_llm_model:
         return "not_configured"
     return "available" if _llm_client.available else "unavailable"
 
@@ -899,6 +895,10 @@ async def _news_loop() -> None:
                 f"News fetched - {len(_latest_news)} articles", ", ".join(sorted({i["source"] for i in _latest_news}))
             )
             logger.info("News feed updated", extra={"count": len(_latest_news)})
+
+            # Re-probe OpenAI on every news cycle to detect availability changes
+            # and switch backends accordingly (OpenAI preferred; Transformers freed when unused).
+            await _llm_client.recheck_primary()
         except Exception as e:
             logger.error("News loop error", extra={"error": str(e)}, exc_info=True)
             activity.error("News fetch failed", str(e))
@@ -980,12 +980,14 @@ async def _equity_ticker_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if not settings.transformers_llm_model:
-        logger.warning("LLM model not configured — set TRANSFORMERS_LLM_MODEL in .env")
+    if not settings.openai_base_url and not settings.transformers_llm_model:
+        logger.warning(
+            "No LLM configured — set OPENAI_BASE_URL or TRANSFORMERS_LLM_MODEL in .env"
+        )
 
     ok = await _llm_client.probe()
     if not ok:
-        logger.error("LLM probe failed — Transformers model unavailable")
+        logger.warning("Both LLM backends unavailable — LLM features disabled")
     asyncio.create_task(_strategy_loop())
     asyncio.create_task(_news_loop())
     asyncio.create_task(_ohlc_loop())
@@ -995,9 +997,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title=settings.app_name,
+    title=APP_NAME,
     description="News-aware trading bot for Kraken exchange",
-    version=settings.version,
+    version=APP_VERSION,
     lifespan=lifespan,
 )
 
@@ -1142,10 +1144,12 @@ async def get_dashboard(request: Request, response: Response):
             "strategies": strategy_states,
             "warmup_ticks_remaining": max(0, _TRADE_WARMUP_TICKS - _session_tick),
             "learning": learner.summary(),
+            "version": APP_VERSION,
             "llm": {
                 "available": _llm_client.available,
                 "status": _llm_status(),
                 "model": _llm_client.llm_model,
+                "backend": _llm_client.active_backend,
                 "reflection": {
                     "pattern": ref.pattern,
                     "suggestion": ref.suggestion,
@@ -1585,14 +1589,14 @@ async def get_news():
 async def health_check():
     return {
         "llm_available": _llm_client.available,
-        "llm_state": _llm_client.circuit_state,
+        "llm_backend": _llm_client.active_backend,
         "llm_model": _llm_client.llm_model,
     }
 
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "version": settings.version}
+    return {"status": "healthy", "version": APP_VERSION}
 
 
 def _approval_to_dict(req) -> Dict[str, Any]:
