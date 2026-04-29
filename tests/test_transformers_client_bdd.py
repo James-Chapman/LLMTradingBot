@@ -2,7 +2,7 @@
 
 import unittest
 from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 from bdd_helpers import BACKEND_DIR  # noqa: F401
 from llm.transformers_client import TransformersClient

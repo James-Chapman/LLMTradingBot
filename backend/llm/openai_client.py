@@ -7,58 +7,18 @@ Configure OPENAI_BASE_URL, OPENAI_API_KEY, and OPENAI_MODEL in .env.
 """
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any, Callable, Optional
 
 import httpx
 
+from llm.common import CircuitBreakerMixin, loads_model_json, messages_to_prompt, utc_now
 from observability.logging import get_logger
 
 logger = get_logger("openai_client")
 
-_INITIAL_RETRY_DELAY = timedelta(seconds=30)
-_MAX_RETRY_DELAY = timedelta(minutes=5)
 
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _extract_first_json_object(content: str) -> Optional[dict[str, Any]]:
-    """Return the first JSON object found in content, or None."""
-    decoder = json.JSONDecoder()
-    for index, character in enumerate(content):
-        if character != "{":
-            continue
-        try:
-            loaded, _ = decoder.raw_decode(content[index:])
-            if isinstance(loaded, dict):
-                return loaded
-        except json.JSONDecodeError:
-            continue
-    return None
-
-
-def _parse_response_content(content: str) -> dict[str, Any]:
-    """Parse a model response string as JSON, stripping markdown fences if present."""
-    stripped = content.strip()
-    if stripped.startswith("```"):
-        lines = stripped.splitlines()
-        if len(lines) >= 3 and lines[-1].strip() == "```":
-            stripped = "\n".join(lines[1:-1]).strip()
-    try:
-        loaded = json.loads(stripped)
-        if isinstance(loaded, dict):
-            return loaded
-    except json.JSONDecodeError:
-        pass
-    extracted = _extract_first_json_object(content)
-    if extracted is not None:
-        return extracted
-    raise json.JSONDecodeError("OpenAI response was not a JSON object", content, 0)
-
-
-class OpenAiClient:
+class OpenAiClient(CircuitBreakerMixin):
     """Client for any OpenAI-compatible chat-completions endpoint."""
 
     def __init__(
@@ -67,39 +27,18 @@ class OpenAiClient:
         api_key: str,
         model: str,
         timeout: int = 30,
-        clock: Callable[[], datetime] = _utc_now,
+        clock: Callable[[], datetime] = utc_now,
     ):
         self.base_url = base_url.rstrip("/") if base_url else ""
         self.api_key = api_key or ""
         self.model = model or ""
         self.timeout = timeout
-        self._clock = clock
-        self.available: bool = False
-        self._last_failure: Optional[datetime] = None
-        self._next_retry_at: Optional[datetime] = None
-        self._failure_count = 0
-        self._retry_delay = _INITIAL_RETRY_DELAY
-        self._circuit_state = "closed"
+        self._init_circuit_breaker(clock)
 
     @property
     def is_configured(self) -> bool:
         """Return True when both base_url and model are set."""
         return bool(self.base_url and self.model)
-
-    @property
-    def circuit_state(self) -> str:
-        return self._circuit_state
-
-    @property
-    def retry_delay_seconds(self) -> int:
-        return int(self._retry_delay.total_seconds())
-
-    @property
-    def can_attempt(self) -> bool:
-        """Return whether a chat call may be attempted now."""
-        if self._circuit_state == "closed":
-            return True
-        return bool(self._next_retry_at and self._clock() >= self._next_retry_at)
 
     @property
     def llm_model(self) -> str:
@@ -111,40 +50,21 @@ class OpenAiClient:
             h["Authorization"] = f"Bearer {self.api_key}"
         return h
 
-    def _should_attempt(self) -> bool:
-        if self._circuit_state == "closed":
-            return True
-        if self._next_retry_at and self._clock() >= self._next_retry_at:
-            self._circuit_state = "half_open"
-            return True
-        return False
-
-    def _mark_success(self) -> None:
-        self.available = True
-        self._last_failure = None
-        self._next_retry_at = None
-        self._failure_count = 0
-        self._retry_delay = _INITIAL_RETRY_DELAY
-        self._circuit_state = "closed"
-
-    def _mark_failed(self, reason: str) -> None:
-        delay_seconds = min(
-            int(_INITIAL_RETRY_DELAY.total_seconds()) * (2 ** self._failure_count),
-            int(_MAX_RETRY_DELAY.total_seconds()),
-        )
-        self._retry_delay = timedelta(seconds=delay_seconds)
-        self._failure_count += 1
-        logger.warning(f"OpenAI client unavailable: {reason}; retry in {self._retry_delay}")
-        self.available = False
-        self._last_failure = self._clock()
-        self._next_retry_at = self._last_failure + self._retry_delay
-        self._circuit_state = "open"
+    def _log_failure(self, reason: str) -> None:
+        """Log a failed OpenAI-compatible client attempt."""
+        # Only log a warning for critical failures (e.g., connection issues),
+        # otherwise, just update the state to prevent excessive logging on expected API errors (like 400).
+        if "connection" in reason.lower() or "timeout" in reason.lower():
+            logger.warning(f"OpenAI client unavailable: {reason}; retry in {self._retry_delay}")
+        else:
+            logger.info(f"OpenAI client failed (non-critical): {reason}. Circuit tripped.")
 
     async def probe(self) -> bool:
         """Test connectivity and validate the response contains a 'choices' field."""
         if not self.is_configured:
             return False
         try:
+            logger.debug("Probing OpenAI endpoint for availability...", extra={"url": self.base_url})
             async with httpx.AsyncClient(timeout=min(self.timeout, 10)) as client:
                 resp = await client.post(
                     f"{self.base_url}/chat/completions",
@@ -176,19 +96,16 @@ class OpenAiClient:
         if not self._should_attempt() or not self.is_configured:
             return None
 
-        payload: dict[str, Any] = {
+        payload = {
             "model": self.model,
             "messages": messages,
-            "temperature": 0.3,
         }
-        # json_object mode guarantees valid JSON output; not all local servers support it
-        # but we send it anyway and fall back to extraction if parsing fails.
-        if expect_json:
-            payload["response_format"] = {"type": "json_object"}
+        prompt = messages_to_prompt(messages)
 
         content: str = ""
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
+                logger.debug(f"Sending LLM request prompt: {json.dumps(prompt)}")
                 resp = await client.post(
                     f"{self.base_url}/chat/completions",
                     json=payload,
@@ -196,10 +113,11 @@ class OpenAiClient:
                 )
                 resp.raise_for_status()
             data = resp.json()
+            logger.debug(f"Received LLM response: {json.dumps(data)}")
             content = data["choices"][0]["message"]["content"]
             self._mark_success()
             if expect_json:
-                return _parse_response_content(content)
+                return loads_model_json(content, "OpenAI response")
             return content
         except json.JSONDecodeError as e:
             logger.warning(f"OpenAI returned non-JSON: {e}", extra={"content": content[:200]})

@@ -1,12 +1,40 @@
 # LLM Integration
 
-The LLM subsystem consists of two components: a `TransformersClient` that loads a Hugging Face model locally (`llm/transformers_client.py`), and an analyser that builds prompts and parses responses (`llm/analyser.py`). A pure-Python technical indicator library (`analysis/indicators.py`) feeds the prompts.
+The LLM subsystem consists of an `OpenAiClient` for external OpenAI-compatible chat-completions servers, a `TransformersClient` fallback that loads a Hugging Face model locally (`llm/transformers_client.py`), a `SwitchingLLMClient` that routes between them, and an analyser that builds prompts and parses responses (`llm/analyser.py`). A pure-Python technical indicator library (`analysis/indicators.py`) feeds the prompts.
 
 The LLM acts in two modes. For `basic_and_llm_strategy` it adjusts signal confidence, annotates theses, and can veto signals entirely when its `confidence_scale` falls below `LLM_VETO_THRESHOLD` (default 0.70). For `llm_only_strategy` it directly recommends `long`, `short`, or `hold`; only `long` and `short` become trade ideas. The `basic_strategy` does not use the LLM at all.
 
 ---
 
-## LLM Client (`backend/llm/transformers_client.py`)
+## OpenAI-Compatible Client (`backend/llm/openai_client.py`)
+
+**Class:** `OpenAiClient`
+
+Connects to any server that implements `POST /v1/chat/completions` such as LM Studio, llama.cpp server, Ollama OpenAI compatibility, OpenAI, or Azure OpenAI. It is enabled when `OPENAI_BASE_URL` and `OPENAI_MODEL` are configured.
+
+### `chat()`
+
+Sends a standard chat-completions JSON object:
+
+```json
+{
+  "model": "google/gemma-4-e4b",
+  "messages": [
+    {"role": "system", "content": "Respond with valid JSON only."},
+    {"role": "user", "content": "Analyse BTC/EUR."}
+  ]
+}
+```
+
+The flattened prompt shown in debug logs is diagnostic only; it is not used as the HTTP request body. This keeps `chat()` aligned with the same OpenAI-compatible payload shape used by `probe()`.
+
+### Circuit Breaker
+
+HTTP and transport failures open the circuit with exponential backoff. Malformed model JSON returns `None` without opening the circuit, because a bad completion should not mark the backend unavailable.
+
+---
+
+## Transformers Client (`backend/llm/transformers_client.py`)
 
 **Class:** `TransformersClient`
 
@@ -64,10 +92,23 @@ print(torch.cuda.get_device_name(0))
 Holds cached state and implements the three LLM workflows.
 
 ```python
-self._llm: TransformersClient       # wired in at startup
+self._llm: SwitchingLLMClient       # wired in at startup
 self.latest_reflection: Optional[Reflection]    # updated hourly
 self.latest_briefing:   Optional[MarketBriefing]  # updated on new news
 ```
+
+---
+
+## Shared Client Helpers (`backend/llm/common.py`)
+
+`common.py` contains behavior shared by the OpenAI-compatible and Transformers clients:
+
+- `loads_model_json()` parses model output as a JSON object, stripping Markdown fences, extracting the first embedded object, and repairing obvious missing commas between object fields.
+- `messages_to_prompt()` renders OpenAI-style chat messages into the plain-text prompt format used by local text-generation models and debug logs.
+- `CircuitBreakerMixin` owns the shared `available`, `can_attempt`, `circuit_state`, retry-delay, `_should_attempt()`, `_mark_success()`, and `_mark_failed()` behavior. Each client keeps its own `_log_failure()` so log wording remains backend-specific.
+- `utc_now()` provides the timezone-aware clock used by circuit retry timing.
+
+Endpoint-specific behavior stays in each concrete client: OpenAI-compatible HTTP payloads and headers remain in `OpenAiClient`, while Transformers pipeline loading and unloading remain in `TransformersClient`.
 
 ---
 

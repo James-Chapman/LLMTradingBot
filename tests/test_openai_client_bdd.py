@@ -1,6 +1,5 @@
 """BDD coverage for OpenAiClient — circuit breaker, probe, and chat."""
 
-import json
 import unittest
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -101,6 +100,34 @@ class OpenAiClientAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result["sentiment"], 0.4)
         self.assertTrue(client.available)
+
+    # GIVEN chat is called WHEN the request is sent THEN an OpenAI chat payload is posted.
+    async def test_given_chat_request_when_sent_then_payload_is_chat_completions_object(self) -> None:
+        clock = FakeClock()
+        client = OpenAiClient(_BASE_URL, "key", _MODEL, clock=clock.utcnow)
+        client._mark_success()
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": '{"sentiment": 0.1}'}}]
+        }
+        mock_http = MagicMock(post=AsyncMock(return_value=mock_resp))
+        messages = [
+            {"role": "system", "content": "Return JSON."},
+            {"role": "user", "content": "analyse"},
+        ]
+
+        with patch("llm.openai_client.httpx.AsyncClient") as mock_cls:
+            mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_http)
+            mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            result = await client.chat(messages)
+
+        self.assertEqual(result["sentiment"], 0.1)
+        sent_payload = mock_http.post.await_args.kwargs["json"]
+        self.assertIsInstance(sent_payload, dict)
+        self.assertEqual(sent_payload["model"], _MODEL)
+        self.assertEqual(sent_payload["messages"], messages)
 
     # GIVEN OpenAI returns non-JSON WHEN chat is called THEN None returned, circuit stays closed.
     async def test_given_non_json_response_when_chat_then_none_and_circuit_stays_closed(self) -> None:

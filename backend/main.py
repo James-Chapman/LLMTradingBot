@@ -64,7 +64,7 @@ BACKEND_DIR = Path(__file__).parent
 FRONTEND_DIR = BACKEND_DIR.parent / "frontend"
 
 APP_NAME = "Kraken Trading Bot"
-APP_VERSION = "0.5.6"
+APP_VERSION = "0.5.8"
 
 setup_logging(settings.log_level, settings.log_file)
 logger = get_logger("main")

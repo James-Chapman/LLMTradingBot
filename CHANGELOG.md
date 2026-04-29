@@ -7,6 +7,25 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.5.8] — 2026-04-29
+
+### Changed
+
+- **LLM client shared helpers** — added `backend/llm/common.py` for shared JSON response parsing, chat-message prompt rendering, UTC clock handling, and exponential-backoff circuit-breaker state.
+- **`OpenAiClient` and `TransformersClient`** now reuse the shared helpers while keeping endpoint-specific request/probe/model-loading behavior local to each client.
+- **BDD coverage** — added `tests/test_llm_common_bdd.py` for shared JSON recovery, prompt rendering, and circuit retry timing.
+
+---
+
+## [0.5.7] — 2026-04-29
+
+### Fixed
+
+- **OpenAI-compatible chat requests** — `OpenAiClient.chat()` now posts a proper chat-completions object (`model` plus `messages`) instead of sending the flattened prompt as a JSON string. This prevents local OpenAI-compatible servers such as LM Studio from returning `400 Bad Request` while `probe()` still succeeds.
+- **BDD coverage** — added a regression test that verifies the HTTP request body sent by `OpenAiClient.chat()`.
+
+---
+
 ## [0.5.6] — 2026-04-29
 
 ### Changed

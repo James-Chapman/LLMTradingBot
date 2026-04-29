@@ -5,7 +5,7 @@
 ```python
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await _ollama.probe()                           # warm-up LLM connection
+    await _llm_client.probe()                       # warm-up active LLM backend
     asyncio.create_task(_strategy_loop())
     asyncio.create_task(_news_loop())
     asyncio.create_task(_ohlc_loop())
@@ -106,7 +106,7 @@ if llm_analysis.llm_used:
     idea.thesis    += f" · LLM: {llm_analysis.reasoning}"
 ```
 
-If the LLM is unavailable (Ollama not running, timeout, or error), `llm_used = False`, confidence is unchanged, and no veto fires.
+If the active LLM backend is unavailable (server down, model load failure, timeout, or error), `llm_used = False`, confidence is unchanged, and no veto fires.
 
 For `basic_strategy`, no LLM signal-analysis pass runs. For `llm`, the strategy has already called `_analyser.recommend_trade()` and stored the LLM decision in the trade idea. The loop records that LLM metadata for persistence but does not run a second LLM veto/adjustment pass.
 
@@ -272,25 +272,27 @@ When Uvicorn starts `main.py`, the following executes at module level (before an
 2.  init_database()               → creates/migrates SQLite schema
 3.  repo = Repository()
 4.  learner = PerformanceLearner()
-5.  _ollama = OllamaClient(...)
-6.  _analyser = LLMAnalyser(_ollama)
-7.  kraken_adapter = KrakenMarketAdapter(...)
-8.  paper_engine = PaperExecutionEngine(starting_capital, repo)
-9.  Wire repo into singletons     → activity.set_repo(repo)
+5.  _openai_client = OpenAiClient(...)
+6.  _transformers_client = TransformersClient(...)
+7.  _llm_client = SwitchingLLMClient(_openai_client, _transformers_client)
+8.  _analyser = LLMAnalyser(_llm_client)
+9.  kraken_adapter = KrakenMarketAdapter(...)
+10. paper_engine = PaperExecutionEngine(starting_capital, repo)
+11. Wire repo into singletons     → activity.set_repo(repo)
                                      control.set_repo(repo)
                                      _analyser.set_repo(repo)
-10. Restore risk rejections       → _risk_rejections deque pre-loaded from DB (last 50)
-11. Load equity history from DB   → restore _equity_history deque (limit 1,440)
-12. Restore cash from DB          → paper_engine.cash = repo.get_latest_cash()
-13. Restore open positions from DB → paper_engine.restore_from_db()
-14. Seed news cache from DB       → _latest_news = repo.get_recent_news(limit=60)
+12. Restore risk rejections       → _risk_rejections deque pre-loaded from DB (last 50)
+13. Load equity history from DB   → restore _equity_history deque (limit 1,440)
+14. Restore cash from DB          → paper_engine.cash = repo.get_latest_cash()
+15. Restore open positions from DB → paper_engine.restore_from_db()
+16. Seed news cache from DB       → _latest_news = repo.get_recent_news(limit=60)
                                      _briefed_news_ids seeded from all current news IDs
-15. Seed learner from DB          → learner.load_from_outcomes(repo.get_signal_outcomes())
-16. Restore control state         → control.load_from_db()
+17. Seed learner from DB          → learner.load_from_outcomes(repo.get_signal_outcomes())
+18. Restore control state         → control.load_from_db()
                                      (emergency stop, disabled markets/strategies)
-17. Restore LLM state             → _analyser.load_from_db()
+19. Restore LLM state             → _analyser.load_from_db()
                                      (latest_briefing, latest_reflection)
-18. Seed activity log             → activity.seed_from_db() (last 200 entries)
+20. Seed activity log             → activity.seed_from_db() (last 200 entries)
 ```
 
-Steps 9–18 ensure the bot resumes from its complete operational state after any restart. No data is lost: positions, equity, LLM context, control toggles, and the activity history are all immediately available when the dashboard first loads.
+Steps 11–20 ensure the bot resumes from its complete operational state after any restart. No data is lost: positions, equity, LLM context, control toggles, and the activity history are all immediately available when the dashboard first loads.

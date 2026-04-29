@@ -17,14 +17,14 @@ All routes are mounted on a FastAPI application in `backend/main.py`. The server
 
 ### `GET /health`
 
-Returns a basic liveness check. Does not probe Ollama or Kraken connectivity.
+Returns a basic liveness check. Does not probe LLM or Kraken connectivity.
 
 **Response:**
 
 ```json
 {
     "status": "ok",
-    "version": "0.5.5"
+    "version": "0.5.8"
 }
 ```
 

@@ -1,8 +1,7 @@
 """BDD coverage for SwitchingLLMClient — backend selection, fallback, and switching."""
 
 import unittest
-from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from bdd_helpers import BACKEND_DIR  # noqa: F401
 from llm.openai_client import OpenAiClient

@@ -7,7 +7,7 @@
 | Requirement | Version | Notes |
 |-------------|---------|-------|
 | Python | 3.11+ | Earlier versions untested |
-| Ollama | Any | Required for LLM features; bot runs without it |
+| OpenAI-compatible LLM server or Transformers model | Optional | Required for LLM features; bot runs without it |
 | SQLite | Built-in | No separate install needed |
 | Kraken account | Optional | Paper mode works without API credentials |
 
@@ -45,29 +45,24 @@ TRADING_ENVIRONMENT=paper
 STARTING_CAPITAL=500.0
 FIXED_MARKETS=BTC/EUR,ETH/EUR
 
-OLLAMA_URL=http://localhost:11434
-OLLAMA_MODEL=phi3:mini
+OPENAI_BASE_URL=http://127.0.0.1:1234/v1
+OPENAI_MODEL=google/gemma-4-e4b
+TRANSFORMERS_LLM_MODEL=
 
 DATABASE_URL=sqlite:///./trading_bot.db
 ```
 
 Full configuration reference: `docs/01-configuration.md`.
 
-### 5. Pull the Ollama model
+### 5. Configure an LLM backend
 
-```bash
-ollama pull phi3:mini
-```
+For LM Studio or another OpenAI-compatible local server, start the server and set `OPENAI_BASE_URL` plus `OPENAI_MODEL`. The bot posts standard `/v1/chat/completions` requests with `model` and `messages`.
 
-The bot starts without Ollama — LLM features are simply disabled if Ollama is unreachable. Ollama must be running before starting the bot if LLM features are wanted.
+For in-process Transformers fallback, set `TRANSFORMERS_LLM_MODEL` to a Hugging Face model ID. The bot starts without an LLM backend; LLM features are disabled until one is reachable.
 
-### 6. Start Ollama
+### 6. Start the configured LLM server
 
-```bash
-ollama serve
-```
-
-Ollama listens on `http://localhost:11434` by default. This matches `OLLAMA_URL` in the `.env` file.
+If using an OpenAI-compatible local server, start it before the bot and confirm the base URL matches `OPENAI_BASE_URL`. If using only Transformers fallback, no separate server is required.
 
 ---
 
@@ -79,7 +74,7 @@ On Windows, the preferred path is to run the repository launcher from `C:\dev\LL
 .\launch.bat
 ```
 
-The launcher starts Ollama when available, creates `.venv` if it is missing, hashes `requirements.txt`, updates the virtual environment when dependencies are stale or key imports fail, and runs `backend\main.py` with `.venv\Scripts\python.exe` explicitly. This avoids accidentally starting the bot with the system Python installation.
+The launcher creates `.venv` if it is missing, hashes `requirements.txt`, updates the virtual environment when dependencies are stale or key imports fail, and runs `backend\main.py` with `.venv\Scripts\python.exe` explicitly. This avoids accidentally starting the bot with the system Python installation.
 
 From the project root, start the app with the project virtual environment:
 
@@ -105,7 +100,7 @@ If `main.py` is started with the system Python, startup attempts to re-execute i
 4. The learner is seeded with historical signal outcomes.
 5. News cache is seeded from the database.
 6. Four background tasks start: strategy loop, news loop, OHLC loop, reflection loop.
-7. Ollama is probed (`GET /api/tags`). LLM availability is logged.
+7. The configured OpenAI-compatible and/or Transformers LLM backend is probed. LLM availability is logged.
 8. FastAPI begins serving requests.
 
 The dashboard is available at: `http://127.0.0.1:8000`
@@ -316,12 +311,12 @@ The strategy loop runs every 30 seconds. This is hardcoded in `_strategy_loop` (
 
 ### LLM response time
 
-If `phi3:mini` is too slow (>60s per call), either:
-- Increase `OLLAMA_TIMEOUT` in `.env`.
-- Switch to a smaller/faster model: `OLLAMA_MODEL=phi3`.
-- Disable LLM features by stopping Ollama — the bot will continue without LLM adjustment.
+If LLM calls are too slow, either:
+- Increase `OPENAI_TIMEOUT` or `TRANSFORMERS_TIMEOUT` in `.env`.
+- Switch to a smaller/faster model on the configured backend.
+- Disable LLM features by clearing `OPENAI_MODEL` and `TRANSFORMERS_LLM_MODEL`.
 
-After a timeout or transport failure, the LLM client opens a circuit breaker before retrying. The retry delay starts at 30 seconds, doubles on repeated failures, and caps at 5 minutes. A malformed JSON response from the model does not mark Ollama unavailable; it only skips that one LLM decision so the next prompt can still run.
+After a timeout or transport failure, the LLM client opens a circuit breaker before retrying. The retry delay starts at 30 seconds, doubles on repeated failures, and caps at 5 minutes. A malformed JSON response from the model does not mark the backend unavailable; it only skips that one LLM decision so the next prompt can still run.
 
 ### Stop-loss sensitivity
 
@@ -373,7 +368,7 @@ Normal at startup. The strategy loop requires 10 price ticks before generating s
 
 ### "LLM unavailable — using neutral defaults"
 
-Ollama is not running or not reachable at `OLLAMA_URL`. Start Ollama with `ollama serve`. The bot will continue without LLM confidence adjustment — signals use the base strategy confidence only.
+The configured OpenAI-compatible endpoint is not reachable, the Transformers model could not load, or no LLM backend is configured. The bot will continue without LLM confidence adjustment — signals use the base strategy confidence only.
 
 ### `ModuleNotFoundError: No module named 'httpx'`
 

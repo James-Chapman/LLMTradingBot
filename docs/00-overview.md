@@ -9,7 +9,7 @@ The primary design goals are:
 - **Auditability** — every signal, decision, and trade is persisted to a local SQLite database with a complete audit trail.
 - **Safety** — a universal risk engine enforces hard position limits, cash sufficiency, and daily loss caps before any trade reaches execution.
 - **Operator control** — a web dashboard exposes real-time state, manual overrides, market toggles, and an emergency stop at all times.
-- **Adaptability** — a local LLM (Ollama) analyses each signal in full market context (indicators, portfolio, news, briefing, and its own prior reflection) and reflects hourly on closed trade outcomes including entry-time indicator snapshots, feeding patterns back into every subsequent signal decision.
+- **Adaptability** — an OpenAI-compatible or local Transformers LLM analyses each signal in full market context (indicators, portfolio, news, briefing, and its own prior reflection) and reflects hourly on closed trade outcomes including entry-time indicator snapshots, feeding patterns back into every subsequent signal decision.
 
 ---
 
@@ -69,8 +69,8 @@ The primary design goals are:
 | Database | SQLite via SQLAlchemy 2.x | `StaticPool`; single file |
 | Settings | Pydantic v2 / pydantic-settings | `.env` file |
 | Exchange API | krakenex + pykrakenapi | Read-only in paper mode |
-| LLM | LM Studio (priority 1) → Ollama (priority 2) → Transformers (fallback) | Probe-and-lock-in at startup |
-| HTTP client | httpx (async) | Used for LM Studio and Ollama |
+| LLM | OpenAI-compatible API (preferred) → Transformers (fallback) | `SwitchingLLMClient` probes and routes |
+| HTTP client | httpx (async) | Used for OpenAI-compatible chat-completions calls |
 | Logging | Python `logging` → JSON + file | Structured; module-level |
 | Numeric compute | numpy | Indicator reductions, replay metrics, learner statistics |
 
@@ -80,7 +80,7 @@ The primary design goals are:
 
 ```text
 LLMTradingBot/
-|-- launch.bat                      Windows launcher (Ollama + uvicorn)
+|-- launch.bat                      Windows launcher (venv + uvicorn)
 |-- requirements.txt                Runtime dependencies
 |-- requirements-dev.txt            Developer tooling
 |-- docs/                           Project documentation
@@ -105,7 +105,9 @@ LLMTradingBot/
 |   |   |-- kraken_adapter.py       Kraken ticker and OHLC adapter
 |   |   `-- news_adapter.py         RSS news ingestion
 |   |-- llm/
-|   |   |-- ollama_client.py        Ollama async REST client
+|   |   |-- common.py               Shared JSON parsing, prompt, and circuit helpers
+|   |   |-- openai_client.py        OpenAI-compatible chat-completions client
+|   |   |-- switching_client.py     OpenAI/Transformers backend router
 |   |   |-- transformers_client.py  Hugging Face Transformers async client
 |   |   `-- analyser.py             Signal analysis, briefing, reflection
 |   |-- observability/
@@ -162,7 +164,7 @@ Risk checks run before mode routing, not inside each mode's branch. This means n
 Positions are keyed by UUID (`position_id`), not by market symbol. This allows complete independent tracking of every trade's lifecycle and pairs BUY and SELL orders in the trade ledger via a shared `position_id`.
 
 ### 3. LLM as an Advisor with Veto Power and Self-Improvement Loop
-The LLM adjusts confidence (`confidence_scale` 0.5–2.0) and annotates the thesis. It can also veto a signal entirely when its `confidence_scale` falls below `LLM_VETO_THRESHOLD` (default 0.70). Vetoes only fire when Ollama is available. Final execution authority for all non-vetoed signals remains with the risk engine and the operator.
+The LLM adjusts confidence (`confidence_scale` 0.5–2.0) and annotates the thesis. It can also veto a signal entirely when its `confidence_scale` falls below `LLM_VETO_THRESHOLD` (default 0.70). Vetoes only fire when the active LLM backend is available. Final execution authority for all non-vetoed signals remains with the risk engine and the operator.
 
 Every signal analysis prompt includes the LLM's own most recent hourly reflection (pattern + suggestion), closing the feedback loop so its advice influences subsequent decisions. The hourly reflection itself receives the full indicator state at the time of each trade entry (joined from `trade_ideas`), enabling indicator-level pattern detection rather than summary statistics alone.
 

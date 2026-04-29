@@ -92,13 +92,23 @@ In paper mode these fields are ignored. The Kraken adapter is used for read-only
 
 Market symbols use Kraken's public format (`BASE/QUOTE`). The adapter internally maps to Kraken's altname convention (e.g. `XBT/EUR` for `BTC/EUR`).
 
-### Local LLM (Ollama)
+### External LLM (OpenAI-compatible)
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `OLLAMA_URL` | str | `"http://localhost:11434"` | Base URL of the Ollama REST API |
-| `OLLAMA_MODEL` | str | `"phi3:mini"` | Model name as registered in Ollama |
-| `OLLAMA_TIMEOUT` | int | `60` | Per-request timeout in seconds. Needs to be high (≥30s) on first call as the model loads into VRAM |
+| `OPENAI_BASE_URL` | str | `""` | Base URL for an OpenAI-compatible API, for example `http://127.0.0.1:1234/v1` |
+| `OPENAI_API_KEY` | str | `""` | Optional bearer token for hosted APIs. Leave blank for local servers that do not require auth |
+| `OPENAI_MODEL` | str | `""` | Chat model name exposed by the configured OpenAI-compatible server |
+| `OPENAI_TIMEOUT` | int | `30` | Per-request timeout in seconds |
+
+`OpenAiClient.chat()` posts a standard chat-completions JSON object with `model` and `messages`. The plain prompt in debug logs is only a readable transcript for troubleshooting.
+
+### Local LLM (Transformers)
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `TRANSFORMERS_LLM_MODEL` | str | `""` | Hugging Face model ID used when the OpenAI-compatible backend is not configured or unavailable |
+| `TRANSFORMERS_TIMEOUT` | int | `60` | Per-request timeout in seconds. Needs to be high (>=30s) on first call as the model loads into memory |
 | `LLM_ONLY_MAX_CONCURRENCY` | int | `3` | Maximum number of concurrent per-market LLM-only recommendations per strategy tick. |
 
 ### Logging
