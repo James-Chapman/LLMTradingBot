@@ -141,7 +141,7 @@ class OpenAiClient:
         self._circuit_state = "open"
 
     async def probe(self) -> bool:
-        """Test connectivity with a minimal chat request (1 token, no cost impact)."""
+        """Test connectivity and validate the response contains a 'choices' field."""
         if not self.is_configured:
             return False
         try:
@@ -156,6 +156,10 @@ class OpenAiClient:
                     headers=self._headers(),
                 )
                 resp.raise_for_status()
+                data = resp.json()
+            if "choices" not in data:
+                self._mark_failed(f"unexpected response (no 'choices'): {str(data)[:120]}")
+                return False
             self._mark_success()
             logger.info(f"OpenAI client available — url: {self.base_url}, model: {self.model}")
             return True

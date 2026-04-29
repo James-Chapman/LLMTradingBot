@@ -158,6 +158,7 @@ class OpenAiClientAsyncTests(unittest.IsolatedAsyncioTestCase):
 
         mock_resp = MagicMock()
         mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"choices": [{"message": {"content": "p"}}]}
 
         with patch("llm.openai_client.httpx.AsyncClient") as mock_cls:
             mock_cls.return_value.__aenter__ = AsyncMock(return_value=MagicMock(
@@ -169,6 +170,27 @@ class OpenAiClientAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result)
         self.assertTrue(client.available)
         self.assertEqual(client.circuit_state, "closed")
+
+    # GIVEN server returns HTTP 200 without 'choices' WHEN probe is called
+    # THEN available stays False and circuit opens (false-positive probe prevention).
+    async def test_given_200_without_choices_when_probe_then_unavailable(self) -> None:
+        clock = FakeClock()
+        client = OpenAiClient(_BASE_URL, "key", _MODEL, clock=clock.utcnow)
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"error": "model not found"}
+
+        with patch("llm.openai_client.httpx.AsyncClient") as mock_cls:
+            mock_cls.return_value.__aenter__ = AsyncMock(return_value=MagicMock(
+                post=AsyncMock(return_value=mock_resp)
+            ))
+            mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            result = await client.probe()
+
+        self.assertFalse(result)
+        self.assertFalse(client.available)
+        self.assertEqual(client.circuit_state, "open")
 
 
 if __name__ == "__main__":
