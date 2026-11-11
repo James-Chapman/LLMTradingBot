@@ -2,7 +2,7 @@
 
 **Files:** `frontend/index.html`, `frontend/approvals.html`, `frontend/static/styles.css`
 
-A single-page application served directly by FastAPI. Uses **Alpine.js** for reactive UI state, chart libraries from CDNs, and a shared local stylesheet at `/static/styles.css` for theme, utility classes, responsive layout, panels, buttons, grids, tables, and charts. No build step, bundler, or Node.js toolchain is required.
+A single-page application served directly by the Go HTTP server (`internal/server`), from the directory given by the `-frontend` flag (default `frontend`). Uses **Alpine.js** for reactive UI state, chart libraries from CDNs, and a shared local stylesheet at `/static/styles.css` for theme, utility classes, responsive layout, panels, buttons, grids, tables, and charts. No build step, bundler, or Node.js toolchain is required.
 
 The primary dashboard remains available at `/` and uses the `layout-ledger-glass` workspace promoted from the former trial layouts. The `/index2` through `/index9` trial theme shells have been removed, so the dashboard has a single maintained HTML entry point with the shared Alpine component, DOM IDs, API calls, and stylesheet.
 
@@ -101,7 +101,7 @@ function dashboard() {
 
 ## Service Worker Caching
 
-`/sw.js` uses a versioned cache (`trading-bot-v0.5.28`) and claims open tabs as soon as the new worker activates. Navigation and other `text/html` requests are network-first, so the dashboard shell does not keep running stale inline scripts after frontend fixes. API dashboard endpoints remain network-first with client broadcasts, while non-HTML static assets use stale-while-revalidate.
+`/sw.js` uses a versioned cache (`trading-bot-v0.6.0`) and claims open tabs as soon as the new worker activates. Navigation and other `text/html` requests are network-first, so the dashboard shell does not keep running stale inline scripts after frontend fixes. API dashboard endpoints remain network-first with client broadcasts, while non-HTML static assets use stale-while-revalidate.
 
 ---
 
@@ -210,7 +210,7 @@ Displays a rolling buffer of up to 12 signals, newest first. Signals persist acr
 
 The entire signal card is clickable (`sig-btn` class, `data-signal-id` attribute) — clicking opens the signal detail modal via the global click delegate. No separate "Detail" button exists.
 
-The buffer is managed in `main.py` via `_SIGNAL_BUFFER_MAX = 12`. On each strategy tick that produces signals, new entries are prepended and any existing entries for the same market are replaced.
+The buffer is managed in `internal/app` via `signalBufferMax = 12`. On each strategy tick that produces signals, `mergeSignals()` prepends the new entries and drops any existing entries for the same market.
 
 #### Desktop Notifications
 
@@ -420,7 +420,7 @@ A "View All" link navigates to `/approvals` (a separate page with the full appro
 
 ### Risk Rejections Panel
 
-Displays the last 20 risk rejections from `d.risk_rejections`. Each row shows market, direction, confidence, and the rejection reason. Sourced from the `_risk_rejections` deque in `main.py` (maxlen 50).
+Displays the last 20 risk rejections from `d.risk_rejections`. Each row shows market, direction, confidence, and the rejection reason. Sourced from the in-memory `riskRejections` list in `internal/app` (capped at 50).
 
 ---
 

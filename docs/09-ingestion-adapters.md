@@ -1,143 +1,176 @@
 # Ingestion Adapters
 
-The ingestion layer consists of two independent subsystems: the Kraken market data adapter and the news feed adapters. Both are called from background loops in `main.py` and feed data into the strategy pipeline.
+The ingestion layer consists of two independent subsystems: the Kraken market data adapter (`internal/kraken`) and the news feed adapters (`internal/news`). Both are called from background goroutines in `internal/app/loops.go` and feed data into the strategy pipeline.
 
 ---
 
-## Kraken Market Adapter (`backend/ingestion/kraken_adapter.py`)
+## Kraken Market Adapter (`internal/kraken/market.go`)
 
-**Class:** `KrakenMarketAdapter`
+**Type:** `MarketAdapter`
 
-Provides async access to Kraken's public and private REST API. In paper trading mode, only public endpoints are used (ticker prices, OHLC candles). All blocking HTTP calls are offloaded to a thread pool via `asyncio.get_running_loop().run_in_executor(None, ...)` to keep the event loop free.
+Provides access to Kraken's public REST and WebSocket APIs through the official Kraken Go SDK, `github.com/krakenfx/api-go/v2` (`pkg/spot`). It never uses API keys, so it is safe in paper mode. Every call takes a `context.Context`. The SDK has no context support of its own, so `restWithContext()` attaches cancellation through the SDK's `Executor` hook. REST calls use a 15-second HTTP timeout.
 
 ### Constructor
 
-```python
-KrakenMarketAdapter(
-    api_key:    Optional[str],   # from settings.kraken_api_key
-    api_secret: Optional[str],   # from settings.kraken_api_secret
-    backoff_sleep: Callable = asyncio.sleep,
-    backoff_jitter: Optional[Callable] = None,
-    websocket_connect: Optional[Callable] = None,
-)
+```go
+kraken.NewMarketAdapter(kraken.MarketAdapterOptions{
+	RESTURL:      "",             // default https://api.kraken.com (KRAKEN_REST_URL)
+	HTTPClient:   nil,            // default client with a 15 s timeout
+	WebSocketURL: "",             // default wss://ws.kraken.com/v2
+	Stream:       nil,            // default: SDK spot WebSocket (v2 ticker channel)
+	PollInterval: 0,              // REST polling fallback interval (default 5 s)
+	Backoff:      kraken.BackoffOptions{}, // retry settings; Sleep/Jitter injectable
+})
 ```
 
-Both credentials are `None` in paper mode. `backoff_sleep`, `backoff_jitter`, and `websocket_connect` are injectable for BDD tests; normal runtime uses `asyncio.sleep`, random jitter, and `websockets.connect`.
+Zero values select the defaults. `HTTPClient`, `Stream`, and the backoff `Sleep`/`Jitter` functions are injectable so tests can run against `httptest` fakes without real network calls. At runtime the app builds the adapter with only `RESTURL` set from `KRAKEN_REST_URL`.
 
 ---
 
 ### Symbol Mapping
 
-Kraken uses internal symbols that differ from the user-facing format:
+Kraken REST uses internal symbols that differ from the user-facing format:
 
-| User-Facing | Kraken Internal |
-|-------------|----------------|
-| `BTC/EUR`   | `XBTEUR`        |
-| `ETH/EUR`   | `ETHEUR`        |
-| `DOGE/EUR`  | `XDGEUR`        |
+| User-Facing | Kraken REST altname | WebSocket v2 symbol |
+|-------------|---------------------|---------------------|
+| `BTC/EUR`   | `XBTEUR`            | `BTC/EUR`           |
+| `ETH/EUR`   | `ETHEUR`            | `ETH/EUR`           |
+| `DOGE/EUR`  | `XDGEUR`            | `DOGE/EUR`          |
 
-The mapping is handled by `_to_altname()`:
+The REST mapping is handled by `ToKrakenPair()` (`internal/kraken/client.go`):
 
-```python
-BASE_ALIASES = {"BTC": "XBT", "DOGE": "XDG"}
+```go
+var baseAliases = map[string]string{"BTC": "XBT", "DOGE": "XDG"}
 
-def _to_altname(self, symbol: str) -> str:
-    base, quote = symbol.split("/")
-    kraken_base = BASE_ALIASES.get(base, base)
-    return f"{kraken_base}{quote}"
+// ToKrakenPair converts an internal symbol like "BTC/EUR" to Kraken's altname "XBTEUR".
+func ToKrakenPair(symbol string) string {
+	base, quote, found := strings.Cut(symbol, "/")
+	if !found {
+		return symbol
+	}
+	if alias, ok := baseAliases[base]; ok {
+		base = alias
+	}
+	return base + quote
+}
 ```
 
-A `_pair_map` dict is lazily loaded from `/0/public/AssetPairs` on the first call that needs it. It maps Kraken pair names to their metadata, enabling validation and reverse lookup.
+`FromKrakenSymbol()` reverses the alias (`XBT/EUR` → `BTC/EUR`). WebSocket v2 already uses readable names such as `BTC/EUR`.
+
+A pair map is lazily loaded from `/0/public/AssetPairs` on the first call that needs it. It maps altnames to Kraken's official pair names (`XBTEUR` ↔ `XXBTZEUR`), enabling validation and reverse lookup. A failed load is retried on the next call.
 
 ---
 
-### `validate_symbols()`
+### `ValidateSymbols()`
 
-```python
-async def validate_symbols(symbols: List[str]) -> List[str]
+```go
+func (a *MarketAdapter) ValidateSymbols(ctx context.Context, symbols []string) []string
 ```
 
-Called at startup to filter `settings.fixed_markets` to only those Kraken recognises. Returns the validated subset. Any symbol that fails to map to a known pair is dropped with a warning.
+Called at startup to filter the configured markets to only those Kraken recognises. Returns the validated subset. Any symbol that fails to map to a known pair is dropped with a warning. If the pair map cannot be loaded, it returns an empty slice.
 
 ---
 
-### `get_tickers_batch()`
+### `GetTickersBatch()`
 
-```python
-async def get_tickers_batch(symbols: List[str]) -> Dict[str, MarketSnapshot]
+```go
+func (a *MarketAdapter) GetTickersBatch(ctx context.Context, symbols []string) (map[string]domain.MarketSnapshot, error)
 ```
 
-Fetches live ticker prices for multiple markets in a single HTTP request to Kraken's `/0/public/Ticker` endpoint:
+Fetches live ticker prices for multiple markets in a single request to Kraken's `/0/public/Ticker` endpoint:
 
 ```
 GET https://api.kraken.com/0/public/Ticker?pair=XBTEUR,ETHEUR
 ```
 
-Returns a `Dict[str, MarketSnapshot]` where keys are the original user-facing symbols (e.g., `"BTC/EUR"`).
+Returns a map keyed by the original user-facing symbols (e.g. `"BTC/EUR"`). Kraken may key its response by official name or altname; both are accepted. The returned map is never nil; it is empty when the call fails.
 
-```python
-@dataclass
-class MarketSnapshot:
-    symbol:    str
-    timestamp: datetime
-    price:     float    # last trade close price ("c" field from Kraken)
-    volume:    float    # 24h volume
+```go
+type MarketSnapshot struct {
+	Symbol    string    `json:"symbol"`
+	Timestamp time.Time `json:"timestamp"`
+	Price     float64   `json:"price"`            // last trade close price ("c" field)
+	Volume    *float64  `json:"volume,omitempty"` // rolling 24h volume
+	Bid       *float64  `json:"bid,omitempty"`
+	Ask       *float64  `json:"ask,omitempty"`
+}
 ```
 
-Used as the REST fallback when a WebSocket snapshot has not arrived for a symbol yet. A single batch call avoids the rate limit overhead of per-symbol requests.
+Used as the REST fallback when a WebSocket snapshot has not arrived for a symbol yet. A single batch call avoids the rate-limit overhead of per-symbol requests. `GetTicker()` is a single-symbol convenience wrapper around it.
 
 ---
 
-### `get_ohlc()`
+### `GetOHLC()`
 
-```python
-async def get_ohlc(
-    symbol:       str,
-    interval:     int = 5,        # minutes per candle (1, 5, 15, 30, 60, 240, 1440, 10080, 21600)
-    candle_limit: int = 100,      # max candles to return
-) -> List[Dict]
+```go
+func (a *MarketAdapter) GetOHLC(ctx context.Context, symbol string, intervalMinutes, limit int) ([]domain.Candle, error)
 ```
 
-Fetches OHLC candlestick data from Kraken's `/0/public/OHLC` endpoint. **Does not use `pykrakenapi`** — that library has a pandas 2.x incompatibility with the array indexing API used for OHLC, so raw `urllib` is used instead.
+Fetches OHLC candlestick data from Kraken's `/0/public/OHLC` endpoint through the SDK:
 
 ```
 GET https://api.kraken.com/0/public/OHLC?pair=XBTEUR&interval=5
 ```
 
-Returns a list of candle dicts, oldest-to-newest:
+Returns candles oldest-to-newest:
 
-```python
-{"t": 1745409000, "o": 85120.0, "h": 85680.0, "l": 85050.0, "c": 85420.0, "v": 1.234}
+```go
+type Candle struct {
+	T int64   `json:"t"` // Unix seconds
+	O float64 `json:"o"`
+	H float64 `json:"h"`
+	L float64 `json:"l"`
+	C float64 `json:"c"`
+	V float64 `json:"v"`
+}
 ```
 
-`t` is Unix timestamp in seconds. Result is truncated to `candle_limit` most recent candles.
+The result is truncated to the `limit` most recent candles (a `limit` of zero or less returns everything Kraken sent).
 
-Called by `_ohlc_loop` every 120 seconds with a 2.5-second inter-market gap to respect Kraken's public rate limit.
-
----
-
-### `subscribe_ticker()` / `start_subscription()`
-
-Starts a public Kraken WebSocket v1 `ticker` subscription. Messages are parsed into the existing `MarketSnapshot` contract and cached by `_strategy_loop` through `_cache_market_snapshot()`.
-
-If WebSocket setup or streaming fails, the adapter logs a warning and falls back to polling with `get_tickers_batch()`. The strategy loop reads cached WebSocket snapshots first and only calls REST for markets that have not produced a stream update yet.
+Called by `ohlcLoop` every 120 seconds with 100 candles per request, a 1-second gap between the 5- and 15-minute fetches, and a 2.5-second inter-market gap to respect Kraken's public rate limit.
 
 ---
 
-### Rate Limiting
+### `SubscribeTicker()` / `Start()` / `Stop()`
 
-Kraken's public REST API has a per-IP rate limit. REST calls are wrapped by `kraken_retry.call_with_kraken_backoff()`, which retries rate-limit and temporary-lockout responses with exponential backoff before surfacing the error. Rate limit avoidance is still supported by loop design:
+`Start(symbols, cb)` runs `SubscribeTicker()` in a background goroutine, replacing any running subscription. `Stop()` cancels it and waits up to 5 seconds for it to exit.
+
+`SubscribeTicker()` opens a public Kraken **WebSocket v2** `ticker` subscription (`wss://ws.kraken.com/v2`) using the SDK's spot WebSocket, with the SDK's auto-reconnect disabled. Symbols are sent in v2 form (`BTC/EUR`). Messages are parsed by `ParseTickerMessage()` into `domain.MarketSnapshot` values and passed to the callback; the app caches them in `cacheMarketSnapshot()`. Rejected subscriptions are logged per symbol.
+
+If WebSocket setup or streaming fails (including a dropped connection), the adapter logs a warning and falls back to polling `GetTickersBatch()` every 5 seconds. The strategy loop reads cached snapshots first and only calls REST for markets that have not produced an update yet.
+
+---
+
+### Rate Limiting (`internal/kraken/retry.go`)
+
+Kraken's public REST API has a per-IP rate limit. REST calls are wrapped by the generic `CallWithBackoff()`, which retries transient errors (`rate limit`, `temporary lockout`, `service unavailable`, `too many requests`) with exponential backoff and up to 10% random jitter. The defaults are 3 attempts with a 500 ms initial delay. Rate limit avoidance is still supported by loop design:
 
 | Loop | Frequency | Call type |
 |------|-----------|-----------|
-| `_strategy_loop` | Every 30s | WebSocket cache first; `get_tickers_batch()` only for missing stream prices |
-| `_ohlc_loop` | Every 120s (2.5s/market) | `get_ohlc()` — one request per market |
+| `strategyLoop` | Every 30s | WebSocket cache first; `GetTickersBatch()` only for missing stream prices |
+| `ohlcLoop` | Every 120s (2.5s/market) | `GetOHLC()`: one request per market and interval |
 
-At two active markets, the OHLC loop sends two requests per 120-second cycle. Combined with the ticker batch (one request every 30 seconds), this stays well within Kraken's documented public tier limits.
+At two active markets, the OHLC loop sends four requests per 120-second cycle. Combined with the occasional ticker batch, this stays well within Kraken's documented public tier limits.
 
 ---
 
-## News Feed Adapters (`backend/ingestion/news_adapter.py`)
+### Live Execution (`internal/kraken/execution.go`)
+
+Live order placement (`ExecutionEngine`) uses the same SDK with API keys. `Execute()` refuses an order unless the environment passed with it is `live` and both `KRAKEN_API_KEY` and `KRAKEN_API_SECRET` are set. A refused order is returned with status `rejected` and stored in the rejected-trades register with the reason (`missing_api_credentials`, or the paper-mode read-only reason). The app routes an order to this engine, with environment `live`, only for markets toggled to live on the dashboard; every other market goes to the paper engine.
+
+---
+
+## News Feed Adapters (`internal/news`)
+
+Every source implements the `news.Adapter` interface:
+
+```go
+type Adapter interface {
+	SourceName() string
+	// FetchNews returns the latest items; on failure it logs, returns an empty slice and the error.
+	FetchNews(ctx context.Context) ([]domain.NewsItem, error)
+}
+```
 
 ### Configurable RSS Sources
 
@@ -147,124 +180,118 @@ RSS sources are configured via `NEWS_SOURCES` in `.env` as a JSON array of `"Nam
 NEWS_SOURCES=["CoinDesk::https://www.coindesk.com/arc/outboundfeeds/rss/","My Feed::https://example.com/rss"]
 ```
 
-At startup, `build_rss_adapters(settings.news_sources)` parses each entry into an `RSSAdapter` instance. Invalid entries (missing `::`, empty name, or empty URL) are skipped with a warning log. The `FearGreedAdapter` is always appended automatically — it does not need a `NEWS_SOURCES` entry.
+At startup, `news.BuildRSSAdapters(settings.NewsSources)` parses each entry into an `RSSAdapter`. Invalid entries (missing `::`, empty name, or empty URL) are skipped with a warning log. A `FearGreedAdapter` is always appended automatically; it does not need a `NEWS_SOURCES` entry.
 
-To add a new RSS source at runtime, update `NEWS_SOURCES` in `.env` and restart the bot.
-
----
-
-### `rss_adapter_from_spec(spec)` / `build_rss_adapters(specs)`
-
-```python
-def rss_adapter_from_spec(spec: str) -> Optional[RSSAdapter]
-def build_rss_adapters(specs: List[str]) -> List[RSSAdapter]
-```
-
-`rss_adapter_from_spec` splits on the first `::`, strips whitespace, and returns an `RSSAdapter` or `None` (with a warning) if the spec is malformed. `build_rss_adapters` calls the former for each entry and returns only the valid adapters.
+To add a new RSS source, update `NEWS_SOURCES` in `.env` and restart the bot.
 
 ---
 
-### Threading Model
+### `RSSAdapterFromSpec(spec)` / `BuildRSSAdapters(specs)`
 
-RSS feed parsing is synchronous (blocking HTTP + XML). All `RSSAdapter.fetch_news()` calls use:
-
-```python
-loop = asyncio.get_running_loop()
-items = await loop.run_in_executor(None, _fetch_rss, self.rss_url, self.source_name)
+```go
+func RSSAdapterFromSpec(spec string) *RSSAdapter
+func BuildRSSAdapters(specs []string) []*RSSAdapter
 ```
 
-This delegates the blocking call to the default `ThreadPoolExecutor`, preventing it from stalling the asyncio event loop during the 300-second news loop.
+`RSSAdapterFromSpec` splits on the first `::`, trims whitespace, and returns an `*RSSAdapter`, or `nil` (with a warning) if the spec is malformed. `BuildRSSAdapters` calls it for each entry and returns only the valid adapters.
 
 ---
 
-### `_fetch_rss()` (internal)
+### Concurrency Model
 
-```python
-def _fetch_rss(
-    url:         str,
-    source_name: str,
-    max_items:   int = 20,
-) -> List[NewsItem]
+`RSSAdapter.FetchNews()` is a plain blocking call that takes a context. `newsLoop` runs in its own goroutine and fetches each adapter in turn every 300 seconds, so slow feeds never block the strategy loop. Each request has a 15-second timeout.
+
+---
+
+### `ParseRSS()` (`internal/news/rss.go`)
+
+```go
+func ParseRSS(data []byte, sourceName string, maxItems int, now time.Time) ([]domain.NewsItem, error)
 ```
 
-Fetches and parses an RSS feed using Python's standard library `urllib.request` and `xml.etree.ElementTree`. No third-party HTTP or feed-parsing libraries are used.
+`FetchNews()` downloads the feed with `net/http` (custom `User-Agent`, 10 MiB body limit) and parses it with the standard library's `encoding/xml`. No third-party HTTP or feed-parsing libraries are used.
 
 **Parse logic:**
-1. Download feed XML with a 15-second timeout.
-2. Find all `<item>` elements.
-3. For each item, extract: `title`, `link`, `description` (used as `content`), `pubDate`.
-4. Generate a stable article ID: `sha256(title + url)[:16]` — consistent across restarts, no duplicates.
-5. Parse `pubDate` and normalise it to timezone-aware UTC before returning a `NewsItem`.
-6. Return up to `max_items` most recent items.
+1. Download feed XML with a 15-second timeout; non-2xx responses are errors.
+2. Stream `<item>` elements with a non-strict decoder that understands HTML entities (such as `&nbsp;`) and ISO-8859-1 feeds.
+3. For each item, extract: `title`, `link`, `description` (used as `Content`), `pubDate`. Items without a title are skipped.
+4. Generate a stable article ID: `StableID(title, url)` = `sha256(title + url)[:16]` hex, consistent across restarts so duplicates are never created.
+5. Parse `pubDate` (RFC 822/1123, or RFC 3339) and normalise it to UTC; unparseable dates fall back to the current time.
+6. Consider up to `maxItems` items (default 20).
 
-**`NewsItem` structure:**
+**`NewsItem` structure (`internal/domain`):**
 
-```python
-@dataclass
-class NewsItem:
-    id:           str       # sha256(title+url)[:16]
-    source:       str       # value of Name from the spec
-    title:        str
-    content:      str       # RSS description field
-    published_at: datetime  # timezone-aware UTC
-    url:          str
+```go
+type NewsItem struct {
+	ID          string    `json:"id"`      // sha256(title+url)[:16]
+	Source      string    `json:"source"`  // value of Name from the spec
+	Title       string    `json:"title"`
+	Content     string    `json:"content"` // RSS description field
+	PublishedAt time.Time `json:"published_at"` // UTC
+	URL         string    `json:"url,omitempty"`
+}
 ```
+
+---
+
+### Fear & Greed Adapter (`internal/news/feargreed.go`)
+
+`FearGreedAdapter` reads the latest Alternative.me Crypto Fear & Greed index (`https://api.alternative.me/fng/?limit=1`). It returns one news item only when the reading has changed since the last call. The item's title is `Crypto Fear & Greed Index: <label> (<value>/100)`, its content explains what the reading's zone means for sentiment, and it links to the Alternative.me index page. Its ID is derived from the title and the UTC date, so there is one ID per reading per day.
 
 ---
 
 ### News Deduplication
 
-The `_news_loop` in `main.py` deduplicates at two levels:
+`newsCycle()` in `internal/app/loops.go` deduplicates at two levels:
 
-1. **Database level:** `repo.upsert_news_item()` uses `INSERT OR IGNORE` (SQLite), so re-fetching the same article never creates duplicate rows.
+1. **Database level:** `repo.UpsertNewsItem()` stores an item only when no row with the same ID exists, so re-fetching the same article never creates duplicate rows.
 
-2. **Briefing level:** `_briefed_news_ids` is a module-level `set` tracking which article IDs have already triggered a market briefing. Only `new_ids = current_ids - _briefed_news_ids` triggers a briefing call.
+2. **Briefing level:** `briefedNewsIDs` is a set on the `App` tracking which article IDs have already been seen. Only articles in the cache that are not in the set count as new and trigger a briefing. After each cycle the set is replaced with the current cache's IDs, so it stays bounded.
 
-On restart, `_briefed_news_ids` starts empty. The first news fetch always triggers a full briefing with all cached articles — this ensures the LLM has an updated market view immediately after startup.
+On restart, `briefedNewsIDs` starts empty. The first news fetch therefore treats every cached article as new and triggers a full briefing, so the LLM has an updated market view immediately after startup.
 
 ---
 
 ### News Cache Structure
 
-After each fetch cycle, the in-memory `_latest_news` cache is rebuilt:
+After each fetch cycle, all items are sorted newest first and the in-memory `latestNews` cache is rebuilt from the 60 most recent:
 
-```python
-_latest_news = [
-    {
-        "id":           item.id,
-        "source":       item.source,
-        "title":        item.title,
-        "url":          item.url,
-        "summary":      (item.content or "")[:200].strip(),   # first 200 chars
-        "published_at": item.published_at.isoformat(),
-    }
-    for item in top_30_items
-]
+```go
+latest = append(latest, storage.NewsEntry{
+	ID:          item.ID,
+	Source:      item.Source,
+	Title:       item.Title,
+	URL:         url, // nil when the item has no link
+	Summary:     strings.TrimSpace(summary), // first 200 characters of Content
+	PublishedAt: portfolio.FormatISO(item.PublishedAt),
+})
 ```
 
-`summary` is truncated to 200 characters from the raw `content` field. This is what is included in LLM signal analysis prompts and returned by `GET /api/news`.
+`Summary` is truncated to 200 characters (runes) from the raw `Content` field. This is what is included in LLM prompts and returned by `GET /api/news`.
 
-The full `content` is stored in the database but not retained in the in-memory cache (avoids memory bloat from large HTML bodies).
+The full `Content` is stored in the database but not retained in the in-memory cache, which avoids memory bloat from large HTML bodies.
 
 ---
 
 ### News → LLM Briefing Trigger
 
-The news loop fires `_market_briefing_task()` as an independent `asyncio.create_task()` when new articles are detected. This keeps the briefing non-blocking relative to the news polling cycle.
+The news cycle starts `marketBriefingTask()` in its own goroutine when new articles are detected. This keeps the briefing non-blocking relative to the news polling cycle. The goroutine is tracked by a `sync.WaitGroup` so shutdown waits for it.
 
 ```
-_news_loop tick:
-    ├── fetch each adapter in news_adapters (RSS sources + FearGreedAdapter)
+newsCycle:
+    ├── fetch each adapter (RSS sources + FearGreedAdapter)
+    ├── normalise timestamps to UTC, sort newest first
     ├── upsert to DB
-    ├── rebuild _latest_news cache
-    ├── compute new_ids = current_ids - _briefed_news_ids
-    └── if new_ids:
-            update _briefed_news_ids
-            asyncio.create_task(_market_briefing_task(new_articles))
-                └── collect prices + indicators for all active markets
-                └── call _analyser.brief_market(articles, market_data)
-                └── cache result in _analyser.latest_briefing
-                └── log to activity feed
+    ├── rebuild latestNews cache (60 newest)
+    ├── fresh = cached articles not in briefedNewsIDs; briefedNewsIDs = cached IDs
+    ├── if fresh is non-empty:
+    │       go marketBriefingTask(fresh)
+    │           └── collect prices + indicators for all active markets
+    │           └── call analyser.BriefMarket(articles, marketData)
+    │           └── cache and persist the result as the latest briefing
+    │           └── log to activity feed
+    ├── log "News fetched" to the activity feed
+    └── llmClient.RecheckPrimary()   (reclaim LM Studio if it is back)
 ```
 
-The briefing task only fires when `_current_prices` is non-empty. If news arrives before the strategy loop has completed its first tick, the briefing is skipped for that cycle (the next news cycle will include those articles in the new-article count).
+The briefing task only calls the LLM when at least one active market has a price. If news arrives before the strategy loop has priced any market, the briefing is skipped. Those articles are already recorded in `briefedNewsIDs`, so they do not trigger a briefing on the next cycle; only newer articles will.

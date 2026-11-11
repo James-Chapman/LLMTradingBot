@@ -2,14 +2,16 @@
 
 ## Purpose
 
-A self-hosted, news-aware cryptocurrency trading bot that operates against the Kraken spot exchange. The system evaluates momentum signals, enriches them with real-time news sentiment via a local Large Language Model (LLM), enforces portfolio risk rules, and can execute trades in paper (simulated) or live mode.
+A self-hosted, news-aware cryptocurrency trading bot that operates against the Kraken spot exchange. The system evaluates momentum signals, enriches them with real-time news sentiment via a Large Language Model (LLM) served by LM Studio, enforces portfolio risk rules, and can execute trades in paper (simulated) or live mode.
+
+The bot is written in Go (module `github.com/James-Chapman/LLMTradingBot`, Go 1.27). Version 0.6.0 is the Go rewrite of the earlier Python/FastAPI implementation; existing SQLite databases created by the Python version open and keep working.
 
 The primary design goals are:
 
 - **Auditability** — every signal, decision, and trade is persisted to a local SQLite database with a complete audit trail.
 - **Safety** — a universal risk engine enforces hard position limits, cash sufficiency, and daily loss caps before any trade reaches execution.
 - **Operator control** — a web dashboard exposes real-time state, manual overrides, market toggles, and an emergency stop at all times.
-- **Adaptability** — an OpenAI-compatible or local Transformers LLM analyses each signal in full market context (indicators, portfolio, news, briefing, and its own prior reflection) and reflects hourly on closed trade outcomes including entry-time indicator snapshots, feeding patterns back into every subsequent signal decision.
+- **Adaptability** — an LLM (LM Studio first, a remote OpenAI-compatible endpoint as fallback) analyses each signal in full market context (indicators, portfolio, news, briefing, and its own prior reflection) and reflects hourly on closed trade outcomes including entry-time indicator snapshots, feeding patterns back into every subsequent signal decision.
 
 ---
 
@@ -17,19 +19,19 @@ The primary design goals are:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                          FastAPI Application                            │
-│                              (main.py)                                  │
-├──────────────┬───────────────┬──────────────┬───────────────────────────┤
-│ Strategy     │  News         │  OHLC        │  Reflection               │
-│ Loop (30s)   │  Loop (5min)  │  Loop (2min) │  Loop (1hr)               │
-└──────┬───────┴───────┬───────┴──────┬───────┴───────────┬───────────────┘
-       │               │              │                   │
-       ▼               ▼              ▼                   ▼
+│              cmd/tradingbot — net/http server + app.App                 │
+│              (background loops run as goroutines)                       │
+├──────────────┬───────────────┬──────────────┬─────────────┬─────────────┤
+│ Strategy     │  News         │  OHLC        │  Reflection │  Equity     │
+│ Loop (30s)   │  Loop (5min)  │  Loop (2min) │  Loop (1hr) │  Ticker(10s)│
+└──────┬───────┴───────┬───────┴──────┬───────┴──────┬──────┴─────────────┘
+       │               │              │              │
+       ▼               ▼              ▼              ▼
 ┌─────────────┐ ┌───────────┐ ┌─────────────┐ ┌──────────────────┐
-│  BasicStrat │ │ RSS feeds │ │ Kraken OHLC │ │  LLM Analyser    │
-│  Learner    │ │ CoinDesk  │ │  (cache)    │ │  (LMStudio/      │
-│  Indicators │ │ CoinTele  │ └─────────────┘ └──────────────────┘
-└──────┬──────┘ └─────┬─────┘
+│  Strategies │ │ RSS feeds │ │ Kraken OHLC │ │  LLM Analyser    │
+│  Learner    │ │ Fear &    │ │  (cache)    │ │  (LM Studio →    │
+│  Indicators │ │ Greed     │ └─────────────┘ │   remote API)    │
+└──────┬──────┘ └─────┬─────┘                 └──────────────────┘
        │              │ new articles detected
        ▼              ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -44,12 +46,12 @@ The primary design goals are:
                                │                        │
                                ▼                        ▼
                     ┌─────────────────────────────────────────┐
-                    │ PaperExecutionEngine / KrakenExecutionEngine │
+                    │   paper.Engine / kraken.ExecutionEngine │
                     └─────────────────────────────────────────┘
                                    │
                                    ▼
                     ┌─────────────────────────────────────────┐
-                    │        SQLite / Repository              │
+                    │        SQLite / storage.Repository      │
                     │  orders · positions · outcomes ·        │
                     │  equity · news · price ticks ·          │
                     │  signals · activity · control state ·   │
@@ -57,22 +59,26 @@ The primary design goals are:
                     └─────────────────────────────────────────┘
 ```
 
+Live prices reach the strategy loop through the Kraken WebSocket v2 ticker channel; if the stream fails the market adapter falls back to REST ticker polling.
+
 ---
 
 ## Technology Stack
 
 | Layer | Technology | Version / Notes |
 |---|---|---|
-| Web framework | FastAPI + Uvicorn | ASGI, async throughout |
+| Language | Go | 1.27; single static binary per command |
+| Web server | `net/http` (`http.ServeMux`) | Package `internal/server`; graceful shutdown on Ctrl+C / SIGTERM |
+| Concurrency | Goroutines + `context.Context` | One goroutine per background loop; cancellation via the root context |
 | Frontend | Alpine.js + local CSS | No build step; utility styling in `/static/styles.css` |
 | Charts | Lightweight Charts (candles), Chart.js (equity) | CDN-loaded |
-| Database | SQLite via SQLAlchemy 2.x | `StaticPool`; single file |
-| Settings | Pydantic v2 / pydantic-settings | `.env` file |
-| Exchange API | krakenex + pykrakenapi | Read-only in paper mode |
-| LLM | OpenAI-compatible API (preferred) → Transformers (fallback) | `SwitchingLLMClient` probes and routes |
-| HTTP client | httpx (async) | Used for OpenAI-compatible chat-completions calls |
-| Logging | Python `logging` → JSON + file | Structured; module-level |
-| Numeric compute | numpy | Indicator reductions, replay metrics, learner statistics |
+| Database | SQLite via `database/sql` + `modernc.org/sqlite` | Pure Go (no cgo); one shared connection (`SetMaxOpenConns(1)`); WAL journal; schema compatible with Python-created DBs |
+| Settings | `internal/config` (`Settings` struct) | Defaults → `.env` file in the repo root → real environment variables |
+| Exchange API | Official Kraken Go SDK `github.com/krakenfx/api-go/v2` | REST plus WebSocket v2 ticker; market data is public and key-free |
+| LLM | LM Studio (OpenAI-compatible, preferred) → remote OpenAI-compatible API (fallback) | `llm.SwitchingClient` probes and routes |
+| HTTP client | `net/http` | Used for LLM chat-completions, RSS, Fear & Greed, CoinGecko, alert webhook |
+| Logging | `log/slog` JSON handler | stdout + `LOG_FILE`; LLM components also write `llm.log` |
+| Numeric compute | Go standard library (`math`) | Indicator reductions, replay metrics, learner statistics |
 
 ---
 
@@ -80,55 +86,54 @@ The primary design goals are:
 
 ```text
 LLMTradingBot/
-|-- launch.bat                      Windows launcher (venv + uvicorn)
-|-- requirements.txt                Runtime dependencies
-|-- requirements-dev.txt            Developer tooling
+|-- go.mod / go.sum                 Module github.com/James-Chapman/LLMTradingBot
+|-- .env.example                    Commented settings template (copy to .env)
+|-- .env                            Runtime configuration (not committed)
+|-- setup.bat                       Windows setup (Go toolchain check, .env)
+|-- launch.bat                      Windows launcher (go build + run + open dashboard)
+|-- run_tests.bat                   Runs go test
 |-- docs/                           Project documentation
-|-- tests/                          BDD-style unittest coverage
-|-- backend/
-|   |-- main.py                     FastAPI app, background loops, all endpoints
-|   |-- .env                        Runtime configuration (not committed)
-|   |-- analysis/
-|   |   `-- indicators.py           numpy-assisted technical indicators
-|   |-- approval/
-|   |   `-- service.py              Approval queue with TTL
-|   |-- config/
-|   |   `-- settings.py             Pydantic settings model
-|   |-- control/
-|   |   `-- state.py                Emergency stop, market toggles, strategy selection
-|   |-- domain/
-|   |   `-- models.py               Pydantic domain models
-|   |-- execution/
-|   |   |-- paper.py                Paper trading engine
-|   |   `-- kraken.py               Live Kraken order engine
-|   |-- ingestion/
-|   |   |-- kraken_adapter.py       Kraken ticker and OHLC adapter
-|   |   `-- news_adapter.py         RSS news ingestion
+|-- cmd/
+|   |-- tradingbot/main.go          Server entry point (flags -env, -frontend)
+|   |-- cli/main.go                 Operator CLI: status, approve, reject, run
+|   `-- backtest/main.go            Historical replay against Kraken OHLC
+|-- internal/
+|   |-- analysis/                   Technical indicators (pure Go)
+|   |-- app/                        Wiring, runtime state, background loops, operations, views
+|   |   `-- apptest/                Network-free fakes for tests
+|   |-- approval/service.go         Approval queue with TTL
+|   |-- backtest/replay.go          Historical replay engine
+|   |-- config/                     Settings struct, .env loader, currency symbols
+|   |-- control/state.go            Emergency stop, market toggles, strategy selection
+|   |-- domain/models.go            Core value types and enums
+|   |-- kraken/                     Kraken SDK wrapper: market data, live execution, retry
+|   |-- learner/learner.go          Exponential-decay performance learner
 |   |-- llm/
-|   |   |-- common.py               Shared JSON parsing, prompt, and circuit helpers
-|   |   |-- openai_client.py        OpenAI-compatible chat-completions client
-|   |   |-- switching_client.py     OpenAI/Transformers backend router
-|   |   |-- transformers_client.py  Hugging Face Transformers async client
-|   |   `-- analyser.py             Signal analysis, briefing, reflection
-|   |-- observability/
-|   |   |-- activity.py             Event log, memory and DB persisted
-|   |   `-- logging.py              JSON structured logging setup
-|   |-- risk/
-|   |   `-- engine.py               Universal risk management
-|   |-- storage/
-|   |   |-- database.py             Engine creation and auto-migrations
-|   |   |-- models.py               SQLAlchemy ORM table definitions
-|   |   `-- repository.py           All DB read/write operations
+|   |   |-- client.go               Client / Backend interfaces and sentinel errors
+|   |   |-- common.go               JSON parsing, prompt helpers, circuit breaker
+|   |   |-- openai_client.go        OpenAI-compatible client (LM Studio and remote)
+|   |   |-- switching_client.go     LM Studio → remote fallback router
+|   |   |-- pyfmt.go                Python-compatible number formatting for prompts
+|   |   `-- analyser.go             Signal analysis, briefing, reflection
+|   |-- news/                       RSS feeds and Fear & Greed adapter
+|   |-- observability/              slog JSON logging and the activity log
+|   |-- paper/                      Paper trading engine and operator reset
+|   |-- portfolio/equity.go         Mark-to-market equity snapshots
+|   |-- risk/                       Universal risk management and state persistence
+|   |-- server/server.go            HTTP routes and static frontend
+|   |-- storage/                    SQLite schema, migrations and the Repository
 |   |-- strategy/
-|   |   |-- basic_strategy.py       Indicator-only momentum strategy
-|   |   |-- basic_and_llm_strategy.py  Indicator consensus + LLM analysis strategy
-|   |   |-- llm_only_strategy.py    LLM-led strategy with no indicator gating
-|   |   `-- learner.py              Exponential-decay performance learner
-|   `-- universe/
-|       `-- resolver.py             Tradable market universe builder
+|   |   |-- strategy.go             Strategy interface, IDs, registry
+|   |   |-- basic.go                Indicator-only momentum strategy
+|   |   |-- basic_and_llm.go        Indicator consensus + LLM analysis strategy
+|   |   |-- llm_only.go             LLM-led strategy with no indicator gating
+|   |   |-- indicator_signal.go     Shared indicator-gated signal builder
+|   |   `-- calc/                   Shared decision formulas and constants
+|   `-- universe/resolver.go        Tradable market universe builder
 `-- frontend/
     |-- index.html                  Main dashboard (Alpine.js SPA)
     |-- approvals.html              Dedicated approval queue page
+    |-- static/styles.css           Local utility styles
     `-- sw.js                       Service Worker
 ```
 
@@ -148,10 +153,12 @@ LLMTradingBot/
 
 | Environment | Behaviour |
 |---|---|
-| `paper` | All executions are simulated by `PaperExecutionEngine` with realistic fee and slippage modelling. No real money moves. |
-| `live` | Live-flagged markets submit spot orders to Kraken through `KrakenExecutionEngine`. Requires valid Kraken API credentials. |
+| `paper` | All executions are simulated by `paper.Engine` with realistic fee and slippage modelling. No real money moves. |
+| `live` | Live-flagged markets submit spot orders to Kraken through `kraken.ExecutionEngine`. Requires valid Kraken API credentials; without them the live engine refuses every order locally. |
 
 The risk engine, one-position-per-pair rule, and cash sufficiency checks are enforced identically in both environments.
+
+Order routing is per market, gated by environment: an order goes to `kraken.ExecutionEngine` only when `TRADING_ENVIRONMENT=live` **and** the market is toggled live in the dashboard (`control_state.live_markets`). Every other order goes to `paper.Engine`; in the paper environment a live-toggled market trades on paper and logs a warning. `TRADING_ENVIRONMENT` also selects where the dashboard's equity and cash come from (paper engine or Kraken balances) and whether live orders are reconciled.
 
 ---
 
@@ -164,12 +171,15 @@ Risk checks run before mode routing, not inside each mode's branch. This means n
 Positions are keyed by UUID (`position_id`), not by market symbol. This allows complete independent tracking of every trade's lifecycle and pairs BUY and SELL orders in the trade ledger via a shared `position_id`.
 
 ### 3. LLM as an Advisor with Veto Power and Self-Improvement Loop
-The LLM adjusts confidence (`confidence_scale` 0.5–2.0) and annotates the thesis. It can also veto a signal entirely when its `confidence_scale` falls below `LLM_VETO_THRESHOLD` (default 0.70). Vetoes only fire when the active LLM backend is available. Final execution authority for all non-vetoed signals remains with the risk engine and the operator.
+The LLM adjusts confidence (`confidence_scale` 0.5–2.0) and annotates the thesis. It can also veto a signal entirely when its `confidence_scale` falls below `LLM_VETO_THRESHOLD` (default 0.70). Vetoes only fire when an LLM backend is available. Final execution authority for all non-vetoed signals remains with the risk engine and the operator.
 
 Every signal analysis prompt includes the LLM's own most recent hourly reflection (pattern + suggestion), closing the feedback loop so its advice influences subsequent decisions. The hourly reflection itself receives the full indicator state at the time of each trade entry (joined from `trade_ideas`), enabling indicator-level pattern detection rather than summary statistics alone.
 
 ### 4. Complete State Persistence
 All dashboard-relevant state — positions, equity, price history, news, trade signals, risk rejections, activity log, control toggles, and LLM briefings/reflections — is stored in a local SQLite file. The bot can survive a restart and fully recover from the database with no loss of operational context.
 
-### 5. numpy-Assisted Indicators
-Technical indicators (`analysis/indicators.py`) use numpy for scalar reductions such as mean, standard deviation, min/max, and close-to-close absolute movement. EMA series remain explicit loops because each EMA value depends on the previous value.
+### 5. Dependency-Free Indicators
+Technical indicators (`internal/analysis`) are plain Go loops over `[]float64` using the `math` package. Standard deviation is the population form, matching the numpy results of the Python version. EMA series are computed iteratively because each EMA value depends on the previous value.
+
+### 6. Shared State Behind One Mutex
+The Python version kept runtime state in module globals touched only by the asyncio event loop. In Go, `app.App` owns that state behind a single `sync.Mutex` that is never held across network, LLM, or exchange calls; the component services (paper engine, control state, approvals, risk, learner, analyser, activity log) are each safe for concurrent use.

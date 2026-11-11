@@ -7,6 +7,31 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.6.1] — 2026-11-11
+
+### Fixed
+- **Live orders are blocked in the paper environment.** `App.executeIntent()` now sends an order to Kraken only when `TRADING_ENVIRONMENT=live` **and** the market is toggled live. Previously a market toggled live in the dashboard sent real orders even with `TRADING_ENVIRONMENT=paper` (inherited from the Python version). In the paper environment such orders now execute on paper, and the bot logs a warning plus an activity entry explaining why.
+
+---
+
+## [0.6.0] — 2026-11-11
+
+### Changed
+
+- **Backend rewritten in Go 1.27.** The FastAPI/SQLAlchemy/Pydantic Python backend is replaced by a single Go module (`github.com/James-Chapman/LLMTradingBot`). Entry points live in `cmd/` (`tradingbot` server, `cli`, `backtest`) and packages in `internal/` (`config`, `domain`, `observability`, `storage`, `analysis`, `strategy`, `strategy/calc`, `learner`, `portfolio`, `risk`, `approval`, `control`, `paper`, `kraken`, `news`, `universe`, `llm`, `app`, `server`). HTTP routes, methods, status codes and JSON shapes are unchanged, so the existing dashboard works as before.
+- **Kraken access uses the official Go SDK** (`github.com/krakenfx/api-go/v2`) for asset pairs, tickers, OHLC, balances, order placement, order queries and cancellation. Live ticker streaming now uses Kraken WebSocket v2 (`BTC/EUR`-style symbols), still falling back to 5-second REST polling. Order volume and limit prices are rounded to each pair's lot and tick size via the SDK normaliser.
+- **LLM integration targets LM Studio.** LM Studio's OpenAI-compatible server (`LMSTUDIO_BASE_URL`, default `http://localhost:1234/v1`) is the primary backend; when `LMSTUDIO_MODEL` is blank the first loaded model is used. A remote OpenAI-compatible endpoint (`OPENAI_*`) is now an optional fallback used only while LM Studio is unreachable, and LM Studio is reclaimed automatically when it recovers. Dashboard model labels read "(LM Studio)" or "(Remote)".
+- **Database layer** uses `database/sql` with the pure-Go `modernc.org/sqlite` driver (no CGO). Table and column names are unchanged and all previous migrations are reproduced, so existing `trading_bot.db` files open without conversion.
+- **Configuration** — `.env` now lives in the repository root (see `.env.example`); environment variables override it. New keys: `LMSTUDIO_BASE_URL`, `LMSTUDIO_MODEL`, `LMSTUDIO_API_KEY`, `LMSTUDIO_TIMEOUT`, `KRAKEN_REST_URL`, `DATABASE_PATH` (legacy `DATABASE_URL=sqlite:///…` is still accepted).
+- **Tooling** — `setup.bat`, `launch.bat` and `run_tests.bat` build and test with the Go toolchain; CI runs `go vet`, `gofmt` and `go test` (`.github/workflows/go.yml`). Tests are Go BDD subtests (`GIVEN … WHEN … THEN …`) using `httptest` fakes with no real network access.
+- **Behaviour tweaks found during the port** — the dashboard ETag is bumped after approve/reject/close/reset so the UI refreshes immediately; `DYNAMIC_UNIVERSE_SOURCE=none` now means fixed markets only; `MAX_ETH_ECOSYSTEM_COINS` is now honoured (Python hard-coded 10); live execution refuses orders outside the live environment or without API credentials; CLI `--mode`/`--environment` overrides are now applied.
+
+### Removed
+
+- HuggingFace Transformers local model support (`TRANSFORMERS_LLM_MODEL`, `TRANSFORMERS_TIMEOUT`), the Python virtual-environment bootstrap, `requirements*.txt`, `pyproject.toml`, the pytest suite and the pylint workflow.
+
+---
+
 ## [0.5.28] — 2026-04-30
 
 ### Changed

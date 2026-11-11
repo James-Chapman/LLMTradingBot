@@ -4,6 +4,8 @@ This document tracks all identified bugs, improvements, and enhancements in the 
 
 **Status key:** `[ ]` = pending · `[x]` = done · `[~]` = in progress · `[!]` = blocked
 
+> **Go rewrite (v0.6.0):** The items below were completed on the Python implementation. Their `backend/...` and `tests/...` paths, function names and line numbers refer to that code, which is still available in git history before v0.6.0. The behaviour they describe was carried over to the Go packages under `internal/` (for example `backend/main.py` → `internal/app` and `internal/server`, `backend/execution/paper.py` → `internal/paper`, `backend/ingestion/` → `internal/kraken` and `internal/news`). Items that only applied to the Python toolchain (pytest configuration, asyncio event-loop blocking, numpy adoption, `datetime.utcnow()` deprecation, `zip(strict=)`, ruff whitespace, and narrowing Python exception catches) have been removed.
+
 ---
 
 ## QA Review — 2026-04-26
@@ -45,12 +47,6 @@ This document tracks all identified bugs, improvements, and enhancements in the 
 
 ### Code Quality — 2026-04-26
 
-- [x] **QUALITY-003: Synchronous SQLite calls block the async event loop in the strategy tick.**
-  - **Where:** `backend/main.py` strategy loop — `repo.save_price_tick()`, `repo.trim_old_price_ticks()`, `repo.trim_old_activity()`, `repo.save_trade_idea()`, `repo.save_risk_rejection()`, etc.
-  - **Problem:** All repository methods are synchronous and are called directly from `async` strategy loop code. SQLite I/O under load (write-ahead log flush, vacuum, large result sets) blocks the event loop, delaying the next tick, WebSocket messages, and API responses. Each synchronous DB call holds the event loop for its entire duration.
-  - **Expected:** Wrap blocking repository calls with `await asyncio.get_event_loop().run_in_executor(None, ...)`, or convert the repository layer to use an async SQLite driver such as `aiosqlite`.
-  - **Suggested test:** GIVEN a repository operation that takes >10 ms WHEN it is called in the strategy loop THEN other async tasks (e.g. API health-check responses) are not blocked during the operation.
-
 - [x] **QUALITY-004: `previous_price` supplied to strategy is 17 minutes stale, not the prior tick.**
   - **Where:** `backend/main.py` line 344.
   - **Problem:** `prev = hist[-_LOOKBACK_TICKS - 1]` resolves to `hist[-35]` — the price from 35 ticks (≈17.5 minutes) ago. This value is passed as `previous_price` in `market_data` and used as the sole momentum baseline in `BasicStrategy` (`momentum = (current - previous) / previous`). The variable name implies it is the immediately preceding price; the actual value is a rolling 17-minute-old reference. This means the momentum signal is insensitive to short-term reversals within the lookback window, and the thesis logs display a momentum figure that operators would reasonably interpret as a 30-second change.
@@ -60,16 +56,6 @@ This document tracks all identified bugs, improvements, and enhancements in the 
 ---
 
 ## Open Todos — 2026-04-25
-
-### Critical — Test Runner Broken
-
-- [x] **CFG-001: pytest cannot discover tests — missing `pythonpath` config.**
-  - **Where:** `pyproject.toml`.
-  - **Problem:** `tests/bdd_helpers.py` is imported by every test file as a bare `from bdd_helpers import ...`. pytest does not add the `tests/` directory to `sys.path` automatically, so collection fails with `ModuleNotFoundError: No module named 'bdd_helpers'`. Every single test file is currently un-runnable via `pytest`.
-  - **Fix:** Add `[tool.pytest.ini_options]` to `pyproject.toml` with `pythonpath = ["tests"]` (pytest ≥ 7) and `testpaths = ["tests"]`.
-  - **Suggested test:** `pytest tests/ --collect-only` exits 0 with no import errors.
-
----
 
 ### New Bugs
 
@@ -128,11 +114,6 @@ This document tracks all identified bugs, improvements, and enhancements in the 
 ---
 
 ### Code Quality
-
-- [x] **QUALITY-001: Background loops catch bare `Exception` — programming errors are silently swallowed.**
-  - **Where:** `backend/main.py` lines 669, 709, 764, 783, 807, 818, 846.
-  - **Problem:** Every background loop wraps its inner body in `except Exception as e: logger.warning(...)`. This correctly prevents one bad tick from crashing the bot, but it also masks `AttributeError`, `TypeError`, `KeyError`, and other programming mistakes. A bug introduced in the strategy or indicator code would log a warning and continue rather than surfacing as a visible failure.
-  - **Expected:** Narrow catches to `(httpx.RequestError, asyncio.TimeoutError, krakenex.APIError)` or equivalent. Re-raise `(KeyboardInterrupt, SystemExit)` and let unexpected exceptions propagate to the task, where FastAPI's exception handler can alert the operator.
 
 - [x] **QUALITY-002: `features/` directory is empty.**
   - **Where:** `backend/features/`.
@@ -391,76 +372,6 @@ This document tracks all identified bugs, improvements, and enhancements in the 
 
 ---
 
-## numpy Integration Plan — 2026-04-25
-
-> numpy 2.4.4 is already present in `requirements.txt` (transitive dep via pandas).
-> No installation step is needed — the plan is purely about adopting it in application code.
-> EMA calculations remain pure-Python loops: they are inherently sequential (each value depends
-> on the previous one) and numpy does not provide a material benefit there.
-> The biggest wins are in scalar reductions (mean, std, max, min, abs) and the backtest replay.
-
-- [x] **NUMPY-001: Vectorise scalar reductions in `indicators.py`.**
-  - **Files:** `backend/analysis/indicators.py`
-  - **Scope:** Replace Python built-ins with numpy equivalents in the five functions where
-    the whole array is consumed in one reduction step. EMA-series functions stay as loops.
-  - **Changes per function:**
-
-    | Function | Python today | numpy replacement |
-    |---|---|---|
-    | `bollinger_bands` | `sum()`, manual variance loop | `np.mean()`, `np.std()` |
-    | `rsi` | list comprehensions for gains/losses + loop | `np.diff()`, `np.where()`, SMMA loop unchanged |
-    | `atr` (close-to-close) | `abs()` inside list-comp + `sum()` | `np.abs(np.diff())`, `np.mean()` |
-    | `williams_r` | `max()`, `min()` on window | `np.max()`, `np.min()` |
-    | `stochastic` | `max()`, `min()` per k-window | `np.max()`, `np.min()` per slice |
-
-  - **Entry-point convention:** Add `arr = np.asarray(prices, dtype=np.float64)` at the top of
-    each function so callers can still pass plain `List[float]` without changes anywhere else.
-  - **BDD tests:** GIVEN price lists WHEN the numpy-backed indicators are called THEN they match
-    the pure-Python references within the documented tolerances.
-  - **Implementation:** `bollinger_bands`, `rsi`, `atr`, `williams_r`, and `stochastic`
-    now coerce price input with `np.asarray(..., dtype=np.float64)` and use numpy reductions.
-  - **Acceptance:** All existing BDD tests pass; ruff reports no violations.
-
-- [x] **NUMPY-002: Vectorise backtest replay metrics in `replay.py`.**
-  - **Files:** `backend/backtest/replay.py`
-  - **Scope:** The replay module processes arrays of equity values and P&L figures to produce
-    summary statistics. These are batch operations over potentially thousands of rows.
-  - **Changes:** Max drawdown uses `np.maximum.accumulate`; the replay stores equity as an
-    `np.ndarray`; win rate and profit factor use numpy reductions; 5-minute to 15-minute candle
-    resampling uses numpy bucket reductions.
-  - **BDD tests:** GIVEN known equity/P&L inputs WHEN replay metrics are computed THEN drawdown,
-    win rate, profit factor, and resampled candles match manual reference values.
-  - **Implementation:** Replay now keeps the equity curve in an `np.ndarray`, computes max
-    drawdown and trade stats with numpy, includes `profit_factor` in reports, and resamples
-    5-minute candles with numpy bucket reductions.
-  - **Acceptance:** Existing backtest BDD tests pass unchanged; no new ruff violations.
-
-- [x] **NUMPY-003: numpy-backed rolling statistics in `PerformanceLearner`.**
-  - **Files:** `backend/strategy/learner.py`
-  - **Scope:** Outcome tracking for rolling win rate, average P&L, and P&L percentiles over
-    `signal_outcomes` history.
-  - **Changes:** Load P&L history into `np.ndarray` once per query; compute mean, median, and
-    percentiles with numpy; calculate trailing-N win rate from the latest rolling slice.
-  - **BDD tests:** GIVEN outcome histories WHEN rolling win rate and percentiles are requested
-    THEN results match manually counted and `statistics.quantiles` reference values.
-  - **Implementation:** `PerformanceLearner` keeps chronological P&L history per key and exposes
-    numpy-backed `rolling_win_rate()` and `pnl_percentiles()` query helpers used by summaries.
-  - **Acceptance:** All learner BDD tests pass; ruff reports no violations.
-
-- [x] **NUMPY-004: Enforce numpy type hygiene across the boundary.**
-  - **Files:** `backend/analysis/indicators.py`, `backend/backtest/replay.py`
-  - **Scope:** Prevent numpy scalar types from leaking into FastAPI responses, JSON reports, or
-    SQLAlchemy columns.
-  - **Changes:** Wrap public indicator return values in plain Python values and add `_to_py(val)`
-    for numpy scalars and arrays.
-  - **BDD tests:** GIVEN `compute_all()` output WHEN it is serialised with `json.dumps` THEN no
-    `TypeError` is raised.
-  - **Implementation:** Indicator outputs pass through `_to_py()` so numpy scalars and arrays are
-    converted before API/report boundaries, with JSON serialisation covered by BDD tests.
-  - **Acceptance:** All BDD tests pass; ruff reports no violations.
-
----
-
 ## Bugs
 
 - [x] **BUG-001: Realised P&L ignores actual fill price, slippage, and fees.**
@@ -530,13 +441,13 @@ This document tracks all identified bugs, improvements, and enhancements in the 
 
 - [x] **BT-002: Add frozen 48-hour historical fixtures for stable CI tests.**
   - **Goal:** Make profit tests repeatable and independent of Kraken availability.
-  - **Fixture path:** Add files under `tests/fixtures/historical/`, for example `btc_eur_5m_profitable_48h.json` and optionally `eth_eur_5m_choppy_48h.json`.
+  - **Fixture path:** Add files under `tests/fixtures/historical/`, for example `btc_eur_5m_profitable_48h.json` and optionally `eth_eur_5m_choppy_48h.json`. (Since the Go rewrite the fixture lives at `internal/backtest/testdata/btc_eur_5m_profitable_48h.json`.)
   - **Fixture content:** Store candles as `{ "t": "...", "o": 100.0, "h": 101.0, "l": 99.5, "c": 100.8, "v": 12.3 }`. Include metadata with `market`, `interval_minutes`, `start`, `end`, `source`, and `expected_strategy`.
   - **Profit fixture requirement:** The main fixture should contain a realistic trend with pullbacks where the configured strategy can produce at least one profitable trade after fees and slippage. This can be captured from Kraken and pinned, or generated from realistic candle rules if captured data is not suitable.
   - **Reason:** A test that always fetches the latest 48 hours and requires profit will be flaky. The live market can be sideways or adverse even when the bot is correct.
 
 - [x] **BT-003: Add BDD tests for replay profitability and determinism.**
-  - **Test file:** Add `tests/test_backtest_replay_bdd.py`.
+  - **Test file:** Add `tests/test_backtest_replay_bdd.py` (now `internal/backtest/replay_test.go`).
   - **Profit test:** GIVEN a pinned 48-hour profitable BTC/EUR candle fixture WHEN the replay runs the selected strategy with paper execution THEN ending equity is greater than starting equity after fees and slippage.
   - **Trade creation test:** GIVEN the same fixture WHEN the replay completes THEN at least one filled open order and one filled close order are produced.
   - **Determinism test:** GIVEN the same fixture and settings WHEN the replay runs twice THEN orders, fills, ending equity, and realised P&L are identical.
@@ -546,7 +457,7 @@ This document tracks all identified bugs, improvements, and enhancements in the 
 
 - [x] **BT-004: Add an optional live Kraken 48-hour smoke backtest.**
   - **Goal:** Let us run `last 48 hours` against current Kraken data without making CI flaky.
-  - **Command:** Add a CLI entry point such as `python -m backend.backtest.replay --market BTC/EUR --hours 48 --interval 5 --strategy combined --source kraken`.
+  - **Command:** Add a CLI entry point such as `python -m backend.backtest.replay --market BTC/EUR --hours 48 --interval 5 --strategy combined --source kraken`. Since the Go rewrite this is `go run ./cmd/backtest -market BTC/EUR -hours 48 -interval 5 -strategy basic_and_llm_strategy -source kraken` (add `-require-profit` for acceptance runs).
   - **Network behaviour:** This test should be opt-in, for example guarded by `RUN_LIVE_BACKTESTS=1`, and skipped by default in unit test runs.
   - **Assertion:** The live smoke test should assert that data loads, replay completes, no exceptions are raised, all orders/fills are internally consistent, and a report is written. It should not require profit by default.
   - **Optional threshold mode:** Add an explicit `--require-profit` flag for manual acceptance runs. Use it only when the user intentionally wants to evaluate whether the current strategy made money over the latest 48 hours.
@@ -594,12 +505,6 @@ All bugs below have been fixed. 104 tests pass; ruff reports no violations.
   - **Expected:** Both the save and the restore comparison must use the same timezone (UTC). Use `datetime.now(timezone.utc).date()` everywhere.
   - **Suggested test:** GIVEN a risk state saved with today's UTC date WHEN the bot restores the state in a simulated non-UTC environment THEN the daily loss is correctly reloaded.
 
-- [x] **BUG-011: `datetime.utcnow()` deprecated — codebase-wide compatibility risk.**
-  - **Where:** `backend/main.py`, `backend/risk/engine.py`, `backend/execution/paper.py`, `backend/execution/kraken.py`, `backend/approval/service.py`, `backend/storage/repository.py`, `backend/universe/resolver.py`, `tests/bdd_helpers.py`, and several test files.
-  - **Problem:** `datetime.utcnow()` is deprecated as of Python 3.12 and scheduled for removal. Python 3.14 (the current runtime) already emits `DeprecationWarning` on every call — 4 896 warnings were generated in the test suite. When the function is removed in a future release the entire application will crash at startup.
-  - **Expected:** Replace every `datetime.utcnow()` with `datetime.now(timezone.utc)` and every `datetime.utcnow().isoformat()` with `datetime.now(timezone.utc).isoformat()`. Import `timezone` from the standard `datetime` module.
-  - **Suggested test:** GIVEN the test suite runs WHEN any module is imported THEN no `DeprecationWarning` referencing `utcnow` is emitted.
-
 - [x] **BUG-012: Paper short margin is not reserved — cash increases when opening a short.**
   - **Where:** `backend/execution/paper.py` — `_has_sufficient_funds()` line 352, `_apply_fill()` line 386.
   - **Problem:** `_has_sufficient_funds()` gates a new paper short on `self.cash >= fill_value + fee`. However `_apply_fill()` then does `self.cash += fill_value - fee` — cash increases when a short opens. The margin is checked but never deducted, allowing effective leverage beyond configured starting capital.
@@ -611,18 +516,6 @@ All bugs below have been fixed. 104 tests pass; ruff reports no violations.
   - **Problem:** `_equity_ticker_loop` updates `_equity_history` and `_current_equity` every 10 seconds but never calls `repo.save_equity_snapshot()`. DB persistence only occurs inside `_strategy_loop` every 30 seconds, so crashes or delayed strategy ticks can leave chart gaps.
   - **Expected:** The equity ticker should persist each snapshot to the DB, or the strategy loop should persist on every tick rather than every 30 seconds.
   - **Suggested test:** GIVEN the equity ticker fires three times WHEN the DB is inspected THEN three new equity snapshot rows are present.
-
-- [x] **BUG-014: `zip()` without `strict=` in MACD allows silent length mismatch.**
-  - **Where:** `backend/analysis/indicators.py` line 145.
-  - **Problem:** `zip(fast_series[offset:], slow_series)` silently truncates to the shorter series if an off-by-one occurs in the alignment calculation, producing subtly wrong MACD values without any indication of failure.
-  - **Expected:** Use `zip(fast_series[offset:], slow_series, strict=True)` so a length mismatch raises `ValueError` immediately.
-  - **Suggested test:** GIVEN a price series where `slow - fast` offset is deliberately wrong WHEN `macd()` is called THEN a `ValueError` is raised rather than silently returning misaligned values.
-
-- [x] **BUG-015: Missing newline at end of file in `models.py` and `logging.py`.**
-  - **Where:** `backend/domain/models.py` line 142, `backend/observability/logging.py` line 72.
-  - **Problem:** Ruff reports `W292 No newline at end of file` for both files. Some tools treat a missing trailing newline as malformed text and create noisy diffs.
-  - **Expected:** Add a single trailing newline to both files.
-  - **Suggested test:** GIVEN ruff runs with `W292` enabled WHEN both files are checked THEN no `W292` violations are reported.
 
 ---
 

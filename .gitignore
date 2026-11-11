@@ -1,24 +1,28 @@
 # Environment — contains API keys, never commit
+.env
 backend/.env
 
-# Runtime artefacts
-backend/*.db
-backend/*.log
+# Build output
+bin/
+*.exe
 
+# Runtime artefacts
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# Legacy Python artefacts
 **/__pycache__/
 **/*.pyc
-__pycache__/
-
-*.db
-*.log
+.venv/
+.pytest_cache/
+.ruff_cache/
 
 # Local development files
 .claude/
 .claudeignore
 .idea/
-.pytest_cache/
-.ruff_cache/
 .vscode/
 .tmp/
-.venv/
 .github/

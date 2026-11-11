@@ -4,9 +4,9 @@
 
 ---
 
-LLMTradingBot is a self-hosted cryptocurrency trading bot for Kraken spot markets. It collects Kraken market data, generates strategy signals, optionally asks a local Ollama LLM to analyse or veto those signals, applies risk controls, and exposes a FastAPI-powered dashboard for monitoring and operator control.
+LLMTradingBot is a self-hosted cryptocurrency trading bot for Kraken spot markets, written in Go. It collects Kraken market data, generates strategy signals, optionally asks a local LLM (LM Studio) to analyse or veto those signals, applies risk controls, and serves a browser dashboard for monitoring and operator control.
 
-The bot is designed to run safely in paper mode first. Live trading is supported for Kraken, but only after you provide Kraken API credentials and explicitly enable live execution.
+The bot is designed to run safely in paper mode first. Live trading is supported for Kraken, but only after you provide Kraken API credentials and explicitly enable live execution for a market.
 
 > This project is trading software, not financial advice. Use paper mode until you understand the strategy, risk settings, and failure modes.
 
@@ -17,71 +17,78 @@ The bot is designed to run safely in paper mode first. Live trading is supported
 - Enforces risk checks before any order can be executed.
 - Supports `manual`, `semi_automated`, and `fully_automated` trading modes.
 - Supports paper execution and live Kraken execution.
-- Persists signals, orders, positions, equity, news, risk rejections, and control state to SQLite.
+- Persists signals, orders, positions, equity, news, risk rejections, approvals, and control state to SQLite.
 - Serves a browser dashboard for positions, equity, market status, activity, approvals, and emergency stop.
 
 ## Tech Stack
 
 | Area | Technology |
 |---|---|
-| Backend | Python, FastAPI, Uvicorn, async background tasks |
-| Database | SQLite through SQLAlchemy 2.x |
-| Settings | Pydantic v2 and pydantic-settings, loaded from `backend/.env` |
-| Exchange | krakenex and pykrakenapi |
-| LLM | Ollama local REST API, `phi3:mini` by default |
-| HTTP client | httpx |
-| Numeric compute | numpy and pandas |
+| Backend | Go 1.27, standard-library `net/http` server, background loops as goroutines |
+| Database | SQLite via `modernc.org/sqlite` (pure Go, no CGO) |
+| Settings | `.env` file in the repository root, overridden by real environment variables |
+| Exchange | Official Kraken Go SDK `github.com/krakenfx/api-go/v2` (REST + WebSocket v2) |
+| LLM | LM Studio's OpenAI-compatible API (primary), optional remote OpenAI-compatible fallback |
+| Logging | `log/slog` JSON to stdout, `trading_bot.log` and `llm.log` |
 | Frontend | Alpine.js, local CSS, Chart.js, Lightweight Charts |
-| Tests and linting | unittest BDD tests, Ruff |
+| Tests and linting | `go test` with BDD-named subtests, `go vet`, `gofmt` |
 
 ## Repository Layout
 
 ```text
 .
-|-- backend/                 FastAPI app, strategies, risk, execution, storage
+|-- cmd/
+|   |-- tradingbot/          Server entry point (dashboard, API, background loops)
+|   |-- cli/                 Operator CLI: status, approve, reject, run
+|   `-- backtest/            Historical replay against Kraken OHLC data
+|-- internal/                Application packages (app, server, strategy, risk, paper,
+|                            kraken, llm, news, storage, ...)
 |-- frontend/                Dashboard HTML, approvals page, service worker
-|-- tests/                   BDD-style unittest suite
 |-- docs/                    Detailed project documentation
-|-- requirements.txt         Runtime Python dependencies
-|-- requirements-dev.txt     Developer tools
+|-- .env.example             Configuration template
+|-- go.mod                   Go module definition
+|-- setup.bat                Windows first-time setup
 |-- launch.bat               Windows launcher
+|-- run_tests.bat            Windows test runner
 `-- README.md                Project entry point
 ```
 
 ## Prerequisites
 
-- Python 3.11 or newer.
-- Windows PowerShell or Command Prompt for the provided launcher.
-- Ollama, optional but recommended for LLM-backed analysis.
+- Go 1.27 or newer.
+- Windows PowerShell or Command Prompt for the provided batch scripts (the Go commands work on any platform).
+- LM Studio, optional but recommended for LLM-backed analysis.
 - A Kraken account and API key only if you plan to use live trading.
 
-SQLite is included with Python; there is no separate database server to install.
+SQLite is embedded in the binary; there is no separate database server to install. Existing `trading_bot.db` files from the earlier Python version are schema-compatible and open as-is.
 
 ## Install
 
-From the project root:
+On Windows, from the project root:
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-Copy-Item backend\.env.example backend\.env
+.\setup.bat
 ```
 
-Then edit `backend/.env` for your local settings. For a first run, keep:
+`setup.bat` checks for Go, downloads the modules, builds `bin\tradingbot.exe` and `bin\tradingbot-cli.exe`, and creates `.env` from `.env.example` if it does not exist.
+
+Manually, on any platform:
+
+```bash
+go mod download
+go build -o bin/tradingbot ./cmd/tradingbot
+go build -o bin/tradingbot-cli ./cmd/cli
+cp .env.example .env
+```
+
+Then edit `.env` for your local settings. For a first run, keep:
 
 ```ini
 TRADING_MODE=manual
 TRADING_ENVIRONMENT=paper
 ```
 
-If you want LLM analysis, install Ollama and pull the default model:
-
-```powershell
-ollama pull phi3:mini
-```
-
-If using Llama.cpp (recommended for local deployment), ensure the server is running and the model is pulled via its respective tool/CLI. The full configuration reference is in [docs/01-configuration.md](docs/01-configuration.md).
+If you want LLM analysis, open LM Studio, load a model, and start its local server (Developer tab) on port 1234. Leave `LMSTUDIO_MODEL` blank to use the first loaded model. Optionally set `OPENAI_BASE_URL`, `OPENAI_MODEL` and `OPENAI_API_KEY` for a remote fallback that is used only while LM Studio is unreachable. The full configuration reference is in [docs/01-configuration.md](docs/01-configuration.md).
 
 ## Run
 
@@ -91,13 +98,18 @@ On Windows, use the launcher from the project root:
 .\launch.bat
 ```
 
-The launcher creates `.venv` if missing, checks whether dependencies are current, updates the virtual environment when needed, starts Ollama if it is available, runs the backend with `.venv\Scripts\python.exe`, and opens the dashboard.
+The launcher checks for Go, creates `.env` from the template if it is missing, builds `bin\tradingbot.exe`, starts the bot in its own window, and opens the dashboard.
 
 Manual startup is also supported:
 
+```bash
+go run ./cmd/tradingbot
+```
+
+The server accepts `-env` (settings file, default `.env`) and `-frontend` (dashboard directory, default `frontend`). The CLI offers the same start-up with mode overrides:
+
 ```powershell
-cd backend
-..\.venv\Scripts\python.exe main.py
+.\bin\tradingbot-cli.exe --mode semi_automated --environment paper run
 ```
 
 After startup, open:
@@ -119,9 +131,11 @@ Operational details are in [docs/12-operations.md](docs/12-operations.md).
 From the project root:
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests
-.\.venv\Scripts\python.exe -m ruff check .
+go vet ./...
+go test ./...
 ```
+
+Or on Windows, `.\run_tests.bat` runs `go vet` and `go test -v ./...`. CI (`.github/workflows/go.yml`) also checks formatting with `gofmt` and runs the tests with the race detector.
 
 Testing conventions and coverage notes are in [docs/13-testing.md](docs/13-testing.md).
 
@@ -148,8 +162,9 @@ Testing conventions and coverage notes are in [docs/13-testing.md](docs/13-testi
 Live trading sends real orders to Kraken. Before enabling it:
 
 - Run in paper mode long enough to validate behavior.
-- Review risk settings in `backend/.env`.
+- Review risk settings in `.env`.
 - Add Kraken credentials only to your local `.env`.
 - Start with `TRADING_MODE=manual`, then move to `semi_automated` before considering `fully_automated`.
+- Set `TRADING_ENVIRONMENT=live`, then enable live execution one market at a time with the dashboard's per-market live toggle. In paper mode the toggle never sends real orders.
 
-Never commit `backend/.env`, database files, API keys, or logs containing secrets.
+Never commit `.env`, database files, API keys, or logs containing secrets.

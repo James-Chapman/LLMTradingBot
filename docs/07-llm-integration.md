@@ -1,18 +1,53 @@
 # LLM Integration
 
-The LLM subsystem consists of an `OpenAiClient` for external OpenAI-compatible chat-completions servers, a `TransformersClient` fallback that loads a Hugging Face model locally (`llm/transformers_client.py`), a `SwitchingLLMClient` that routes between them, and an analyser that builds prompts and parses responses (`llm/analyser.py`). A pure-Python technical indicator library (`analysis/indicators.py`) feeds the prompts.
+The LLM subsystem lives in `internal/llm`. It consists of an `OpenAICompatClient` that talks to any OpenAI-compatible chat-completions server, a `SwitchingClient` that routes between a primary LM Studio instance and an optional remote fallback, and an `LLMAnalyser` that builds prompts and parses responses (`internal/llm/analyser.go`). A pure-Go technical indicator library (`internal/analysis/indicators.go`) feeds the prompts.
 
 The LLM acts in two modes. For `basic_and_llm_strategy` it adjusts signal confidence, annotates theses, and can veto signals entirely when its `confidence_scale` falls below `LLM_VETO_THRESHOLD` (default 0.70). For `llm_only_strategy` it directly recommends `long`, `short`, or `hold`; only `long` and `short` become trade ideas. The `basic_strategy` does not use the LLM at all.
 
 ---
 
-## OpenAI-Compatible Client (`backend/llm/openai_client.py`)
+## Client Interface (`internal/llm/client.go`)
 
-**Class:** `OpenAiClient`
+The analyser depends only on the `Client` interface, so tests can substitute fakes:
 
-Connects to any server that implements `POST /v1/chat/completions` such as LM Studio, llama.cpp server, Ollama OpenAI compatibility, OpenAI, or Azure OpenAI. It is enabled when `OPENAI_BASE_URL` and `OPENAI_MODEL` are configured.
+```go
+type Client interface {
+	Available() bool                // last call or probe succeeded
+	CanAttempt() bool               // circuit closed or half-open
+	Probe(ctx context.Context) bool // checks connectivity and updates availability
+	Chat(ctx context.Context, messages []Message, expectJSON bool) (Reply, error)
+	ModelName() string              // display name, e.g. "qwen2.5 (LM Studio)"
+}
+```
 
-### `chat()`
+`Backend` extends `Client` with `IsConfigured()`. `Chat` returns two sentinel errors: `ErrUnavailable` (no request sent because the client is unconfigured or its circuit is open) and `ErrInvalidJSON` (the model answered, but the content was not a JSON object).
+
+---
+
+## OpenAI-Compatible Client (`internal/llm/openai_client.go`)
+
+**Type:** `OpenAICompatClient`
+
+Connects to any server that implements `GET /v1/models` and `POST /v1/chat/completions`, such as LM Studio, llama.cpp server, Ollama's OpenAI compatibility layer, or OpenAI itself. Two instances are built from settings:
+
+| Constructor | Backend id | Label | Settings |
+|---|---|---|---|
+| `NewLMStudioClient` | `lmstudio` | `LM Studio` | `LMSTUDIO_BASE_URL`, `LMSTUDIO_MODEL`, `LMSTUDIO_API_KEY`, `LMSTUDIO_TIMEOUT` |
+| `NewRemoteClient` | `remote` | `Remote` | `OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_API_KEY`, `OPENAI_TIMEOUT` |
+
+A client is configured when it has a base URL and either a model or model auto-selection. The remote client is therefore disabled while `OPENAI_BASE_URL` is blank. An API key, when set, is sent as a `Bearer` token.
+
+`ModelName()` returns `"<model> (LM Studio)"` or `"<model> (Remote)"` for the dashboard.
+
+### Model Auto-Selection
+
+When `LMSTUDIO_MODEL` is empty, the LM Studio client lists `GET /v1/models` on each probe (and on a chat call with no model resolved yet) and uses the first model id returned. A model swapped in LM Studio is therefore picked up on the next probe, and the change is logged. If LM Studio serves no models, the probe fails with a message telling you to load one or set `LMSTUDIO_MODEL`.
+
+### `Probe()`
+
+Resolves the model, then sends a one-token request (`"ping"`, `max_tokens: 1`) and requires a `choices` field in the response. The probe timeout is the smaller of the client timeout and 10 seconds. Success closes the circuit; failure opens it.
+
+### `Chat()`
 
 Sends a standard chat-completions JSON object:
 
@@ -26,96 +61,70 @@ Sends a standard chat-completions JSON object:
 }
 ```
 
-The flattened prompt shown in debug logs is diagnostic only; it is not used as the HTTP request body. This keeps `chat()` aligned with the same OpenAI-compatible payload shape used by `probe()`.
+`response_format` is not sent, because LM Studio rejects `{"type": "json_object"}`. The system prompt and tolerant parsing are relied on instead. With `expectJSON` set, the first choice's content is parsed with `LoadsModelJSON()`. The flattened prompt written to debug logs is built only when debug logging is enabled; it is diagnostic and not used as the HTTP request body.
 
 ### Circuit Breaker
 
-HTTP and transport failures open the circuit with exponential backoff. Malformed model JSON returns `None` without opening the circuit, because a bad completion should not mark the backend unavailable.
+HTTP and transport failures, and responses with no choice content, open the circuit. Malformed model JSON returns `ErrInvalidJSON` without opening the circuit, because a bad completion should not mark the backend unavailable. Connection and timeout failures are logged at warning level; other failures (e.g. HTTP 400) at info.
 
 ---
 
-## Transformers Client (`backend/llm/transformers_client.py`)
+## Switching Client (`internal/llm/switching_client.go`)
 
-**Class:** `TransformersClient`
+**Type:** `SwitchingClient`, built by `NewSwitchingClientFromSettings`.
 
-Loads a Hugging Face model locally via the `transformers` pipeline API. The model is downloaded on first `probe()` call and kept resident in memory (GPU VRAM when available, system RAM otherwise) for the lifetime of the process. No separate server is required.
+LM Studio is the primary backend. The remote OpenAI-compatible endpoint is a fallback used only while LM Studio cannot take a call.
 
-### Constructor
+- **`Probe()`** tries LM Studio first and the remote fallback second.
+- **`Chat()`** sends to LM Studio when it is configured and its circuit allows a call. If that call fails, or LM Studio's circuit is open, the same request goes to the remote fallback.
+- **`RecheckPrimary()`** re-probes LM Studio and logs a switch when its availability changes. When LM Studio disappears, the fallback is probed so it is ready. The news loop calls it on every news cycle, so LM Studio is reclaimed when it comes back online.
+- **`ActiveBackend()`** returns `lmstudio`, `remote`, or `none` for the dashboard and `/api/health`.
+- **`ModelName()`** returns the active backend's model name, or a configured one so the dashboard is not blank while nothing is available.
 
-```python
-TransformersClient(
-    model: str,    # HuggingFace model ID, e.g. "Qwen/Qwen2.5-1.5B-Instruct"
-    timeout: int,  # per-call timeout in seconds (default 60)
-)
-```
-
-> **Important:** Only standard HuggingFace repos with a `config.json` and `model_type` are supported. GGUF-only repos (e.g. anything on `ggml-org/`) cannot be loaded via `pipeline()` and will produce a clear error message in the log directing you to switch models.
-
-### `probe()`
-
-Called once at startup. Downloads and initialises the model pipeline in a thread pool worker so the event loop is not blocked. On success, `self.available = True` and the pipeline is cached in `self._pipeline`. On failure, the error is logged and the circuit opens.
-
-The pipeline is loaded with:
-```python
-pipeline(
-    "text-generation",
-    model=self.model,
-    device_map="auto",   # places layers on GPU when VRAM is available
-    dtype="auto",        # uses the model's native bfloat16/float16, halving VRAM vs float32
-)
-```
-
-### `chat()`
-
-Converts the OpenAI-style `messages` list into a single prompt string, runs inference in a thread pool worker, and returns a parsed dict (when `expect_json=True`) or a raw string. Returns `None` on failure without opening the circuit — a single malformed response does not take the LLM offline.
-
-### Circuit Breaker
-
-Transport failures and model errors open the circuit. The retry window starts at 30 seconds, doubles on repeated failures, and caps at 5 minutes. When the window expires, `can_attempt` returns `True` so the next LLM call makes a half-open retry.
-
-### GPU Acceleration
-
-PyTorch must be installed with CUDA support for GPU acceleration. `setup.bat` installs the CUDA 12.8 wheel (`--index-url https://download.pytorch.org/whl/cu128`) automatically, with a graceful fallback to the CPU build if the CUDA index is unreachable. Verify GPU is active after setup:
-
-```python
-import torch
-print(torch.cuda.is_available())   # True
-print(torch.cuda.get_device_name(0))
-```
+LM Studio manages its own model memory, so nothing needs unloading when the bot switches backends.
 
 ---
 
-## LLM Analyser (`backend/llm/analyser.py`)
+## LLM Analyser (`internal/llm/analyser.go`)
 
-**Class:** `LLMAnalyser`
+**Type:** `LLMAnalyser`
 
-Holds cached state and implements the three LLM workflows.
+Holds cached state and implements the three LLM workflows. It is safe for concurrent use.
 
-```python
-self._llm: SwitchingLLMClient       # wired in at startup
-self.latest_reflection: Optional[Reflection]    # updated hourly
-self.latest_briefing:   Optional[MarketBriefing]  # updated on new news
+```go
+type LLMAnalyser struct {
+	client   Client // the SwitchingClient, wired in at startup
+	currency string // currency symbol used in prompts, e.g. "€"
+
+	mu               sync.RWMutex
+	store            BriefingStore   // persistence for briefings and reflections
+	latestBriefing   *MarketBriefing // updated on new news
+	latestReflection *Reflection     // updated hourly
+}
 ```
 
----
-
-## Shared Client Helpers (`backend/llm/common.py`)
-
-`common.py` contains behavior shared by the OpenAI-compatible and Transformers clients:
-
-- `loads_model_json()` parses model output as a JSON object, stripping Markdown fences, extracting the first embedded object, and repairing obvious missing commas between object fields.
-- `messages_to_prompt()` renders OpenAI-style chat messages into the plain-text prompt format used by local text-generation models and debug logs.
-- `CircuitBreakerMixin` owns the shared `available`, `can_attempt`, `circuit_state`, retry-delay, `_should_attempt()`, `_mark_success()`, and `_mark_failed()` behavior. Each client keeps its own `_log_failure()` so log wording remains backend-specific.
-- `utc_now()` provides the timezone-aware clock used by circuit retry timing.
-
-Endpoint-specific behavior stays in each concrete client: OpenAI-compatible HTTP payloads and headers remain in `OpenAiClient`, while Transformers pipeline loading and unloading remain in `TransformersClient`.
+`LoadFromDB()` restores the latest briefing and reflection from the database at startup. `LatestBriefing()` and `LatestReflection()` return copies of the cached values.
 
 ---
 
-### Workflow 1: Market Briefing (`brief_market`)
+## Shared Client Helpers (`internal/llm/common.go`)
 
-**Trigger:** New news articles detected in `_news_loop`  
-**Returns:** `MarketBriefing | None`
+`common.go` contains behaviour shared by the LLM clients:
+
+- `LoadsModelJSON()` parses model output as a JSON object. It strips Markdown fences (`StripJSONCodeFence`), extracts the first embedded object (`ExtractFirstJSONObject`), and repairs obvious missing commas between object fields (`RepairMissingFieldCommas`).
+- `MessagesToPrompt()` renders OpenAI-style chat messages into a plain-text transcript for debug logs.
+- `CircuitBreaker` is embedded by value in each client. It owns `Available()`, `CanAttempt()`, `CircuitState()` (`closed`, `open`, `half_open`) and `RetryDelaySeconds()`, plus the internal `shouldAttempt()`, `markSuccess()` and `markFailed()` transitions. Each client supplies its own failure-logging callback so log wording stays backend-specific.
+
+The retry window starts at 30 seconds, doubles on repeated failures, and caps at 5 minutes. When the window expires, `CanAttempt()` returns `true` so the next LLM call makes a half-open retry. The clock is injectable (`WithClock`) for tests.
+
+`internal/llm/pyfmt.go` reproduces Python's number formatting (`repr`, thousands separators, signed percentages) so the prompts are textually identical to the ones the Python bot sent.
+
+---
+
+### Workflow 1: Market Briefing (`BriefMarket`)
+
+**Trigger:** New news articles detected in `newsLoop` (run as a separate goroutine)  
+**Returns:** `*MarketBriefing` (nil on failure)
 
 #### System Prompt
 
@@ -128,12 +137,14 @@ Respond ONLY with a valid JSON object — no prose, no markdown.
 
 #### User Message Structure
 
+At most 8 new articles are included.
+
 ```
 Breaking news update — N new article(s).
 
 Current market prices:
-  BTC/EUR: €85,420 | 5m: +0.26% | 15m: +0.61% | RSI 58.3 | EMA bullish | BB 62.0% | MACD bullish | Stoch 54.2 | WR -38.1
-  ETH/EUR: €1,842  | 5m: -0.12% | 15m: -0.31% | RSI 44.1 | EMA bearish | BB 38.5% | MACD bearish | Stoch 32.0 | WR -67.5
+  BTC/EUR: €85,420.00 | 15m: +0.61% | 30m: +0.95% | 5m: +0.26% | RSI 58.3 | EMA bullish | BB 62.0% | MACD bullish | Stoch 54.2 | WR -38.1
+  ETH/EUR: €1,842.00 | 15m: -0.31% | 30m: -0.40% | 5m: -0.12% | RSI 44.1 | EMA bearish | BB 38.5% | MACD bearish | Stoch 32.0 | WR -67.5
 
 New articles:
   [CoinDesk] Bitcoin ETF volumes surge — Institutional demand rising sharply ahead of Fed…
@@ -163,28 +174,28 @@ Return JSON with exactly these keys:
 
 #### Key Normalisation
 
-Market keys from the LLM may not exactly match the internal format (e.g. `"btceur"` vs `"BTC/EUR"`). The normaliser strips non-alphanumeric characters and lowercases both sides for matching, logging a warning when a key is remapped.
+Market keys from the LLM may not exactly match the internal format (e.g. `"btceur"` vs `"BTC/EUR"`). `matchMarketKey()` lowercases both sides and strips non-alphanumeric characters for matching, logging a warning when a key is remapped.
 
 #### Outlook Shape Normalisation
 
-The LLM is prompted to return each outlook as an object, but malformed or older persisted rows may contain a plain string such as `"bullish"`. The analyser normalises every market outlook to:
+The LLM is prompted to return each outlook as an object, but malformed or older persisted rows may contain a plain string such as `"bullish"`. `NormaliseMarketOutlooks()` normalises every market outlook to:
 
 ```json
 {"bias": "bullish", "score": 0.0, "note": ""}
 ```
 
-Invalid or missing scores are clamped/defaulted to `0.0`, so the strategy loop treats malformed briefing data as neutral instead of crashing.
+Invalid or missing scores default to `0.0` and are clamped to `-1.0..1.0`, so the strategy loop treats malformed briefing data as neutral instead of failing.
 
 ---
 
-### Workflow 2: Signal Analysis (`analyse_signal`)
+### Workflow 2: Signal Analysis (`AnalyseSignal`)
 
-**Trigger:** `BasicAndLLMStrategy` — called after a signal survives the indicator consensus pipeline  
+**Trigger:** `basic_and_llm_strategy` (`internal/strategy/basic_and_llm.go`), called after a signal survives the indicator consensus pipeline  
 **Returns:** `SignalAnalysis`
 
 #### Indicator Consensus Pipeline (runs before the LLM is called)
 
-`BasicAndLLMStrategy` applies nine sequential steps. The signal is discarded at any failed step; the LLM is only reached if all pass.
+`basic_and_llm_strategy` applies nine sequential steps. The signal is discarded at any failed step; the LLM is only reached if steps 1–8 pass. Thresholds are constants in `internal/strategy/calc/constants.go`.
 
 | Step | Check | Threshold |
 |------|-------|-----------|
@@ -251,14 +262,14 @@ Your most recent self-reflection (47m ago, confidence 72%):
 Apply this advice when assessing the current signal.
 
 Technical indicators (30s ticks):
-  Change — 1h: +0.54% | 4h: +1.23% | 24h: +3.81%
+  Change — 15m: +0.54% | 30m: +1.23% | 5m: +0.21%
   RSI(14): 34.2 — oversold
-  EMA9/21: €83,312.00 / €82,890.00 — bullish crossover
-  BB: pos 38% of band | upper €85,100.00 lower €80,400.00 | width 5.5%
+  EMA9/21: 83,312.00 / 82,890.00 — bullish crossover
+  BB: pos 38.0% of band | upper 85,100.00 lower 80,400.00 | width 5.5%
   MACD: +124.4000 (bullish) | signal +97.8000 (bullish) | histogram +26.6000
-  Stoch: %K 17 / %D 14 — oversold
-  Williams %R: -84 — oversold
-  ATR: 430.00 (0.516% of price)
+  Stoch: %K 17.0 / %D 14.0 — oversold
+  Williams %R: -84.0 — oversold
+  ATR: 430.0 (0.516% of price)
 
 Portfolio:
   Equity: €512.40 | Cash: €312.40 | Exposure: 39.0%
@@ -292,46 +303,48 @@ Return JSON with exactly these keys:
 ```
 
 In this example:
-- Base confidence was **0.68** (momentum 0.54%, 6/9 indicators supporting, ATR 0.52% above threshold → small penalty)
+- Base confidence was **0.68** (momentum 0.54%, 6/9 indicators supporting, ATR 0.52% below the volatility threshold → no penalty)
 - LLM scale **1.30** → final confidence = min(0.95, 0.68 × 1.30) = **0.88**
-- Signal passes the veto threshold (1.30 ≥ 0.70) and is forwarded to RiskEngine
+- Signal passes the veto threshold (1.30 ≥ 0.70) and is forwarded to the risk engine
 
 #### Effect on Signal
 
-When the LLM is available (`llm_used = True`):
+When the LLM is available (`LLMUsed == true`):
 
-1. **Veto check** — if `confidence_scale < LLM_VETO_THRESHOLD` (default 0.70), the signal is discarded:
+1. **Veto check** — if `ConfidenceScale < LLM_VETO_THRESHOLD` (default 0.70), the signal is discarded:
    ```
-   BTC/EUR LONG vetoed by LLM — scale 0.55 < threshold 0.70: contradicted by bearish macro outlook
+   BTC/EUR long vetoed by LLM — scale 0.55 < threshold 0.70: contradicted by bearish macro outlook
    ```
 2. **Confidence adjustment** — if the veto does not fire, final confidence is calculated and the LLM reasoning is appended to the thesis:
-   ```python
-   idea.confidence = min(0.95, base_confidence * llm_analysis.confidence_scale)
-   idea.thesis    += f" | LLM: {llm_analysis.reasoning}"
+   ```go
+   finalConfidence := math.Min(calc.MaxConfidence, baseConfidence*analysis.ConfidenceScale)
+   if analysis.LLMUsed {
+   	thesis = append(thesis, "LLM: "+analysis.Reasoning) // parts are joined with " | "
+   }
    ```
 
-If the LLM is unavailable, `confidence_scale = 1.0` (no change), `llm_used = False`, and no veto fires.
+If the LLM is unavailable, `AnalyseSignal` returns a neutral analysis: `ConfidenceScale = 1.0` (no change), `LLMUsed = false`, and no veto fires.
 
 #### Briefing Injection
 
-If `latest_briefing` is set, a briefing block is prepended to the user message. This gives the LLM cross-market context (e.g. "overall market is bearish — be conservative on this LONG"). The briefing's age in minutes is included so the LLM can weight stale data appropriately.
+If a latest briefing is cached, a briefing block is prepended to the user message. This gives the LLM cross-market context (e.g. "overall market is bearish — be conservative on this LONG"). The briefing's age in minutes is included so the LLM can weight stale data appropriately.
 
 #### Reflection Injection
 
-If `latest_reflection` is set, the LLM's own most recent self-reflection is injected into the prompt immediately after the briefing block. This closes the feedback loop — the LLM's hourly pattern-finding advice directly influences every subsequent trade decision.
+If a latest reflection is cached, the LLM's own most recent self-reflection is injected into the prompt immediately after the briefing block. This closes the feedback loop: the LLM's hourly pattern-finding advice directly influences every subsequent trade decision.
 
 #### Indicator Reuse
 
-Indicators are computed once per tick inside `_strategy_loop` and stored in `market_data[sym]["indicators"]`. The signal analysis block reads them directly from `market_data` instead of recomputing.
+Indicators are computed once per tick inside `strategyLoop` (`internal/app/loops.go`) with `analysis.ComputeAll()` and passed to the strategy in its per-market data. The signal analysis request reads them from there instead of recomputing.
 
 ---
 
-### Workflow 2b: LLM-Only Trade Recommendation (`recommend_trade`)
+### Workflow 2b: LLM-Only Trade Recommendation (`RecommendTrade`)
 
-**Trigger:** Every market evaluated by `LLMOnlyStrategy`  
+**Trigger:** Every market evaluated by `llm_only_strategy` (`internal/strategy/llm_only.go`), at most `LLM_ONLY_MAX_CONCURRENCY` calls in parallel  
 **Returns:** `LLMTradeRecommendation`
 
-The LLM receives all the same contextual inputs as signal analysis (price, indicators, briefing, reflection, portfolio, news) but there is no pre-existing trade direction — it must originate the action itself. Indicators are passed as context; the strategy applies no indicator consensus gate before calling the LLM.
+The LLM receives all the same contextual inputs as signal analysis (price, indicators, briefing, reflection, portfolio, news) but there is no pre-existing trade direction; it must originate the action itself. Indicators are passed as context; the strategy applies no indicator consensus gate before calling the LLM.
 
 #### System Prompt
 
@@ -361,14 +374,14 @@ Your most recent self-reflection (47m ago, confidence 72%):
 Apply this advice when choosing the current action.
 
 Technical indicators (context only, do not require consensus):
-  Change — 1h: +0.54% | 4h: +1.23% | 24h: +3.81%
+  Change — 15m: +0.54% | 30m: +1.23% | 5m: +0.21%
   RSI(14): 58.3 — neutral
-  EMA9/21: €83,312.00 / €82,890.00 — bullish crossover
-  BB: pos 61% of band | upper €85,100.00 lower €80,400.00 | width 5.5%
+  EMA9/21: 83,312.00 / 82,890.00 — bullish crossover
+  BB: pos 61.0% of band | upper 85,100.00 lower 80,400.00 | width 5.5%
   MACD: +124.4000 (bullish) | signal +97.8000 (bullish) | histogram +26.6000
-  Stoch: %K 64 / %D 58 — bullish
-  Williams %R: -38 — neutral
-  ATR: 430.00 (0.516% of price)
+  Stoch: %K 64.0 / %D 58.0 — neutral
+  Williams %R: -38.0 — neutral
+  ATR: 430.0 (0.516% of price)
 
 Portfolio:
   Equity: €512.40 | Cash: €312.40 | Exposure: 39.0%
@@ -403,38 +416,38 @@ Return JSON with exactly these keys:
 
 #### Notes on prompt content
 
-- The **briefing block** is absent until `brief_market()` has run at least once (triggered by new news arriving).
-- The **reflection block** is absent until `reflect_on_outcomes()` has run, which requires at least 5 closed trades.
+- The **briefing block** is absent until `BriefMarket()` has run at least once (triggered by new news arriving).
+- The **reflection block** is absent until `ReflectOnOutcomes()` has run, which requires at least 5 closed trades.
 - If price history is too short for indicators, the indicators section reads `Insufficient price history for indicators`.
 - The **news block** caps at 5 relevant articles, padded with general news if fewer than 3 match the asset's keywords.
 
 #### Parsing Rules
 
-- `buy` / `bullish` are normalised to `long`; `sell` / `bearish` to `short`.
+- `buy` / `bullish` are normalised to `long`; `sell` / `bearish` to `short`; `none` / `no_trade` / `no trade` to `hold`.
 - Invalid or missing actions become `hold`.
 - Confidence is clamped to `0.0..0.95`.
-- On parse failure or LLM unavailability, the result is `hold` and no trade idea is emitted.
+- On parse failure or LLM unavailability, the result is `hold` with `LLMUsed = false` and no trade idea is emitted.
 
-LLM-only trade ideas still pass through `RiskEngine` before approval or execution.
+LLM-only trade ideas still pass through the risk engine before approval or execution.
 
 ---
 
-### Workflow 3: Outcome Reflection (`reflect_on_outcomes`)
+### Workflow 3: Outcome Reflection (`ReflectOnOutcomes`)
 
-**Trigger:** Hourly reflection loop (requires ≥5 closed trades)  
-**Returns:** `Reflection | None`
+**Trigger:** Hourly `reflectionLoop` (requires ≥5 closed trades; the newest 20 are used)  
+**Returns:** `*Reflection` (nil when skipped or on failure)
 
 #### System Prompt
 
 ```
 You are a quantitative trading coach reviewing paper trade results.
 Find one clear pattern and give one concrete, actionable improvement.
-Respond ONLY with a valid JSON object.
+Respond ONLY with a valid JSON object — no prose, no markdown.
 ```
 
 #### User Message Structure
 
-Each trade row includes the indicator state at entry time, joined from `trade_ideas.indicators` via `get_closed_trades()`. Trades without a linked `trade_idea_id` show `no indicators`.
+Each trade row includes the indicator state at entry time, joined from `trade_ideas.indicators` by the repository's `GetClosedTrades()`. Trades without a linked `trade_idea_id` show `no indicators`.
 
 ```
 Performance summary (12 trades):
@@ -442,8 +455,8 @@ Performance summary (12 trades):
   Avg win: €+8.20 | Avg loss: €-12.40
 
 Individual trades with entry-time indicators:
-  BTC/EUR LONG | entry €85,420 exit €83,100 | P&L €-23.20 (-2.7%) conf 68% | stop_loss      | at entry: RSI 72 | EMA bullish | MACD bullish | Stoch 81 | WR -12 | ATR 0.08%
-  ETH/EUR LONG | entry €1,842  exit €1,891   | P&L €+4.90  (+2.6%) conf 74% | manual_approve | at entry: RSI 44 | EMA bearish | MACD bearish | Stoch 31 | WR -71 | ATR 0.05%
+  BTC/EUR LONG | entry €85420.00 exit €83100.00 | P&L €-23.20 (-2.7%) conf 68% | stop_loss | at entry: RSI 72.0 | EMA bullish | MACD bullish | Stoch 81.0 | WR -12.0 | ATR 0.08%
+  ETH/EUR LONG | entry €1842.00 exit €1891.00 | P&L €+4.90 (+2.6%) conf 74% | manual_approve | at entry: RSI 44.0 | EMA bearish | MACD bearish | Stoch 31.0 | WR -71.0 | ATR 0.05%
   ...
 
 Look for indicator-level patterns (e.g. RSI levels, EMA direction, MACD bias) that correlate
@@ -466,27 +479,27 @@ Return JSON with exactly these keys:
 ```
 
 The reflection is:
-1. Displayed in the LLM status card on the dashboard
-2. Cached in `_analyser.latest_reflection` and persisted to `llm_reflections` in the DB
-3. **Injected into every subsequent `analyse_signal()` and `recommend_trade()` call** so the LLM's own advice actively influences trade decisions going forward
+1. Displayed in the LLM status card on the dashboard and written to the activity log
+2. Cached in the analyser and persisted to `llm_reflections` in the DB
+3. **Injected into every subsequent `AnalyseSignal()` and `RecommendTrade()` call** so the LLM's own advice actively influences trade decisions going forward
 
 ---
 
-## Technical Indicators (`backend/analysis/indicators.py`)
+## Technical Indicators (`internal/analysis/indicators.go`)
 
-Pure Python. No external dependencies. All functions accept a `List[float]` of prices oldest-to-newest and return `None` (or an empty dict) if there is insufficient data.
+Pure Go with no external dependencies. All functions accept a `[]float64` of prices oldest-to-newest. Scalar indicators return `(value, ok)` with `ok == false` when there is insufficient data; grouped indicators return a `map[string]any`, or `nil` when there is insufficient data. Rounding matches Python's `round()` so values are identical to the Python bot's. Default periods are exported constants (`RSIPeriod`, `EMAFastPeriod`, …).
 
-### `rsi(prices, period=14) → Optional[float]`
+### `RSI(prices, period) (float64, bool)`
 
-Wilder RSI. Uses the last `period+1` prices. Returns `None` if fewer than `period+1` ticks are available.
+Wilder RSI with SMMA smoothing over the full price history. Unavailable with fewer than `period+1` prices.
 
 Signal labels: ≥70 = `"overbought"`, ≤30 = `"oversold"`, else `"neutral"`.
 
-### `ema_pair(prices, fast=9, slow=21) → (Optional[float], Optional[float])`
+### `EMA(prices, period) (float64, bool)` / `EMASeries(prices, period) []float64`
 
-SMA-seeded EMA. Returns `("bullish", ...)` if EMA9 > EMA21, else `"bearish"`.
+SMA-seeded EMA. `ComputeAll` calls it with periods 9 and 21 and labels the cross `"bullish"` if EMA9 > EMA21, `"bearish"` if lower.
 
-### `bollinger_bands(prices, period=20) → Optional[Dict]`
+### `BollingerBands(prices, period) map[string]any`
 
 20-period, 2-standard-deviation bands.
 
@@ -495,31 +508,31 @@ Returns:
 - `position` — 0–100% where the current price sits (0 = lower band, 100 = upper band)
 - `width_pct` — `(upper - lower) / middle × 100` — measures volatility/squeeze
 
-### `macd(prices, fast=12, slow=26, signal=9) → Optional[Dict]`
+### `MACD(prices, fast, slow, signal) map[string]any`
 
-Full MACD with signal line and histogram. Requires at least `slow + signal − 1 = 34` ticks (~17 min at 30 s/tick).
+Full MACD with signal line and histogram. Requires at least `slow + signal − 1 = 34` prices (~17 min at 30 s/tick).
 
 Returns: `line`, `signal`, `histogram`, `bias`, `signal_bias`.
 
-### `atr(prices, period=14) → Optional[float]`
+### `ATR(prices, period) (float64, bool)` / `ATROHLC(candles, period) (float64, bool)`
 
-Average True Range approximated from close prices. Also exposed in `compute_all` as `atr_pct` (ATR as a percentage of the current price).
+Average True Range. `ATR` approximates it from close-to-close moves; `ATROHLC` uses real OHLC candles (`max(h−l, |h−prevC|, |l−prevC|)`). Also exposed in `ComputeAll` as `atr_pct` (ATR as a percentage of the current price).
 
-### `stochastic(prices, k_period=14, d_period=3) → Optional[Dict]`
+### `Stochastic(prices, kPeriod, dPeriod) map[string]any` / `StochasticOHLC(candles, kPeriod, dPeriod)`
 
-Returns `k`, `d`, and `bias` (`"oversold"` if K < 20, `"overbought"` if K > 80, else `"neutral"`). Requires `k_period + d_period − 1 = 16` ticks.
+Returns `k`, `d`, and `bias` (`"oversold"` if K < 20, `"overbought"` if K > 80, else `"neutral"`). Requires `kPeriod + dPeriod − 1 = 16` prices or candles. `Stochastic` uses closes as the high/low proxy; `StochasticOHLC` uses real candle ranges.
 
-### `williams_r(prices, period=14) → Optional[float]`
+### `WilliamsR(prices, period) (float64, bool)`
 
 Range: −100 (most oversold) to 0 (most overbought). Signal labels: ≤−80 = `"oversold"`, ≥−20 = `"overbought"`, else `"neutral"`.
 
-### `price_changes(prices, tick_seconds=30) → Dict[str, float]`
+### `PriceChanges(prices, tickSeconds) map[string]any`
 
-Returns percentage change for `"1h"`, `"4h"`, and `"24h"` windows. Windows exceeding available history are omitted.
+Returns percentage change for `"5m"`, `"15m"`, and `"30m"` windows. Windows exceeding available history are omitted.
 
-### `compute_all(prices, tick_seconds=30, ohlc_candles=None) → Dict`
+### `ComputeAll(prices, tickSeconds, ohlcCandles) Indicators`
 
-Convenience wrapper. Returns all available indicators in a single flat dict. Called once per market per tick in the strategy loop and stored in `market_data[sym]["indicators"]`.
+Convenience wrapper. Returns all available indicators in a single flat `analysis.Indicators` map. When `ohlcCandles` is non-empty, ATR and Stochastic use true high/low ranges instead of close-price proxies. Called once per market per tick in the strategy loop.
 
 Full output keys: `price_changes`, `rsi_14`, `rsi_signal`, `ema9`, `ema21`, `ema_cross`, `bb`, `macd`, `atr`, `atr_pct`, `stoch`, `williams_r`, `williams_r_signal`.
 
@@ -527,12 +540,12 @@ Full output keys: `price_changes`, `rsi_14`, `rsi_signal`, `ema9`, `ema21`, `ema
 
 ## News Relevance Filtering
 
-`_relevant_news()` in `analyser.py` filters news for each market signal:
+`relevantNews()` in `analyser.go` filters news for each market signal:
 
 1. Extract base asset from market: `"BTC/EUR"` → `"BTC"` → `"btc"`
 2. Look up aliases: `{"btc": ["bitcoin", "btc"], "eth": ["ethereum", "eth"], ...}`
 3. Return articles where any alias appears in title or summary (case-insensitive)
-4. If fewer than 3 relevant articles found, pad with most recent general articles up to `max_items=5`
+4. If fewer than 3 relevant articles found, pad with most recent general articles up to `maxItems = 5`
 
 ---
 
@@ -540,17 +553,32 @@ Full output keys: `price_changes`, `rsi_14`, `rsi_signal`, `ema9`, `ema21`, `ema
 
 All LLM responses are parsed defensively:
 
-```python
-sentiment = max(-1.0, min(1.0, float(result.get("sentiment", 0.0))))
-scale     = max(0.5,  min(2.0,  float(result.get("confidence_scale", 1.0))))
+```go
+sentiment, err1 := floatField(result, "sentiment", 0.0)
+scale, err2 := floatField(result, "confidence_scale", 1.0)
+if err1 != nil || err2 != nil {
+	return neutralAnalysis() // no adjustment, no veto
+}
+out := SignalAnalysis{
+	Sentiment:       clamp(sentiment, -1.0, 1.0),
+	ConfidenceScale: clamp(scale, 0.5, 2.0),
+	Reasoning:       strField(result, "reasoning", ""),
+	LLMUsed:         true,
+}
 ```
 
 - Missing fields use safe defaults
 - Out-of-range values are clamped
-- `float()` wrapping handles string numbers from verbose models
-- Any exception in parsing falls back to `_neutral()` / `_hold()` — no adjustment, no trade
+- `floatField()` accepts string numbers from verbose models
+- Any parse error falls back to `neutralAnalysis()` / `holdRecommendation()`: no adjustment, no trade
 
 The JSON parser also handles common LLM formatting mistakes: Markdown code fences are stripped, embedded JSON objects are extracted from surrounding prose, and missing field-separator commas are repaired.
+
+---
+
+## Logging
+
+The `llm_client` and `llm_analyser` loggers write to the main log and also to `llm.log` beside `LOG_FILE`, so LLM traffic can be tailed separately. Full prompts and raw responses are logged at `DEBUG` level only.
 
 ---
 
@@ -561,7 +589,8 @@ The JSON parser also handles common LLM formatting mistakes: Markdown code fence
     "llm": {
         "available": true,
         "status": "available",
-        "model": "Qwen/Qwen2.5-1.5B-Instruct",
+        "model": "qwen2.5-7b-instruct (LM Studio)",
+        "backend": "lmstudio",
         "briefing": {
             "key_insight": "...",
             "overall_sentiment": 0.45,
@@ -579,4 +608,4 @@ The JSON parser also handles common LLM formatting mistakes: Markdown code fence
 }
 ```
 
-`status` is one of `"available"`, `"unavailable"`, or `"not_configured"` (when `TRANSFORMERS_LLM_MODEL` is blank).
+`status` is one of `"available"`, `"unavailable"`, or `"not_configured"` (when both `LMSTUDIO_BASE_URL` and `OPENAI_BASE_URL` are blank). `backend` is `"lmstudio"`, `"remote"`, or `"none"`.
