@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 from config.currency import currency_symbol
 from config.settings import settings
 from observability.logging import get_logger
+from strategy.calculations import calculate_momentum
 
 
 @runtime_checkable
@@ -587,6 +588,7 @@ class LLMAnalyser:
         market: str,
         current_price: float,
         previous_price: float,
+        price_history: Optional[List[float]] = None,
         indicators: Optional[Dict[str, Any]],
         news: List[Dict],
         equity: float = 0.0,
@@ -599,10 +601,7 @@ class LLMAnalyser:
 
         ind = indicators or {}
         positions = open_positions or []
-        momentum_pct = (
-            (current_price - previous_price) / previous_price * 100
-            if previous_price else 0.0
-        )
+        momentum_pct = (calculate_momentum(current_price, previous_price, price_history) or 0.0) * 100
 
         news_items = _relevant_news(market, news)
         news_block = _format_news_block(news_items)

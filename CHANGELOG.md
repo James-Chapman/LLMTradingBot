@@ -7,6 +7,30 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.5.28] — 2026-04-30
+
+### Changed
+
+- **Strategy warm-up is data-driven** — removed the redundant fixed 20-tick trade warm-up. Indicator-only strategy evaluation still waits for the 34-tick indicator lookback, while LLM-backed strategies now wait until they have enough price history for averaged momentum and at least one cached news item.
+
+---
+
+## [0.5.27] — 2026-04-30
+
+### Changed
+
+- **Momentum calculation made more robust** — live market snapshots now pass rolling `price_history` into the shared strategy calculation helper. Momentum uses a 5-price recent average versus a 5-price baseline average when enough samples are available, with the old two-price calculation retained only as the sparse-data fallback.
+
+---
+
+## [0.5.26] — 2026-04-30
+
+### Changed
+
+- **Strategy calculations centralised** — added `backend/strategy/calculations.py` as the shared source for strategy-level formulas including momentum, ATR-adjusted momentum gates, higher-timeframe alignment, hard filters, indicator voting, confidence components, and position sizing. `BasicStrategy`, `BasicAndLLMStrategy`, `LLMOnlyStrategy`, and the LLM recommendation prompt path now call the shared definitions.
+
+---
+
 ## [0.5.25] — 2026-04-30
 
 ### Removed

@@ -12,6 +12,7 @@ from config.settings import settings
 from domain.models import Direction, PositionRecord, TradeIdea, TradingMode
 from llm.analyser import LLMTradeRecommendation
 from observability.logging import get_logger
+from strategy.calculations import calculate_momentum, calculate_position_sizing
 
 logger = get_logger("llm_only_strategy")
 
@@ -110,6 +111,7 @@ class LLMOnlyStrategy:
             market=symbol,
             current_price=current_price,
             previous_price=previous_price,
+            price_history=data.get("price_history"),
             indicators=indicators,
             news=news_signals,
             equity=equity,
@@ -129,7 +131,7 @@ class LLMOnlyStrategy:
             return None
 
         direction = Direction.LONG if recommendation.action == "long" else Direction.SHORT
-        momentum = (current_price - previous_price) / previous_price if previous_price else 0.0
+        momentum = calculate_momentum(current_price, previous_price, data.get("price_history")) or 0.0
         logger.debug(
             "LLM confirmed direction for %s: %s with momentum %.2f%%.", symbol, direction.value, momentum * 100
         )
@@ -181,7 +183,7 @@ class LLMOnlyStrategy:
             entry_plan="Enter at market on LLM recommendation",
             exit_plan=f"Exit on LLM reversal or stop-loss at {sl_pct}% loss",
             stop_or_invalidation=f"Abandon if unrealised loss reaches {sl_pct}%",
-            position_sizing_proposal=0.20,
+            position_sizing_proposal=calculate_position_sizing(0.0),
             mode_eligibility=[
                 TradingMode.MANUAL,
                 TradingMode.SEMI_AUTOMATED,

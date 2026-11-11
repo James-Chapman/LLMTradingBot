@@ -364,7 +364,9 @@ for strategy in [basic_strategy, my_strategy]:
 
 ### "Warm-up: only N ticks collected"
 
-Normal at startup. The strategy loop requires 10 price ticks before generating signals. Wait approximately 5 minutes. If price ticks were restored from the database, this message may not appear at all.
+Normal at startup for indicator-only strategy evaluation. The loop waits for `_LOOKBACK_TICKS = 34` price ticks, approximately 17 minutes at 30 seconds per tick, so MACD and the other configured indicators have enough history. If price ticks were restored from the database, this message may not appear at all.
+
+For strategies that include the LLM, the fixed tick delay is not used. `LLMOnlyStrategy` waits until there is enough price history for averaged momentum and at least one news item in `_latest_news`. `BasicAndLLMStrategy` also requires the full indicator lookback because it still applies local indicator gates. Both paths evaluate only markets whose price history is ready.
 
 ### "LLM unavailable — using neutral defaults"
 

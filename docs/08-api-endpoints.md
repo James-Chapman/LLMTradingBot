@@ -24,7 +24,7 @@ Returns a basic liveness check. Does not probe LLM or Kraken connectivity.
 ```json
 {
     "status": "ok",
-    "version": "0.5.25"
+    "version": "0.5.28"
 }
 ```
 

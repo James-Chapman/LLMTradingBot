@@ -9,7 +9,7 @@ from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from bootstrap import ensure_project_venv
 
@@ -51,6 +51,7 @@ try:
     from storage.repository import Repository
     from strategy.basic_and_llm_strategy import BasicAndLLMStrategy
     from strategy.basic_strategy import BasicStrategy
+    from strategy.calculations import MOMENTUM_WINDOW_POINTS
     from strategy.learner import PerformanceLearner
     from strategy.llm_only_strategy import LLMOnlyStrategy
     from universe.resolver import UniverseResolver
@@ -64,7 +65,7 @@ BACKEND_DIR = Path(__file__).parent
 FRONTEND_DIR = BACKEND_DIR.parent / "frontend"
 
 APP_NAME = "Kraken Trading Bot"
-APP_VERSION = "0.5.25"
+APP_VERSION = "0.5.28"
 
 setup_logging(settings.log_level, settings.log_file)
 logger = get_logger("main")
@@ -126,6 +127,54 @@ def _strategy_by_id(strategy_id: str):
     return next((strategy for strategy in strategies if strategy.strategy_id == canonical_id), None)
 
 
+# Return whether the strategy depends on LLM context.
+def _strategy_uses_llm_context(strategy: Any) -> bool:
+    """Return True when a strategy calls the LLM during evaluation."""
+    return bool(
+        getattr(strategy, "uses_llm_recommendation", False)
+        or getattr(strategy, "uses_llm_analysis", False)
+    )
+
+
+# Return the price-history depth needed before an LLM strategy can evaluate.
+def _llm_price_history_ticks_for_strategy(strategy: Any) -> int:
+    """Return required price ticks for the selected LLM-backed strategy."""
+    if getattr(strategy, "uses_llm_analysis", False):
+        return _LOOKBACK_TICKS + 1
+    return _LLM_PRICE_HISTORY_TICKS
+
+
+# Return whether one market has enough price context for an LLM strategy prompt.
+def _market_has_llm_price_data(data: Dict[str, Any], required_ticks: Optional[int] = None) -> bool:
+    """Return True when current price and averaged-momentum history are available."""
+    required = required_ticks if required_ticks is not None else _LLM_PRICE_HISTORY_TICKS
+    history = data.get("price_history") or []
+    return data.get("price") is not None and len(history) >= required
+
+
+# Return market data that is ready for LLM-backed evaluation.
+def _llm_ready_market_data(
+    market_data: Dict[str, Any],
+    required_ticks: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Return only markets with enough price context for LLM-backed strategies."""
+    return {
+        market: data
+        for market, data in market_data.items()
+        if isinstance(data, dict) and _market_has_llm_price_data(data, required_ticks)
+    }
+
+
+# Return whether LLM-backed strategies have both price and news context.
+def _llm_strategy_data_ready(
+    market_data: Dict[str, Any],
+    news: List[Dict[str, Any]],
+    required_ticks: Optional[int] = None,
+) -> bool:
+    """Return True when LLM strategies can evaluate with price and news data."""
+    return bool(_llm_ready_market_data(market_data, required_ticks)) and bool(news)
+
+
 # Wire repo into singletons that need DB persistence.
 activity.set_repo(repo)
 control.set_repo(repo)
@@ -169,8 +218,9 @@ _OHLC_INTER_INTERVAL_GAP = 1.0  # seconds between the two interval fetches for t
 # computable before the first strategy evaluation.  200-bar buffer lets Wilder
 # SMMA (RSI) warm up well past its 14-bar seed window.
 _LOOKBACK_TICKS = 34
-# Number of live ticks that must pass before any new trade is opened after startup.
-_TRADE_WARMUP_TICKS = 20
+# Fixed tick trade warmup is disabled; strategy readiness is data-driven below.
+_TRADE_WARMUP_TICKS = 0
+_LLM_PRICE_HISTORY_TICKS = MOMENTUM_WINDOW_POINTS * 2
 _session_tick: int = 0  # updated each tick; readable by dashboard endpoint
 
 _price_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=200))
@@ -421,6 +471,7 @@ async def _strategy_loop() -> None:
                 market_data[sym] = {
                     "price": snap.price,
                     "previous_price": prev,
+                    "price_history": list(hist),
                     "volume": snap.volume,
                     "llm_sentiment": _briefing_sentiment_for_market(_analyser.latest_briefing, sym),
                     "higher_timeframe": htf_indicators,
@@ -501,23 +552,24 @@ async def _strategy_loop() -> None:
                         {"market": pos.market, "position_id": pos.position_id, "pnl": pnl},
                     )
 
-            # Detect the active strategy type early so warmup logic can exclude LLM-only.
+            # Detect the active strategy type early so warmup logic can match strategy needs.
             _selected = _strategy_by_id(control.selected_strategy_id)
-            _uses_llm = bool(getattr(_selected, "uses_llm_recommendation", False))  # type: ignore[arg-type]
+            _uses_llm = _strategy_uses_llm_context(_selected) if _selected is not None else False
 
-            # Session trade warmup: block indicator-based strategies for the first
-            # _TRADE_WARMUP_TICKS ticks so price history is stable before signals fire.
-            # LLM-only strategies are exempt — they need no indicator history.
-            if not _uses_llm and tick <= _TRADE_WARMUP_TICKS:
-                activity.info(
-                    f"Tick #{tick} - trade warmup ({tick}/{_TRADE_WARMUP_TICKS} ticks complete, "
-                    f"{_TRADE_WARMUP_TICKS - tick} remaining)",
-                )
+            # Block non-LLM strategies until the full indicator lookback window fills.
+            if warming_up and not _uses_llm:
                 await asyncio.sleep(30)
                 continue
 
-            # Block indicator-based strategies further until the full lookback window fills.
-            if warming_up and not _uses_llm:
+            llm_required_ticks = _llm_price_history_ticks_for_strategy(_selected) if _uses_llm else 0
+            llm_market_data = _llm_ready_market_data(market_data, llm_required_ticks) if _uses_llm else {}
+            if _uses_llm and not _llm_strategy_data_ready(market_data, _latest_news, llm_required_ticks):
+                missing = []
+                if not llm_market_data:
+                    missing.append(f"{llm_required_ticks} price ticks")
+                if not _latest_news:
+                    missing.append("news")
+                activity.info(f"Tick #{tick} - LLM data warmup waiting for {' and '.join(missing)}")
                 await asyncio.sleep(30)
                 continue
 
@@ -537,7 +589,7 @@ async def _strategy_loop() -> None:
                 if getattr(active_strategy, "uses_llm_recommendation", False):
                     # LLMOnlyStrategy: pure LLM recommendation, no indicator gates
                     strategy_ideas = await active_strategy.evaluate(
-                        market_data,
+                        llm_market_data,
                         _latest_news,
                         analyser=_analyser,
                         equity=_current_equity,
@@ -547,7 +599,7 @@ async def _strategy_loop() -> None:
                 elif getattr(active_strategy, "uses_llm_analysis", False):
                     # BasicAndLLMStrategy: indicator consensus + internal LLM analysis
                     strategy_ideas = await active_strategy.evaluate(
-                        market_data,
+                        llm_market_data,
                         _latest_news,
                         _analyser,
                         portfolio_data={

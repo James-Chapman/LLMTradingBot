@@ -20,36 +20,20 @@ from config.settings import settings
 from domain.models import Direction, TradeIdea, TradingMode
 from llm.analyser import LLMAnalyser
 from observability.logging import get_logger
+from strategy.calculations import (
+    calculate_confidence,
+    calculate_momentum,
+    calculate_position_sizing,
+    check_hard_filters,
+    check_higher_timeframe_alignment,
+    evaluate_momentum_gate,
+    vote_indicators,
+)
 from strategy.constants import (
-    ATR_PENALTY_PER_EXTRA_PCT,
-    ATR_VOLATILITY_THRESHOLD_PCT,
-    BASE_CONFIDENCE_CAP,
-    BB_BEARISH_THRESHOLD,
-    BB_BULLISH_THRESHOLD,
-    BB_LONG_BLOCK,
-    BB_SHORT_BLOCK,
-    INDICATOR_VOTE_WEIGHT,
-    MAX_ATR_PENALTY,
     MAX_CONFIDENCE,
-    MAX_DYNAMIC_POSITION_SIZE,
-    MAX_INDICATOR_BONUS,
     MIN_ACTIONABLE_CONFIDENCE,
-    MIN_CONFIDENCE,
     MIN_CONSENSUS_VOTES,
-    MIN_DYNAMIC_POSITION_SIZE,
-    MIN_INDICATOR_BONUS,
     MIN_INDICATORS_FOR_SIGNAL,
-    MOMENTUM_ATR_MULTIPLIER,
-    MOMENTUM_THRESHOLD,
-    POSITION_SIZING_PROPOSAL,
-    RSI_BEARISH_THRESHOLD,
-    RSI_BULLISH_THRESHOLD,
-    RSI_LONG_BLOCK,
-    RSI_SHORT_BLOCK,
-    STOCH_BEARISH_THRESHOLD,
-    STOCH_BULLISH_THRESHOLD,
-    WILLIAMS_BEARISH_THRESHOLD,
-    WILLIAMS_BULLISH_THRESHOLD,
 )
 
 logger = get_logger("basic_and_llm_strategy")
@@ -108,25 +92,27 @@ class BasicAndLLMStrategy:
             logger.debug("[%s] skip: previous_price is zero/null", symbol)
             return None
 
-        momentum = (current_price - previous_price) / previous_price
+        momentum = calculate_momentum(current_price, previous_price, data.get("price_history"))
+        if momentum is None:
+            logger.debug("[%s] skip: previous_price is zero/null", symbol)
+            return None
 
         # Dynamic threshold: require momentum to exceed ATR (typical noise), with a
         # fixed floor so near-zero ATR markets still filter out micro-moves.
         # atr_pct is in percentage units (e.g. 0.5 = 0.5%), momentum is a decimal fraction.
         atr_pct = ind.get("atr_pct") or 0.0
-        dynamic_threshold = (atr_pct / 100) * MOMENTUM_ATR_MULTIPLIER
-        effective_threshold = dynamic_threshold if dynamic_threshold > MOMENTUM_THRESHOLD else MOMENTUM_THRESHOLD
+        momentum_gate = evaluate_momentum_gate(momentum, atr_pct)
 
         logger.debug(
             "[%s] momentum=%.4f%% threshold=%.4f%% (ATR-based=%.4f%% floor=%.4f%%)",
-            symbol, momentum * 100, effective_threshold * 100,
-            dynamic_threshold * 100, MOMENTUM_THRESHOLD * 100,
+            symbol, momentum * 100, momentum_gate.effective_threshold * 100,
+            momentum_gate.dynamic_threshold * 100, momentum_gate.effective_threshold * 100,
         )
 
-        if abs(momentum) < effective_threshold:
+        if not momentum_gate.passes:
             logger.debug(
                 "[%s] skip: momentum %.4f%% below threshold %.4f%%",
-                symbol, momentum * 100, effective_threshold * 100,
+                symbol, momentum * 100, momentum_gate.effective_threshold * 100,
             )
             return None
 
@@ -135,111 +121,32 @@ class BasicAndLLMStrategy:
         logger.debug("[%s] direction=%s momentum=%.4f%%", symbol, direction.value, momentum * 100)
 
         htf = data.get("higher_timeframe") or {}
-        htf_ema_cross = htf.get("ema_cross")
-        logger.debug("[%s] HTF EMA cross=%s", symbol, htf_ema_cross or "none")
-        if htf_ema_cross and htf_ema_cross != "neutral":
-            htf_supports_long = htf_ema_cross == "bullish"
-            htf_supports_short = htf_ema_cross == "bearish"
-            if (is_long and not htf_supports_long) or (not is_long and not htf_supports_short):
-                logger.debug(
-                    "[%s] skip: HTF EMA %s opposes %s direction",
-                    symbol, htf_ema_cross, direction.value,
-                )
-                return None
+        logger.debug("[%s] HTF EMA cross=%s", symbol, htf.get("ema_cross") or "none")
+        alignment = check_higher_timeframe_alignment(is_long, htf)
+        if not alignment.allowed:
+            logger.debug("[%s] skip: %s opposes %s direction", symbol, alignment.reason, direction.value)
+            return None
 
-        rsi_val = ind.get("rsi_14")
-        bb_dict = ind.get("bb") or {}
-        bb_pos = bb_dict.get("position")
-        logger.debug("[%s] hard filters: RSI=%s BB_pos=%s", symbol, rsi_val, bb_pos)
-
-        if rsi_val is not None:
-            if is_long and rsi_val >= RSI_LONG_BLOCK:
-                logger.debug("[%s] skip: RSI %.1f >= %d (overbought, blocks LONG)", symbol, rsi_val, RSI_LONG_BLOCK)
-                return None
-            if not is_long and rsi_val <= RSI_SHORT_BLOCK:
-                logger.debug("[%s] skip: RSI %.1f <= %d (oversold, blocks SHORT)", symbol, rsi_val, RSI_SHORT_BLOCK)
-                return None
-
-        if bb_pos is not None:
-            if is_long and bb_pos >= BB_LONG_BLOCK:
-                logger.debug("[%s] skip: BB %.1f%% >= %d (upper extreme, blocks LONG)", symbol, bb_pos, BB_LONG_BLOCK)
-                return None
-            if not is_long and bb_pos <= BB_SHORT_BLOCK:
-                logger.debug("[%s] skip: BB %.1f%% <= %d (lower extreme, blocks SHORT)", symbol, bb_pos, BB_SHORT_BLOCK)
-                return None
-
-        votes = 0
-        available = 0
-        supporting = 0
-
-        def _vote(indicator_name: str, long_condition: bool, short_condition: bool) -> None:
-            """Cast a vote when an indicator has a non-neutral opinion."""
-            nonlocal votes, available, supporting
-            if long_condition or short_condition:
-                available += 1
-                if (is_long and long_condition) or (not is_long and short_condition):
-                    votes += 1
-                    supporting += 1
-                    logger.debug(
-                        "[%s]   %s: +1 (supporting). total supporting=%d available=%d votes=%+d",
-                        symbol, indicator_name, supporting, available, votes,
-                    )
-                elif (is_long and short_condition) or (not is_long and long_condition):
-                    votes -= 1
-                    logger.debug(
-                        "[%s]   %s: -1 (opposing). total supporting=%d available=%d votes=%+d",
-                        symbol, indicator_name, supporting, available, votes,
-                    )
-            else:
-                logger.debug("[%s]   %s: 0 (neutral / no opinion)", symbol, indicator_name)
+        hard_filter = check_hard_filters(is_long, ind)
+        if hard_filter.blocked:
+            logger.debug("[%s] skip: %s", symbol, hard_filter.reason)
+            return None
 
         logger.debug("[%s] --- indicator voting ---", symbol)
-
-        if rsi_val is not None:
-            logger.debug("[%s]   RSI=%.1f bull<%.0f bear>%.0f", symbol, rsi_val, RSI_BULLISH_THRESHOLD, RSI_BEARISH_THRESHOLD)
-            _vote("RSI", rsi_val < RSI_BULLISH_THRESHOLD, rsi_val > RSI_BEARISH_THRESHOLD)
-
-        ema_cross = ind.get("ema_cross")
-        logger.debug("[%s]   EMA cross=%s", symbol, ema_cross or "none")
-        if ema_cross:
-            _vote("EMA_cross", ema_cross == "bullish", ema_cross == "bearish")
-
-        if bb_pos is not None:
-            logger.debug("[%s]   BB pos=%.1f%% bull<%.0f bear>%.0f", symbol, bb_pos, BB_BULLISH_THRESHOLD, BB_BEARISH_THRESHOLD)
-            _vote("BB_pos", bb_pos < BB_BULLISH_THRESHOLD, bb_pos > BB_BEARISH_THRESHOLD)
-
-        macd_dict = ind.get("macd") or {}
-        macd_bias = macd_dict.get("bias")
-        logger.debug("[%s]   MACD bias=%s", symbol, macd_bias or "none")
-        if macd_bias:
-            _vote("MACD_bias", macd_bias == "bullish", macd_bias == "bearish")
-
-        sig_bias = macd_dict.get("signal_bias")
-        logger.debug("[%s]   MACD signal_bias=%s", symbol, sig_bias or "none")
-        if sig_bias:
-            _vote("MACD_signal", sig_bias == "bullish", sig_bias == "bearish")
-
-        stoch_dict = ind.get("stoch") or {}
-        k_val = stoch_dict.get("k")
-        logger.debug("[%s]   Stoch K=%s bull<%.0f bear>%.0f", symbol, k_val, STOCH_BULLISH_THRESHOLD, STOCH_BEARISH_THRESHOLD)
-        if k_val is not None:
-            _vote("Stoch_K", k_val < STOCH_BULLISH_THRESHOLD, k_val > STOCH_BEARISH_THRESHOLD)
-
-        wr_val = ind.get("williams_r")
-        logger.debug("[%s]   Williams R=%s bull<=%d bear>=%d", symbol, wr_val, WILLIAMS_BULLISH_THRESHOLD, WILLIAMS_BEARISH_THRESHOLD)
-        if wr_val is not None:
-            _vote("Williams_R", wr_val <= WILLIAMS_BULLISH_THRESHOLD, wr_val >= WILLIAMS_BEARISH_THRESHOLD)
-
-        changes = ind.get("price_changes") or {}
-        chg_5m = changes.get("5m")
-        logger.debug("[%s]   5m change=%s", symbol, f"{chg_5m:.4f}%" if chg_5m is not None else "none")
-        if chg_5m is not None:
-            _vote("price_change_5m", chg_5m > 0, chg_5m < 0)
-
-        chg_15m = changes.get("15m")
-        logger.debug("[%s]   15m change=%s", symbol, f"{chg_15m:.4f}%" if chg_15m is not None else "none")
-        if chg_15m is not None:
-            _vote("price_change_15m", chg_15m > 0, chg_15m < 0)
+        vote_summary = vote_indicators(is_long, ind)
+        votes = vote_summary.votes
+        available = vote_summary.available
+        supporting = vote_summary.supporting
+        values = vote_summary.values
+        rsi_val = values["rsi_14"]
+        ema_cross = values["ema_cross"]
+        bb_pos = values["bb_position"]
+        macd_bias = values["macd_bias"]
+        sig_bias = values["macd_signal_bias"]
+        k_val = values["stoch_k"]
+        wr_val = values["williams_r"]
+        chg_5m = values["price_change_5m"]
+        chg_15m = values["price_change_15m"]
 
         logger.debug(
             "[%s] vote summary: supporting=%d/%d votes=%+d | need supporting>=%d votes>=%d",
@@ -261,35 +168,20 @@ class BasicAndLLMStrategy:
             )
             return None
 
-        base = min(abs(momentum) * 100, BASE_CONFIDENCE_CAP)
-
-        ind_bonus = 0.0
-        if available > 0:
-            ind_bonus = max(
-                MIN_INDICATOR_BONUS,
-                min(MAX_INDICATOR_BONUS, votes * INDICATOR_VOTE_WEIGHT),
-            )
-
-        atr_pct = ind.get("atr_pct") or 0.0
-        atr_penalty = (
-            -min(
-                MAX_ATR_PENALTY,
-                max(
-                    0.0,
-                    (atr_pct - ATR_VOLATILITY_THRESHOLD_PCT) * ATR_PENALTY_PER_EXTRA_PCT,
-                ),
-            )
-            if atr_pct > ATR_VOLATILITY_THRESHOLD_PCT
-            else 0.0
+        confidence_breakdown = calculate_confidence(
+            momentum=momentum,
+            votes=votes,
+            available=available,
+            atr_pct=atr_pct,
         )
-
-        base_confidence = max(
-            MIN_CONFIDENCE,
-            min(MAX_CONFIDENCE, base + ind_bonus + atr_penalty),
-        )
+        base_confidence = confidence_breakdown.confidence
         logger.debug(
             "[%s] confidence: base=%.3f ind_bonus=%.3f atr_penalty=%.3f -> base_confidence=%.3f",
-            symbol, base, ind_bonus, atr_penalty, base_confidence,
+            symbol,
+            confidence_breakdown.base,
+            confidence_breakdown.indicator_bonus,
+            confidence_breakdown.atr_penalty,
+            base_confidence,
         )
 
         if base_confidence < MIN_ACTIONABLE_CONFIDENCE:
@@ -362,7 +254,7 @@ class BasicAndLLMStrategy:
         if llm_analysis.llm_used:
             thesis_parts.append(f"LLM: {llm_analysis.reasoning}")
 
-        position_size = self._position_sizing(symbol, atr_pct)
+        position_size = calculate_position_sizing(atr_pct)
 
         idea = TradeIdea(
             strategy_id=self.strategy_id,
@@ -375,16 +267,16 @@ class BasicAndLLMStrategy:
                 "previous_price": previous_price,
                 "indicator_votes": votes,
                 "indicators_supporting": supporting,
-                "indicators_opposing": available - supporting,
+                "indicators_opposing": vote_summary.opposing,
                 "indicators_available": available,
                 "rsi_14": rsi_val,
                 "ema_cross": ema_cross,
                 "bb_position": bb_pos,
                 "macd_bias": macd_bias,
                 "macd_signal_bias": sig_bias,
-                "macd_histogram": macd_dict.get("histogram"),
+                "macd_histogram": values["macd_histogram"],
                 "stoch_k": k_val,
-                "stoch_d": stoch_dict.get("d"),
+                "stoch_d": values["stoch_d"],
                 "williams_r": wr_val,
                 "atr_pct": round(atr_pct, 3) if atr_pct else None,
                 "price_change_5m": chg_5m,
@@ -422,10 +314,3 @@ class BasicAndLLMStrategy:
         )
         logger.debug("[%s] --- evaluation complete ---", symbol)
         return idea
-
-    def _position_sizing(self, symbol: str, atr_pct: float) -> float:
-        """Return volatility-adjusted position sizing."""
-        size = POSITION_SIZING_PROPOSAL
-        if atr_pct > 1.0:
-            size *= max(0.25, 1.0 / atr_pct)
-        return max(MIN_DYNAMIC_POSITION_SIZE, min(MAX_DYNAMIC_POSITION_SIZE, size))

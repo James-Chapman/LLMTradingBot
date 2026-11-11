@@ -188,7 +188,7 @@ class FrontendLayoutBDDTests(unittest.TestCase):
         sw = (FRONTEND_DIR / "sw.js").read_text(encoding="utf-8")
         backend_main = (ROOT_DIR / "backend" / "main.py").read_text(encoding="utf-8")
 
-        self.assertIn("const CACHE  = 'trading-bot-v0.5.25';", sw)
+        self.assertIn("const CACHE  = 'trading-bot-v0.5.28';", sw)
         self.assertIn("if (req.mode === 'navigate' || acceptsHtml) {", sw)
         self.assertIn("event.respondWith(networkFirst(req));", sw)
         self.assertNotIn("c.addAll(['/'])", sw)

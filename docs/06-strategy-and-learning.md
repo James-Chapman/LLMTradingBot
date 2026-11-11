@@ -1,11 +1,20 @@
 # Strategy & Learning
 
+## Shared Calculation Modules
+
+Strategy calculations are split by responsibility:
+
+- `backend/analysis/indicators.py` owns raw technical indicator formulas such as RSI, EMA, Bollinger Bands, MACD, ATR, Stochastic, Williams %R, and time-window price changes.
+- `backend/strategy/calculations.py` owns strategy decision formulas: price momentum, ATR-adjusted momentum thresholding, higher-timeframe alignment, RSI/Bollinger hard filters, indicator voting, confidence component calculation, and volatility-adjusted position sizing.
+
+`BasicStrategy`, `BasicAndLLMStrategy`, `LLMOnlyStrategy`, and the LLM recommendation prompt path use these shared helpers instead of duplicating formulas locally.
+
 ## Indicator-Only Strategy (`backend/strategy/basic_strategy.py`)
 
 **Class:** `BasicStrategy`  
 **Strategy ID:** `"basic_strategy"`
 
-An indicator-consensus signal generator. It compares the current price against a price from `_LOOKBACK_TICKS` (10) ticks ago for the momentum signal, confirms or rejects that signal using up to 9 additional technical indicators, then applies learner adjustment and the full LLM signal-analysis/veto pass in the strategy loop.
+An indicator-consensus signal generator. It compares averaged recent price windows from the rolling price history for the momentum signal, confirms or rejects that signal using up to 9 additional technical indicators, then applies learner adjustment and the full LLM signal-analysis/veto pass in the strategy loop.
 
 ## Combined Indicator + LLM Strategy (`backend/strategy/basic_and_llm_strategy.py`)
 
@@ -30,15 +39,21 @@ For each market in `market_data`:
 #### 1. Momentum Gate
 
 ```python
-momentum = (current_price - previous_price) / previous_price
+baseline_average = average(price_history[-10:-5])
+recent_average = average(price_history[-5:])
+momentum = (recent_average - baseline_average) / baseline_average
 if abs(momentum) < 0.002:
     continue    # < 0.2% move — discard
 ```
 
-`previous_price` is the price `_LOOKBACK_TICKS` (10) ticks ago:
+The rolling `price_history` is passed into every strategy and the LLM recommendation prompt path. When at least 10 valid prices are available, `backend/strategy/calculations.py` calculates momentum as the percentage change between the previous 5-price average and the latest 5-price average. This reduces sensitivity to one sampled price that happens to be unusually far from the surrounding ticks.
+
+`previous_price` is still included as the sparse-data fallback while the bot is warming up. It comes from `settings.momentum_lookback_ticks` ticks back when available:
 
 ```python
-prev = hist[-_LOOKBACK_TICKS - 1] if len(hist) > _LOOKBACK_TICKS else snap.price
+_lb = settings.momentum_lookback_ticks + 1
+prev = hist[-_lb] if len(hist) >= _lb else snap.price
+momentum = (current_price - previous_price) / previous_price
 ```
 
 The momentum gate is purely for noise suppression. The momentum value determines the initial hypothesis direction (LONG if positive, SHORT if negative) but does not win by itself — the indicator consensus must confirm.
@@ -350,7 +365,9 @@ At 30 s/tick, indicators become available after the following number of ticks:
 | ATR (14) | 15 | ~7.5 min |
 | MACD signal line | 34 | ~17 min |
 
-During the warmup period (controlled by `_LOOKBACK_TICKS = 10` in `main.py`), the strategy loop skips signal evaluation entirely. After warmup, indicators that still have insufficient history are simply omitted from the vote. A trade idea is not emitted until at least 6 indicators have a non-neutral opinion.
+Indicator-only strategy evaluation is blocked while `_LOOKBACK_TICKS = 34` is still warming up. The former fixed 20-tick trade delay is disabled because it was redundant: after 20 ticks, the 34-tick indicator lookback still blocked decisions.
+
+Strategies that include the LLM use data readiness instead of a fixed warmup time. `LLMOnlyStrategy` waits until at least one market has 10 price-history ticks, enough for averaged momentum, and `_latest_news` contains at least one news item. `BasicAndLLMStrategy` still waits for the full `_LOOKBACK_TICKS + 1` price-history depth because it includes local indicator gates. Markets without enough price history are excluded from that LLM evaluation pass.
 
 ---
 

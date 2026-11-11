@@ -1,6 +1,5 @@
 """BDD coverage for the basic strategy signal gates."""
 import unittest
-from unittest.mock import AsyncMock
 
 from bdd_helpers import BACKEND_DIR  # noqa: F401
 from analysis.indicators import compute_all
@@ -328,21 +327,57 @@ class BasicStrategyBDDTests(unittest.IsolatedAsyncioTestCase):
             "_LOOKBACK_TICKS must be >= 34 so all indicators are computable before strategy fires",
         )
 
-    # GIVEN the trade warmup constant WHEN inspected THEN it is at least 1 tick and at most
-    # _LOOKBACK_TICKS, ensuring the warmup completes before indicator-based strategies fire.
-    def test_given_trade_warmup_constant_when_inspected_then_it_is_a_positive_tick_count(self) -> None:
+    # GIVEN the trade warmup constant WHEN inspected THEN the fixed tick delay is disabled
+    # because readiness is now based on strategy data requirements.
+    def test_given_trade_warmup_constant_when_inspected_then_fixed_delay_is_disabled(self) -> None:
         import backend.main as bot_main  # noqa: PLC0415
 
-        self.assertGreaterEqual(
+        self.assertEqual(
             bot_main._TRADE_WARMUP_TICKS,
-            1,
-            "_TRADE_WARMUP_TICKS must be at least 1 tick",
+            0,
+            "_TRADE_WARMUP_TICKS should stay disabled because _LOOKBACK_TICKS and LLM data readiness gate trades",
         )
-        self.assertLessEqual(
-            bot_main._TRADE_WARMUP_TICKS,
-            bot_main._LOOKBACK_TICKS,
-            "_TRADE_WARMUP_TICKS should not exceed _LOOKBACK_TICKS — indicator warmup already covers that window",
+
+    # GIVEN strategies that include LLM calls WHEN inspected
+    # THEN both LLM-only and indicator-plus-LLM modes are treated as LLM strategies.
+    def test_given_strategy_when_checked_then_llm_context_requirement_is_detected(self) -> None:
+        import backend.main as bot_main  # noqa: PLC0415
+
+        self.assertFalse(bot_main._strategy_uses_llm_context(bot_main.basic_strategy))
+        self.assertTrue(bot_main._strategy_uses_llm_context(bot_main.basic_and_llm_strategy))
+        self.assertTrue(bot_main._strategy_uses_llm_context(bot_main.llm_only_strategy))
+
+    # GIVEN an LLM-backed strategy WHEN required price history is checked
+    # THEN indicator-plus-LLM still waits for the full indicator lookback.
+    def test_given_llm_strategy_when_checked_then_price_history_requirement_matches_strategy_type(self) -> None:
+        import backend.main as bot_main  # noqa: PLC0415
+
+        self.assertEqual(
+            bot_main._llm_price_history_ticks_for_strategy(bot_main.llm_only_strategy),
+            bot_main._LLM_PRICE_HISTORY_TICKS,
         )
+        self.assertEqual(
+            bot_main._llm_price_history_ticks_for_strategy(bot_main.basic_and_llm_strategy),
+            bot_main._LOOKBACK_TICKS + 1,
+        )
+
+    # GIVEN LLM strategy inputs WHEN readiness is checked
+    # THEN both enough price history and news data are required before evaluation.
+    def test_given_llm_strategy_inputs_when_checked_then_price_and_news_are_required(self) -> None:
+        import backend.main as bot_main  # noqa: PLC0415
+
+        ready_prices = [100.0] * bot_main._LLM_PRICE_HISTORY_TICKS
+        news = [{"id": "article-1", "title": "Market update"}]
+
+        self.assertFalse(bot_main._llm_strategy_data_ready({}, news))
+        self.assertFalse(bot_main._llm_strategy_data_ready({"BTC/EUR": {"price": 100.0, "price_history": ready_prices}}, []))
+        self.assertFalse(
+            bot_main._llm_strategy_data_ready(
+                {"BTC/EUR": {"price": 100.0, "price_history": ready_prices[:-1]}},
+                news,
+            )
+        )
+        self.assertTrue(bot_main._llm_strategy_data_ready({"BTC/EUR": {"price": 100.0, "price_history": ready_prices}}, news))
 
     # BUG-028: GIVEN legacy LLM briefing outlook data is a string WHEN the strategy loop reads sentiment
     # THEN score extraction falls back to neutral instead of crashing.
