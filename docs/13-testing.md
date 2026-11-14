@@ -50,7 +50,7 @@ The suite intentionally checks stable behaviour rather than internal implementat
 - Risk decisions: valid approval, same-direction position rejection, closing signal allowance, cash insufficiency, daily loss block, and daily-loss state persistence.
 - Paper execution: fills, cash accounting with fee/slippage, duplicate-position guard, shorts, FIFO close behaviour, stop-loss and trailing stops, mark-to-market equity, restore from the database, and operator reset.
 - Kraken execution: live AddOrder payload mapping, Kraken error handling, fail-closed missing-credential behaviour, account snapshots, order reconciliation and cancellation.
-- Kraken market data: batch tickers, OHLC parsing, WebSocket v2 ticker parsing, subscription fallback to polling, symbol conversion, and retry/backoff.
+- Kraken market data: ranking the biggest pairs by 24h traded value (quote filter, offline and pegged pairs skipped, XBT/XDG renamed, top-n limit, errors), batch tickers, OHLC parsing, WebSocket v2 ticker parsing, subscription fallback to polling, symbol conversion, and retry/backoff.
 - Strategy behaviour: public strategy IDs and registry, momentum gate, hard RSI and Bollinger filters, the five-indicator support gate, higher-timeframe alignment, bullish and bearish consensus signal generation, opposing consensus block, and indicator-only ignoring non-indicator sentiment.
 - Strategy calculations: momentum, votes, confidence and position sizing formulas in `internal/strategy/calc`.
 - Control state behaviour: the default selected strategy, single selected-strategy switching, market and live toggles, and persistence.
@@ -63,7 +63,7 @@ The suite intentionally checks stable behaviour rather than internal implementat
 - Learner: no adjustment before enough samples, confidence boost after wins, confidence reduction after losses, rolling win rate, P&L percentiles, and concurrent use.
 - Storage: schema creation, migration of legacy (Python-created) databases, retention trimming, the trade ledger, and time handling.
 - App and server: startup restore, strategy-tick gates and trading modes (including the guard that keeps live-toggled markets on paper in the paper environment), background-loop error handling, every HTTP endpoint's status codes and JSON shapes, CORS, and the frontend pages.
-- Trading settings from the web interface: persistence across restarts (saved choice beats the defaults), the typed `LIVE` confirmation and API-key check for going live, the HTTP endpoints, and the dashboard's confirm/typed-confirm wiring (`internal/app/trading_settings_test.go`, `internal/server/trading_settings_test.go`, `internal/server/frontend_trading_test.go`, plus storage and control tests).
+- Trading settings from the web interface: persistence across restarts (saved choice beats the defaults), the typed `LIVE` confirmation and API-key check for going live, the HTTP endpoints, the dashboard's confirm/typed-confirm wiring, and the strategy choice sitting between Trading mode and Money with its own confirm (no longer in the Markets panel) (`internal/app/trading_settings_test.go`, `internal/server/trading_settings_test.go`, `internal/server/frontend_trading_test.go`, plus storage and control tests).
 - Windows scripts: every `.bat` file in the repo root uses CRLF line endings and `.gitattributes` keeps them that way (`cmd/tradingbot/scripts_test.go`).
 - Dashboard-managed settings (0.8.0):
   - Registry: every key listed once, secret and live flags, text parse/read-back per kind, refused values leave the setting unchanged, `EffectiveLogLevel` (`internal/config/settings_test.go`).
@@ -76,7 +76,8 @@ The suite intentionally checks stable behaviour rather than internal implementat
     - A live change affects the next tick; `restart_required` is reported.
     - Saved Kraken keys allow live only after a restart.
   - Server: `GET`/`POST /api/settings`, the 400 cases, and secrets never appearing in `GET` (`internal/server/settings_test.go`).
-  - Frontend: the dialog markup contract (`internal/server/frontend_settings_test.go`).
+  - Frontend: the dialog markup contract: side navigation with one group at a time, label/help beside a sized control, switches, chip lists instead of text areas, the draft filled before the fields render, and themed secondary buttons (`internal/server/frontend_settings_test.go`).
+  - Default markets: 50 built-in EUR pairs without stablecoins (`internal/config/settings_test.go`); Kraken's live list used only when no markets are saved, built-in list kept on errors or an empty answer (`internal/app/default_markets_test.go`).
   - Logging: `SetLevel` (`internal/observability/logging_test.go`).
 - Start-up flags and scripts (`cmd/tradingbot/flags_test.go`):
   - Flag defaults and parsing.

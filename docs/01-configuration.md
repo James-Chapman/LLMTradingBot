@@ -41,6 +41,7 @@ tradingbot.exe [-db FILE] [-host ADDR] [-port N] [-log FILE] [-frontend DIR]
    - A saved value that no longer parses, or a secret that cannot be decrypted, is skipped. It falls back to the default with a `Saved setting ignored` warning in the log, so the bot still starts.
 4. `Settings.Validate()` runs.
 5. The log level switches to `LOG_LEVEL` (`DEBUG` when the `DEBUG` switch is on).
+6. If no markets were saved, `app.UseLiveDefaultMarkets` replaces the built-in list with Kraken's 50 biggest pairs (see **Default markets** below).
 
 The `settings` table:
 
@@ -108,9 +109,17 @@ Grouped as in the Settings dialog. "Now" = applies immediately; "Restart" = used
 | Key | Default | Applies | Description |
 |---|---|---|---|
 | `BASE_CURRENCY` | `EUR` | Restart | Quote currency for all markets and P&L. `EUR`/`GBP`/`USD` display as `€`/`£`/`$` |
-| `FIXED_MARKETS` | `BTC/EUR`, `ETH/EUR` | Restart | Always-active pairs in Kraken's `BASE/QUOTE` format (one per line in the dialog) |
+| `FIXED_MARKETS` | The 50 biggest pairs on Kraken (see below) | Restart | Always-active pairs in Kraken's `BASE/QUOTE` format, edited as removable chips in the dialog |
 | `DYNAMIC_UNIVERSE_SOURCE` | `coinmarketcap` | Restart | Any value except `none` enables the CoinGecko-backed dynamic resolver; `none` trades only `FIXED_MARKETS` |
 | `MAX_ETH_ECOSYSTEM_COINS` | `10` | Restart | Cap on pairs the dynamic resolver adds (≥ 0) |
+
+**Default markets.** Until `FIXED_MARKETS` is saved from the dashboard, the bot asks Kraken at every start for the 50 biggest online pairs quoted in `BASE_CURRENCY`. Two public calls are made, `AssetPairs` and `Ticker` for all pairs (`kraken.MarketAdapter.TopPairsByVolume`), with a 20-second limit.
+- **Ranking:** 24h traded value, that is 24h volume × 24h VWAP.
+- **Pegged pairs skipped:** pairs whose 24h high–low range is under 0.5% are left out. This drops stablecoins such as USDC/EUR, USDT/EUR and EURC/EUR.
+- **Fallback:** if Kraken cannot be reached, the built-in list (`config.Defaults()`, the 50 biggest EUR pairs on 2026-11-14) is used and a warning is logged.
+- **Saved lists:** once markets are saved in the dashboard, that list is used as-is and Kraken is not asked.
+
+The OHLC loop fetches candles one market at a time (about 3.5 s per market for Kraken's rate limit), so with 50 markets each candle refresh cycle takes about three minutes.
 
 ### Kraken
 

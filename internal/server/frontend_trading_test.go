@@ -36,8 +36,32 @@ func TestFrontendTradingSettings(t *testing.T) {
 		mustContain(t, "setTradingEnvironment", fn, "confirm(")
 	})
 
+	t.Run("GIVEN the trading settings dialog WHEN inspected THEN the strategy choice sits below Trading mode and above Money", func(t *testing.T) {
+		dialog := between(t, index, `id="trading-settings"`, "<!-- /trading-settings -->")
+		modeAt := strings.Index(dialog, ">Trading mode</div>")
+		strategyAt := strings.Index(dialog, `@click="selectStrategy(`)
+		moneyAt := strings.Index(dialog, ">Money</div>")
+		if modeAt < 0 || strategyAt < 0 || moneyAt < 0 || !(modeAt < strategyAt && strategyAt < moneyAt) {
+			t.Fatalf("expected Trading mode, then strategy, then Money (got %d, %d, %d)", modeAt, strategyAt, moneyAt)
+		}
+	})
+
+	t.Run("GIVEN the Markets panel WHEN inspected THEN it no longer holds the strategy selector", func(t *testing.T) {
+		markets := between(t, index, "<!-- Markets -->", "<!-- P&L Summary -->")
+		mustNotContain(t, "markets panel", markets, "selectStrategy(")
+	})
+
+	t.Run("GIVEN a strategy change WHEN the handler runs THEN it asks for confirmation before posting", func(t *testing.T) {
+		fn := between(t, index, "async selectStrategy(", "\n                },")
+		confirmAt := strings.Index(fn, "confirm(")
+		postAt := strings.Index(fn, "fetch(`/api/control/strategies/")
+		if confirmAt < 0 || postAt < 0 || confirmAt > postAt {
+			t.Fatalf("selectStrategy must confirm before posting:\n%s", fn)
+		}
+	})
+
 	t.Run("GIVEN a refused change WHEN the API returns an error THEN its detail is shown to the user", func(t *testing.T) {
-		for _, name := range []string{"async setTradingMode(", "async setTradingEnvironment("} {
+		for _, name := range []string{"async setTradingMode(", "async setTradingEnvironment(", "async selectStrategy("} {
 			fn := between(t, index, name, "\n                },")
 			mustContain(t, name, fn, "tradingSettingsError")
 		}

@@ -200,3 +200,32 @@ func without(keys, remove []string) []string {
 	}
 	return out
 }
+
+// MarketRanker lists the biggest markets quoted in a currency (the Kraken
+// market adapter in production).
+type MarketRanker interface {
+	TopPairsByVolume(ctx context.Context, quote string, n int) ([]string, error)
+}
+
+// UseLiveDefaultMarkets replaces the built-in default market list in s with
+// the biggest pairs on Kraken right now, unless markets were saved from the
+// dashboard. It reports whether the live list is used; on failure (or an
+// empty answer) the built-in list stays and the error is returned.
+func UseLiveDefaultMarkets(ctx context.Context, repo *storage.Repository, s *config.Settings, ranker MarketRanker) (bool, error) {
+	stored, err := repo.LoadSettings(ctx)
+	if err != nil {
+		return false, err
+	}
+	if _, saved := stored["FIXED_MARKETS"]; saved {
+		return false, nil
+	}
+	markets, err := ranker.TopPairsByVolume(ctx, s.BaseCurrency, config.DefaultMarketCount)
+	if err != nil {
+		return false, err
+	}
+	if len(markets) == 0 {
+		return false, fmt.Errorf("Kraken listed no %s pairs", s.BaseCurrency)
+	}
+	s.FixedMarkets = markets
+	return true, nil
+}

@@ -802,6 +802,13 @@ body.layout-ledger-glass {
     border-color: rgba(248, 81, 73, .3);
 }
 
+/* Neutral action (Add, Remove all, Undo) that follows the theme. */
+.btn-secondary {
+    color: var(--text);
+    background: var(--subtle);
+    border-color: var(--border);
+}
+
 ::-webkit-scrollbar {
     width: 5px;
     height: 5px;
@@ -1017,36 +1024,134 @@ body.layout-ledger-glass {
     color: var(--red);
 }
 
-/* Settings dialog */
+/* Settings dialog: header, group navigation on the left, one group's rows on the right, actions below. */
 .settings-btn {
     cursor: pointer;
 }
 
+.settings-panel {
+    display: flex;
+    flex-direction: column;
+    width: min(940px, 96vw);
+    height: min(720px, 92vh);
+    padding: 0;
+    overflow: hidden;
+}
+
+.settings-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 20px 24px 14px;
+    border-bottom: 1px solid var(--border);
+}
+
+.settings-title {
+    font-size: 17px;
+    font-weight: 700;
+}
+
 .settings-intro {
-    margin-bottom: 14px;
+    margin-top: 4px;
     font-size: 12px;
     color: var(--muted);
 }
 
-.settings-restart-note,
-.settings-notice {
-    margin: 10px 0;
-    font-size: 13px;
+.settings-restart-note {
+    padding: 8px 24px;
+    font-size: 12px;
     color: var(--gold);
+    background: rgba(210, 153, 34, .08);
+    border-bottom: 1px solid rgba(210, 153, 34, .3);
 }
 
-.settings-group {
-    margin-top: 18px;
-    padding-top: 12px;
-    border-top: 1px solid var(--border);
+.settings-body {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+}
+
+.settings-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 0 0 190px;
+    padding: 12px;
+    overflow-y: auto;
+    border-right: 1px solid var(--border);
+}
+
+.settings-nav-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 12px;
+    font-size: 13px;
+    text-align: left;
+    white-space: nowrap;
+    color: var(--muted);
+    background: none;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.settings-nav-item:hover {
+    color: var(--text);
+    background: var(--subtle);
+}
+
+.settings-nav-item.is-active {
+    font-weight: 600;
+    color: var(--text);
+    background: var(--subtle);
+    box-shadow: inset 2px 0 0 var(--blue);
+}
+
+.settings-nav-dot {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    background: var(--gold);
+    border-radius: 50%;
+}
+
+.settings-content {
+    flex: 1;
+    min-width: 0;
+    padding: 4px 24px 12px;
+    overflow-y: auto;
 }
 
 .settings-group-title {
-    margin-bottom: 10px;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    padding: 14px 0 10px;
+    font-size: 14px;
+    font-weight: 700;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
 }
 
+/* One setting: text on the left, control on the right. Lists span the full width. */
 .setting-row {
-    margin-bottom: 14px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 300px;
+    align-items: center;
+    gap: 8px 24px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--subtle);
+}
+
+.setting-row:last-child {
+    border-bottom: none;
+}
+
+.setting-row.is-stacked {
+    grid-template-columns: minmax(0, 1fr);
 }
 
 .setting-label {
@@ -1054,15 +1159,23 @@ body.layout-ledger-glass {
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
-    margin-bottom: 4px;
     font-size: 13px;
     font-weight: 600;
+}
+
+.setting-help {
+    margin-top: 2px;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--muted);
 }
 
 .setting-tag {
     padding: 1px 6px;
     font-size: 10px;
     font-weight: 600;
+    letter-spacing: .03em;
+    text-transform: uppercase;
     color: var(--muted);
     border: 1px solid var(--border);
     border-radius: 4px;
@@ -1078,6 +1191,12 @@ body.layout-ledger-glass {
     border-color: rgba(210, 153, 34, .5);
 }
 
+.setting-control {
+    display: flex;
+    justify-content: flex-end;
+    min-width: 0;
+}
+
 .setting-input {
     width: 100%;
     padding: 7px 10px;
@@ -1088,42 +1207,187 @@ body.layout-ledger-glass {
     border-radius: 6px;
 }
 
+.setting-input:focus {
+    outline: none;
+    border-color: var(--blue);
+}
+
 .setting-input:disabled {
     opacity: .5;
+}
+
+/* Numbers are short: a narrow, right-aligned box. */
+.setting-control.is-number .setting-input {
+    width: 130px;
+    text-align: right;
 }
 
 .setting-secret {
     display: flex;
     gap: 8px;
+    width: 100%;
 }
 
-.setting-checkbox {
+.btn-small {
+    padding: 5px 10px;
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+/* On/off switch */
+.switch {
+    position: relative;
+    width: 38px;
+    height: 22px;
+    padding: 0;
+    background: var(--subtle);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    cursor: pointer;
+    transition: background .15s;
+}
+
+.switch-knob {
+    position: absolute;
+    top: 2px;
+    left: 2px;
     width: 16px;
     height: 16px;
+    background: var(--muted);
+    border-radius: 50%;
+    transition: transform .15s, background .15s;
 }
 
-.setting-help {
-    margin-top: 3px;
+.switch[aria-checked="true"] {
+    background: rgba(63, 185, 80, .25);
+    border-color: var(--green);
+}
+
+.switch[aria-checked="true"] .switch-knob {
+    background: var(--green);
+    transform: translateX(16px);
+}
+
+/* List editor: chips that wrap, with an add box below. */
+.chip-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+}
+
+.chip-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    max-height: 210px;
+    padding: 10px;
+    overflow-y: auto;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+
+.chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 4px 3px 9px;
     font-size: 12px;
+    background: var(--subtle);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+}
+
+.chip-remove {
+    width: 18px;
+    height: 18px;
+    font-size: 14px;
+    line-height: 1;
     color: var(--muted);
+    background: none;
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+}
+
+.chip-remove:hover {
+    color: var(--red);
+    background: rgba(248, 81, 73, .12);
+}
+
+.chip-add {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.chip-add .setting-input {
+    flex: 0 1 280px;
+}
+
+.chip-count {
+    margin: 0 0 0 auto;
+}
+
+.settings-message {
+    margin: 0;
+    padding: 8px 24px 0;
+}
+
+.settings-notice {
+    font-size: 13px;
+    color: var(--green);
 }
 
 .settings-actions {
-    position: sticky;
-    bottom: -24px;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     justify-content: flex-end;
     gap: 8px;
-    margin: 16px -24px -24px;
     padding: 12px 24px;
-    background: var(--surface);
     border-top: 1px solid var(--border);
 }
 
 .settings-actions .setting-help {
     margin: 0 auto 0 0;
+}
+
+/* Phones: navigation becomes a scrolling row of tabs and each control sits under its text. */
+@media (max-width: 720px) {
+    .settings-panel {
+        height: 94vh;
+    }
+
+    .settings-body {
+        flex-direction: column;
+    }
+
+    .settings-nav {
+        flex: none;
+        flex-direction: row;
+        overflow-x: auto;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .settings-nav-item.is-active {
+        box-shadow: inset 0 -2px 0 var(--blue);
+    }
+
+    .settings-content {
+        padding: 4px 16px 12px;
+    }
+
+    .setting-row {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .setting-control {
+        justify-content: flex-start;
+    }
 }
 
 /* Shown on the dashboard while saved settings wait for a restart. */

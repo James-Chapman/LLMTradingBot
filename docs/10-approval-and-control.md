@@ -299,7 +299,7 @@ The strategy loop evaluates only the selected strategy:
 active := a.strategyByID(a.control.SelectedStrategyID())
 ```
 
-Registered strategy IDs are `"basic_strategy"`, `"basic_and_llm_strategy"`, and `"llm_only_strategy"`. The UI selector writes the selected ID through `POST /api/control/strategies/{strategy_id}/select`.
+Registered strategy IDs are `"basic_strategy"`, `"basic_and_llm_strategy"`, and `"llm_only_strategy"`. The **Strategy** section of the dashboard's Trading settings dialog (between Trading mode and Money) writes the selected ID through `POST /api/control/strategies/{strategy_id}/select`, after a confirm dialog.
 
 ---
 

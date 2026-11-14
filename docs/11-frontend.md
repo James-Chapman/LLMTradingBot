@@ -196,7 +196,7 @@ ETH/EUR    £1,842.00     [Disable]
 
 Toggle buttons call `toggleMarket(market)` which POSTs to `/api/control/markets/{market}/toggle`.
 
-The top header shows **Active Strategy**, populated from the selected strategy in `/api/dashboard`, so the operator can see the current trading logic without opening the Markets panel.
+The top header shows **Active Strategy**, populated from the selected strategy in `/api/dashboard`, so the operator can see the current trading logic at a glance. The strategy is changed in the **Trading settings** dialog (below).
 
 ---
 
@@ -451,7 +451,7 @@ Displays all articles published in the **last 12 hours** in a responsive grid of
 | Emergency stop | `activateStop()` | `POST /api/control/emergency-stop` |
 | Resume trading | `resumeBot()` | `POST /api/control/resume` |
 | Toggle market | `toggleMarket(market)` | `POST /api/control/markets/{market}/toggle` |
-| Select strategy | `selectStrategy(id)` | `POST /api/control/strategies/{id}/select` |
+| Select strategy | `selectStrategy(id)` (confirm dialog first) | `POST /api/control/strategies/{id}/select` |
 | Change trading mode | `setTradingMode(mode)` (confirm dialog first) | `POST /api/control/trading-mode` |
 | Switch paper / live | `setTradingEnvironment(env)` (typed `LIVE` to go live, confirm dialog to go back to paper) | `POST /api/control/trading-environment` |
 | Load settings | `loadSettings()` (on start-up and when the dialog opens) | `GET /api/settings` |
@@ -459,22 +459,30 @@ Displays all articles published in the **last 12 hours** in a responsive grid of
 | Close position | `closePosition(positionIdFull)` | `POST /api/positions/{position_id_full}/close` |
 | Reset positions | `resetPositions()` | `POST /api/positions/reset` |
 
-The PAPER/LIVE and mode badges in the header are one button that opens the **Trading settings** dialog (`#trading-settings`, `openTradingSettings()`). Nothing changes on a single click: each mode button and the Paper button ask `confirm()` first, and the Live button opens a red panel whose "Switch to live" button stays disabled until `LIVE` is typed. A refused change (for example missing Kraken API keys) shows the API's `detail` message in the dialog (`tradingSettingsError`). The mode panel's **Change trading mode** button opens the same dialog.
+The PAPER/LIVE and mode badges in the header are one button that opens the **Trading settings** dialog (`#trading-settings`, `openTradingSettings()`). The dialog has three sections, in order: **Trading mode**, **Strategy** and **Money**. A strategy card shows the label split into a name and a description (`_strategyLabelParts()`, from `Name (description)`). Nothing changes on a single click: each mode button, each strategy and the Paper button ask `confirm()` first, and the Live button opens a red panel whose "Switch to live" button stays disabled until `LIVE` is typed. A refused change (for example missing Kraken API keys) shows the API's `detail` message in the dialog (`tradingSettingsError`). The mode panel's **Change trading mode** button opens the same dialog.
 
 ### Settings Dialog
 
-**⚙ Settings** in the header opens `#settings-dialog` (`openSettings()`), which reloads `GET /api/settings` and fills a draft. Fields are grouped by their `group` (`settingsGroups` getter), and each is tagged *applies now* or *restart*, plus *saved — restart to apply* while `restart_pending`.
+**⚙ Settings** in the header opens `#settings-dialog` (`openSettings()`), which reloads `GET /api/settings` and fills a draft. The dialog is a fixed-height panel:
 
-| Kind | Input |
+- a header with the *Live* / *Restart* legend and, while anything is pending, a *Restart the bot to apply* strip;
+- a **side navigation** (`.settings-nav`) listing the groups (`settingsGroups` getter); the selected one is `settingsGroup`, and a gold dot marks groups with unsaved changes (`settingsGroupChanged()`). On narrow screens it becomes a scrolling row of tabs;
+- the selected group's settings, one **row** per setting (`.setting-row`): label, *Live*/*Restart* tag, *Restart pending* tag and help text on the left (`.setting-text`), the control on the right (`.setting-control`, 300 px). List settings span the full width;
+- a footer with the unsaved-change count, **Undo changes** and **Save…**.
+
+`loadSettings()` fills the draft (`resetSettingsDraft(data.fields)`) before it sets `settingsFields`, so list rows never render without a draft array. Neutral buttons (Add, Remove all, Clear/Keep, Undo changes) use `.btn-secondary`, which follows the theme colours.
+
+| Kind | Control |
 |---|---|
-| `string`, `int`, `float` | Text input (the server validates numbers and ranges) |
-| `bool` | Checkbox |
-| `list` | Textarea, one entry per line; sent as a JSON array |
+| `int`, `float` | Narrow right-aligned text box (`is-number`; the server validates numbers and ranges) |
+| `string` | Text box |
+| `bool` | Switch (`role="switch"`, `aria-checked`) |
+| `list` | Removable chips (`.chip-list`, **×** calls `removeListItem()`) plus an add box (`addListItem()`, Enter or **Add**; market symbols are upper-cased, duplicates ignored), an entry count and **Remove all**. News feeds show the name part of `Name::URL` on the chip, with the full entry as its tooltip |
 | secret | `type="password"`, `autocomplete="new-password"`, never pre-filled. Placeholder *Set — type to replace* / *Not set*; **Clear** / **Keep** toggles clearing it |
 
-State: `settingsFields` (from the API), `settingsDraft` (key → edited text; `''` for an untouched secret), `settingsClear` (secrets to clear), `settingsRestartRequired`, `settingsError`, `settingsNotice`, `settingsSaving`. `settingsChanges()` compares the draft with the saved values and returns only the changed keys; the footer shows the count, **Undo changes** (`resetSettingsDraft()`) and **Save…**.
+State: `settingsFields` (from the API), `settingsDraft` (key → edited value: arrays for lists, `''` for an untouched secret), `settingsClear` (secrets to clear), `settingsGroup`, `settingsRestartRequired`, `settingsError`, `settingsNotice`, `settingsSaving`. `settingsChanges()` compares the draft with the saved values and returns only the changed keys; the footer shows the count, **Undo changes** (`resetSettingsDraft()`) and **Save…**.
 
-`saveSettings()` asks `confirm()` with one line per change (`label: old → new (applies now|after restart)`; secrets only say *new value* or *cleared*) before posting. A refusal shows the API's `detail` (`settingsError`); success shows which keys are in use now, reloads the settings and refreshes the dashboard. Closing the dialog with unsaved changes asks before discarding them.
+`saveSettings()` asks `confirm()` with one line per change (`label: old → new (applies now|after restart)`; lists show only what was added `+` and removed `−`; secrets only say *new value* or *cleared*) before posting. A refusal shows the API's `detail` (`settingsError`); success shows which keys are in use now, reloads the settings and refreshes the dashboard. Closing the dialog with unsaved changes asks before discarding them.
 
 While `settingsRestartRequired` is non-empty, a `.restart-banner` under the header lists the keys: *Settings saved. Restart the bot to apply: …*.
 

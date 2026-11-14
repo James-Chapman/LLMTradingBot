@@ -119,7 +119,7 @@ The loop evaluates the single strategy selected in control state (`evaluateStrat
 - `basic_and_llm_strategy` uses `BasicAndLLMStrategy.Evaluate()` with indicator consensus, briefing sentiment, and the LLM signal-analysis/veto pass, which runs inside the strategy.
 - `llm_only_strategy` uses `LLMOnlyStrategy.Evaluate()` and asks the LLM directly for `long`, `short`, or `hold`; indicators are passed into the LLM prompt but do not gate the trade locally.
 
-Only one strategy is active at a time. The UI strategy selector writes `control.State.SelectStrategy()`, and the next tick applies that strategy to all markets. If the selected ID is unknown, the loop falls back to `basic_and_llm_strategy`. LLM strategies receive the news cache, the analyser, the latest briefing, and the current portfolio in `strategy.Input`.
+Only one strategy is active at a time. The strategy chosen in the dashboard's Trading settings dialog writes `control.State.SelectStrategy()`, and the next tick applies that strategy to all markets. If the selected ID is unknown, the loop falls back to `basic_and_llm_strategy`. LLM strategies receive the news cache, the analyser, the latest briefing, and the current portfolio in `strategy.Input`.
 
 ### LLM Signal Analysis
 
@@ -307,6 +307,7 @@ Failed or empty fetches leave the previous cache entry in place. The `GET /api/o
 3.  storage.Open(-db)                   → opens SQLite and creates/migrates the schema
     app.LoadSettings() + Validate()     → defaults → saved dashboard settings → flags
     observability.SetLevel(LOG_LEVEL)   → DEBUG when the DEBUG switch is on
+    app.UseLiveDefaultMarkets()         → no saved markets: Kraken's 50 biggest pairs (built-in list if unreachable)
 4.  app.New(ctx, settings, repo):
     a. learner.New()
     b. llm.NewSwitchingClientFromSettings() → LM Studio primary + remote OpenAI-compatible fallback

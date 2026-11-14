@@ -119,6 +119,33 @@ func TestSettingsFields(t *testing.T) {
 	})
 }
 
+// TestDefaultMarkets covers the built-in market list used when Kraken cannot be asked.
+func TestDefaultMarkets(t *testing.T) {
+	t.Run("GIVEN the defaults WHEN the market list is read THEN it holds the 50 biggest EUR pairs without stablecoins", func(t *testing.T) {
+		markets := Defaults().FixedMarkets
+		if len(markets) != DefaultMarketCount || DefaultMarketCount != 50 {
+			t.Fatalf("expected %d markets, got %d", DefaultMarketCount, len(markets))
+		}
+		seen := map[string]bool{}
+		for _, m := range markets {
+			if !strings.HasSuffix(m, "/EUR") || seen[m] {
+				t.Errorf("unexpected or duplicate market %q", m)
+			}
+			seen[m] = true
+		}
+		for _, want := range []string{"BTC/EUR", "ETH/EUR"} {
+			if !seen[want] {
+				t.Errorf("expected %s in the defaults", want)
+			}
+		}
+		for _, pegged := range []string{"USDC/EUR", "USDT/EUR", "EURC/EUR"} {
+			if seen[pegged] {
+				t.Errorf("stablecoin %s must not be a default market", pegged)
+			}
+		}
+	})
+}
+
 // TestEffectiveLogLevel covers combining LOG_LEVEL with the DEBUG switch.
 func TestEffectiveLogLevel(t *testing.T) {
 	t.Run("GIVEN DEBUG off WHEN the log level is resolved THEN LOG_LEVEL is used", func(t *testing.T) {

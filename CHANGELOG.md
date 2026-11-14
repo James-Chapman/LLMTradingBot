@@ -7,6 +7,31 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.9.0] — 2026-11-14
+
+### Changed
+- **Default markets: the 50 biggest EUR pairs on Kraken.** Until markets are saved in Settings, the bot asks Kraken at every start for the 50 biggest online pairs in the base currency. Previously the default was only BTC/EUR and ETH/EUR.
+  - Pairs are ranked by 24h traded value (volume × VWAP) from the public `AssetPairs` and `Ticker` endpoints.
+  - Stablecoins and other pegged pairs (24h range under 0.5%, e.g. USDC/EUR, USDT/EUR, EURC/EUR) are left out.
+  - If Kraken cannot be reached, a built-in list of today's top 50 EUR pairs is used and a warning is logged.
+  - A market list saved in the dashboard always wins.
+  - Each candle refresh cycle now takes about three minutes (one market every ~3.5 s for Kraken's rate limit), and the dashboard draws a chart for each market.
+- **Redesigned Settings dialog.** Settings are laid out to be neat and readable:
+  - A side navigation shows one group at a time, and a dot marks groups with unsaved changes.
+  - Each setting is a row with its label and help on the left and a control sized for its kind on the right: short right-aligned boxes for numbers, switches for on/off settings, and removable chips with an add box for lists (markets, news feeds, browser origins) instead of text areas.
+  - The save confirmation lists only the markets or feeds added and removed, not the whole list.
+  - On phones the navigation becomes a row of tabs.
+
+---
+
+## [0.8.1] — 2026-11-14
+
+### Changed
+- **Strategy choice moved into the Trading settings dialog.** It now sits between **Trading mode** and **Money** in the dialog opened by the header badges, instead of at the bottom of the Markets panel. Each strategy is a card showing its name and what it does.
+- Changing strategy now asks for confirmation, like the other trading settings, and a refused change shows the reason in the dialog. Previously one click switched strategy immediately.
+
+---
+
 ## [0.8.0] — 2026-11-14
 
 ### Removed

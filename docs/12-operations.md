@@ -39,7 +39,7 @@ go build -o bin/tradingbot-cli ./cmd/cli
 
 ### 3. Settings
 
-The first start uses safe built-in defaults: paper trading, manual mode, €500 starting capital, BTC/EUR and ETH/EUR, LM Studio at `http://localhost:1234/v1`. After starting the bot, open **⚙ Settings** in the dashboard to change anything (markets, risk limits, LLM endpoints, Kraken keys, news feeds). Use the PAPER/mode badges for the trading mode. Full reference: `docs/01-configuration.md`.
+The first start uses safe built-in defaults: paper trading, manual mode, €500 starting capital, the 50 biggest EUR pairs on Kraken by 24h volume (stablecoins excluded, picked at each start), LM Studio at `http://localhost:1234/v1`. After starting the bot, open **⚙ Settings** in the dashboard to change anything (markets, risk limits, LLM endpoints, Kraken keys, news feeds). Use the PAPER/mode badges for the trading mode. Full reference: `docs/01-configuration.md`.
 
 Upgrading from 0.7 or earlier: `.env` is no longer read. Re-enter your settings in the dashboard.
 
@@ -106,7 +106,7 @@ Stop the bot with Ctrl+C. It shuts down gracefully: HTTP requests get up to 10 s
 
 1. Logging is set up at INFO (stdout, the `-log` file, and `llm.log`).
 2. The database is opened (SQLite file created if absent; schema migrations applied).
-3. Settings are loaded: built-in defaults, then the values saved from the dashboard, then the start-up flags. A saved value that no longer parses (or a secret that cannot be decrypted) is skipped with a `Saved setting ignored` warning. The log level then switches to `LOG_LEVEL`.
+3. Settings are loaded: built-in defaults, then the values saved from the dashboard, then the start-up flags. A saved value that no longer parses (or a secret that cannot be decrypted) is skipped with a `Saved setting ignored` warning. The log level then switches to `LOG_LEVEL`. If no markets were saved, the 50 biggest pairs are fetched from Kraken (`Default markets picked from Kraken by 24h volume`), or the built-in list is used with a warning if Kraken is unreachable.
 4. Pending approvals, risk rejections, equity history and the latest cash balance are restored.
 5. Open positions and the daily risk counters are restored from the database.
 6. The news cache is seeded from the database (and marked as already briefed).
@@ -184,9 +184,9 @@ Log level is configurable via `LOG_LEVEL` (`DEBUG`, `INFO`, `WARNING`, `ERROR`; 
 
 ## Managing Markets
 
-Markets are the **Fixed markets** setting (`FIXED_MARKETS`). To add a new market:
+Markets are the **Fixed markets** setting (`FIXED_MARKETS`). Until you save it, the bot trades the 50 biggest pairs on Kraken by 24h volume, re-picked at every start. Saving the list fixes it: from then on Kraken's ranking is no longer used. To add or remove a market:
 
-1. Open **⚙ Settings → Markets**, add the symbol on its own line (e.g. `SOL/EUR`) and save.
+1. Open **⚙ Settings → Markets**, type the symbol (e.g. `SOL/EUR`) in the add box and press **Add** or Enter, or click **×** on a market chip to remove it. Then save.
 2. Restart the bot (the dashboard shows a restart banner until you do).
 3. On startup, `ValidateSymbols()` checks Kraken recognises the symbol. Invalid symbols are dropped with a warning.
 
@@ -389,7 +389,7 @@ func All(s config.Settings) []Strategy {
 }
 ```
 
-3. Select it from the dashboard (or `POST /api/control/strategies/my_strategy/select`). The learner will automatically track outcomes for the new strategy ID; no changes to the learner are needed.
+3. Select it in the dashboard's **Trading settings** dialog (click the mode badges in the header; the Strategy section is below Trading mode), or `POST /api/control/strategies/my_strategy/select`. The learner will automatically track outcomes for the new strategy ID; no changes to the learner are needed.
 
 ---
 

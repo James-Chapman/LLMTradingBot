@@ -33,7 +33,7 @@ import (
 )
 
 // Version is the application version reported by /health and the dashboard.
-const Version = "0.8.0"
+const Version = "0.9.0"
 
 // Name is the application display name.
 const Name = "Kraken Trading Bot"

@@ -79,7 +79,7 @@ var fields = []Field{
 
 	// Markets (restart: the market list is validated at start-up)
 	stringField("BASE_CURRENCY", "Base currency", GroupMarkets, false, "Quote currency for every market, e.g. EUR.", false, nonEmpty, func(s *Settings) *string { return &s.BaseCurrency }),
-	listField("FIXED_MARKETS", "Fixed markets", GroupMarkets, false, "Markets always traded, e.g. BTC/EUR.", func(s *Settings) *[]string { return &s.FixedMarkets }),
+	listField("FIXED_MARKETS", "Fixed markets", GroupMarkets, false, "Markets always traded, e.g. BTC/EUR. Until saved here, the 50 biggest pairs on Kraken by 24h volume (stablecoins excluded), picked at each start.", func(s *Settings) *[]string { return &s.FixedMarkets }),
 	stringField("DYNAMIC_UNIVERSE_SOURCE", "Dynamic market source", GroupMarkets, false, "Where extra markets come from: coinmarketcap or none.", false, nonEmpty, func(s *Settings) *string { return &s.DynamicUniverseSource }),
 	intField("MAX_ETH_ECOSYSTEM_COINS", "Max dynamic markets", GroupMarkets, false, "Cap on markets added by the dynamic source.", 0, func(s *Settings) *int { return &s.MaxEthEcosystemCoins }),
 

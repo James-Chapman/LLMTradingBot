@@ -4,7 +4,10 @@
 // database; there is no .env file.
 package config
 
-import "fmt"
+import (
+	"fmt"
+	"slices"
+)
 
 // Settings holds every tunable value for the bot.
 type Settings struct {
@@ -69,6 +72,23 @@ type Settings struct {
 	LogFile  string
 }
 
+// DefaultMarketCount is how many markets the bot trades when none were saved
+// from the dashboard: the biggest pairs on Kraken by 24h traded value.
+const DefaultMarketCount = 50
+
+// defaultMarkets is the fallback when Kraken cannot be asked for its biggest
+// pairs at start-up: the 50 biggest EUR pairs by 24h traded value on
+// 2026-11-14, stablecoins excluded.
+var defaultMarkets = []string{
+	"BTC/EUR", "ETH/EUR", "SOL/EUR", "XRP/EUR", "ZEC/EUR", "HYPE/EUR", "NEAR/EUR", "AVAX/EUR",
+	"LINK/EUR", "ADA/EUR", "SUI/EUR", "UNI/EUR", "LTC/EUR", "TAO/EUR", "PUMP/EUR", "INJ/EUR",
+	"DOGE/EUR", "XLM/EUR", "NIGHT/EUR", "PEPE/EUR", "ZRO/EUR", "ONDO/EUR", "ENA/EUR", "QNT/EUR",
+	"VVV/EUR", "XDC/EUR", "TRX/EUR", "JUP/EUR", "AAVE/EUR", "BCH/EUR", "BNB/EUR", "DOT/EUR",
+	"HBAR/EUR", "PAXG/EUR", "FET/EUR", "USELESS/EUR", "TIA/EUR", "CRV/EUR", "ARB/EUR", "ALGO/EUR",
+	"RENDER/EUR", "W/EUR", "TRUMP/EUR", "ICP/EUR", "VIRTUAL/EUR", "ATOM/EUR", "WLD/EUR", "MON/EUR",
+	"ZAMA/EUR", "OP/EUR",
+}
+
 // Defaults returns the built-in default settings.
 func Defaults() Settings {
 	return Settings{
@@ -103,7 +123,7 @@ func Defaults() Settings {
 			"CryptoPotato::https://cryptopotato.com/feed/",
 			"NewsBTC::https://www.newsbtc.com/feed/",
 		},
-		FixedMarkets:          []string{"BTC/EUR", "ETH/EUR"},
+		FixedMarkets:          slices.Clone(defaultMarkets),
 		DynamicUniverseSource: "coinmarketcap",
 		MaxEthEcosystemCoins:  10,
 		LMStudioBaseURL:       "http://localhost:1234/v1",
