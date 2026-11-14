@@ -19,17 +19,22 @@
         <div class="app-shell dashboard-shell header-bar">
             <div class="header-brand">
                 <span class="brand-title">⚡ LLM Trading Bot</span>
-                <span class="version-label" x-text="appVersion ? 'v' + appVersion : ''">v0.5.25</span>
+                <span class="version-label" x-text="appVersion ? 'v' + appVersion : ''">v0.9.0</span>
                 <!-- Emergency stop banner -->
                 <span x-show="emergencyStop" class="pill pill-red"
                     style="font-size:12px;font-weight:700;letter-spacing:.04em;">■ EMERGENCY STOP</span>
             </div>
             <div class="header-status">
-                <span class="pill pill-blue" x-show="environment === 'paper'">PAPER</span>
-                <span class="pill pill-red" x-show="environment === 'live'">LIVE</span>
-                <span class="pill pill-muted" x-show="mode === 'manual'">MANUAL</span>
-                <span class="pill pill-gold" x-show="mode === 'semi_automated'">SEMI-AUTO</span>
-                <span class="pill pill-green" x-show="mode === 'fully_automated'">AUTO</span>
+                <!-- Environment and mode badges: click to open the trading settings dialog -->
+                <button type="button" class="trading-badges" @click="openTradingSettings()"
+                    title="Change trading mode or paper / live">
+                    <span class="pill pill-blue" x-show="environment === 'paper'">PAPER</span>
+                    <span class="pill pill-red" x-show="environment === 'live'">LIVE</span>
+                    <span class="pill pill-muted" x-show="mode === 'manual'">MANUAL</span>
+                    <span class="pill pill-gold" x-show="mode === 'semi_automated'">SEMI-AUTO</span>
+                    <span class="pill pill-green" x-show="mode === 'fully_automated'">AUTO</span>
+                    <span class="trading-badges-edit">⚙</span>
+                </button>
                 <div class="metric-separator"></div>
                 <div class="metric-block" style="display:flex;align-items:center;gap:6px;">
                     <span class="llm-dot"
@@ -55,6 +60,8 @@
                             x-text="cash"></span></div>
                 </div>
                 <div class="metric-separator"></div>
+                <button type="button" class="pill pill-muted settings-btn" @click="openSettings()"
+                    title="Bot settings">⚙ Settings</button>
                 <a href="/approvals" class="pill pill-blue" style="text-decoration:none;cursor:pointer;">
                     Approvals <span x-show="pendingCount > 0" x-text="'(' + pendingCount + ')'"
                         style="margin-left:3px;"></span>
@@ -79,6 +86,12 @@
             ⚠ No trades will be placed until warm-up completes — <strong x-text="warmupTicksRemaining"></strong>
             tick<span x-show="warmupTicksRemaining !== 1">s</span> remaining.
         </span>
+    </div>
+
+    <!-- Saved settings that the running bot is not using yet -->
+    <div x-show="settingsRestartRequired.length > 0" x-cloak class="restart-banner">
+        <span>⟳ Settings saved. Restart the bot to apply:
+            <span class="mono" x-text="settingsRestartRequired.join(', ')"></span></span>
     </div>
 
     <!-- ── Main ───────────────────────────────────────────────────────────── -->
@@ -126,12 +139,8 @@
                         immediately without approval. Stop-losses are automatic.</span>
                 </div>
             </div>
-            <div style="font-size:12px;color:var(--muted);white-space:nowrap;">
-                Set <code
-                    style="background:var(--subtle);padding:2px 6px;border-radius:4px;">TRADING_MODE=semi_automated</code>
-                in <code style="background:var(--subtle);padding:2px 6px;border-radius:4px;">.env</code> to receive
-                trade proposals
-            </div>
+            <button type="button" class="btn" style="font-size:12px;white-space:nowrap;"
+                @click="openTradingSettings()">Change trading mode</button>
         </div>
 
         <!-- Equity Curve -->
@@ -168,19 +177,6 @@
                     </div>
                     <div id="markets-list">
                         <div style="color:var(--muted);font-size:13px;">Loading…</div>
-                    </div>
-                    <!-- Strategy selector -->
-                    <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--subtle);">
-                        <div class="label" style="margin-bottom:10px;">Strategy</div>
-                        <template x-for="s in strategies" :key="s.id">
-                            <div class="flex items-center justify-between" style="padding:6px 0;">
-                                <span style="font-size:12px;" x-text="s.label || s.id"></span>
-                                <button class="toggle-btn" :class="s.selected ? 'toggle-on' : 'toggle-off'"
-                                    @click.stop="selectStrategy(s.id)"
-                                    x-text="s.selected ? 'Selected' : 'Select'"></button>
-                            </div>
-                        </template>
-                        <div x-show="!strategies.length" style="color:var(--muted);font-size:12px;">No strategies</div>
                     </div>
                 </div>
             </div>
@@ -341,6 +337,209 @@
             </div>
             <div id="approvals-queue" class="approval-list"></div>
         </div>
+
+        <!-- Trading Settings Modal: every change needs a confirmation; going live needs "LIVE" typed -->
+        <div id="trading-settings" x-show="tradingSettingsOpen" x-cloak class="modal-backdrop"
+            @click.self="closeTradingSettings()" @keydown.escape.window="closeTradingSettings()">
+            <div class="modal-panel" style="width:min(560px,96vw);">
+                <div class="flex items-center justify-between" style="margin-bottom:18px;">
+                    <h2 style="font-size:17px;font-weight:700;">Trading settings</h2>
+                    <button type="button" class="modal-close" @click="closeTradingSettings()">✕</button>
+                </div>
+
+                <!-- Trading mode -->
+                <div class="label" style="margin-bottom:8px;">Trading mode</div>
+                <div class="settings-options">
+                    <template x-for="option in tradingModes" :key="option.id">
+                        <button type="button" class="settings-option" :class="mode === option.id ? 'is-active' : ''"
+                            @click="setTradingMode(option.id)">
+                            <span class="settings-option-title" x-text="option.label"></span>
+                            <span class="settings-option-text" x-text="option.description"></span>
+                        </button>
+                    </template>
+                </div>
+
+                <!-- Strategy -->
+                <div class="label" style="margin:20px 0 8px;">Strategy</div>
+                <div class="settings-options">
+                    <template x-for="s in strategies" :key="s.id">
+                        <button type="button" class="settings-option" :class="s.selected ? 'is-active' : ''"
+                            @click="selectStrategy(s.id)">
+                            <span class="settings-option-title" x-text="_strategyLabelParts(s).title"></span>
+                            <span class="settings-option-text" x-text="_strategyLabelParts(s).text"></span>
+                        </button>
+                    </template>
+                </div>
+                <p x-show="!strategies.length" class="settings-option-text">No strategies</p>
+
+                <!-- Paper / live -->
+                <div class="label" style="margin:20px 0 8px;">Money</div>
+                <div class="settings-options">
+                    <button type="button" class="settings-option" :class="environment === 'paper' ? 'is-active' : ''"
+                        @click="setTradingEnvironment('paper')">
+                        <span class="settings-option-title">Paper</span>
+                        <span class="settings-option-text">Simulated orders. Nothing is sent to Kraken.</span>
+                    </button>
+                    <button type="button" class="settings-option is-danger"
+                        :class="environment === 'live' ? 'is-active' : ''"
+                        @click="environment !== 'live' && (showLiveConfirm = true)">
+                        <span class="settings-option-title">Live — real money</span>
+                        <span class="settings-option-text">Markets toggled live send real orders to Kraken.</span>
+                    </button>
+                </div>
+
+                <!-- Typed confirmation before going live -->
+                <div x-show="showLiveConfirm && environment !== 'live'" class="live-confirm">
+                    <p style="margin-bottom:8px;"><strong>This switches the bot to real money.</strong>
+                        Every market toggled live will send real orders to Kraken, and the dashboard will show
+                        your Kraken balances.</p>
+                    <label for="live-confirm-input" style="display:block;margin-bottom:6px;">
+                        Type <span class="mono">LIVE</span> to confirm:</label>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                        <input id="live-confirm-input" type="text" autocomplete="off" x-model="liveConfirmText"
+                            class="live-confirm-input mono" placeholder="LIVE">
+                        <button type="button" class="btn btn-reject" :disabled="liveConfirmText !== 'LIVE'"
+                            @click="setTradingEnvironment('live')">Switch to live</button>
+                        <button type="button" class="btn" @click="showLiveConfirm = false; liveConfirmText = ''">Cancel</button>
+                    </div>
+                </div>
+
+                <p x-show="tradingSettingsError" x-text="tradingSettingsError" class="settings-error"></p>
+            </div>
+        </div>
+        <!-- /trading-settings -->
+
+        <!-- Settings Modal: every bot setting except the start-up flags, one group at a time. Saving lists
+             the changes in a confirmation first. Secrets are write-only: the API only says whether one is set. -->
+        <div id="settings-dialog" x-show="settingsOpen" x-cloak class="modal-backdrop"
+            @click.self="closeSettings()" @keydown.escape.window="closeSettings()">
+            <div class="modal-panel settings-panel">
+                <div class="settings-head">
+                    <div>
+                        <h2 class="settings-title">Settings</h2>
+                        <p class="settings-intro"><span class="setting-tag is-live">Live</span> changes apply as soon
+                            as you save; <span class="setting-tag">Restart</span> changes after the bot restarts.</p>
+                    </div>
+                    <button type="button" class="modal-close" @click="closeSettings()">✕</button>
+                </div>
+
+                <div x-show="settingsRestartRequired.length > 0" class="settings-restart-note">
+                    ⟳ Restart the bot to apply: <span class="mono" x-text="settingsRestartRequired.join(', ')"></span>
+                </div>
+
+                <div class="settings-body">
+                    <!-- Group navigation -->
+                    <nav class="settings-nav">
+                        <template x-for="group in settingsGroups" :key="group.name">
+                            <button type="button" class="settings-nav-item"
+                                :class="group.name === settingsGroup ? 'is-active' : ''"
+                                @click="settingsGroup = group.name">
+                                <span x-text="group.name"></span>
+                                <span x-show="settingsGroupChanged(group)" class="settings-nav-dot"
+                                    title="Unsaved changes"></span>
+                            </button>
+                        </template>
+                    </nav>
+
+                    <!-- The selected group's settings -->
+                    <div class="settings-content">
+                        <template x-for="group in settingsGroups" :key="group.name">
+                            <section x-show="group.name === settingsGroup">
+                                <h3 class="settings-group-title" x-text="group.name"></h3>
+                                <template x-for="field in group.fields" :key="field.key">
+                                    <div class="setting-row" :class="field.kind === 'list' ? 'is-stacked' : ''">
+                                        <div class="setting-text">
+                                            <label :for="'setting-' + field.key" class="setting-label">
+                                                <span x-text="field.label"></span>
+                                                <span class="setting-tag" :class="field.live ? 'is-live' : ''"
+                                                    x-text="field.live ? 'Live' : 'Restart'"></span>
+                                                <span x-show="field.restart_pending" class="setting-tag is-pending">Restart pending</span>
+                                            </label>
+                                            <p class="setting-help" x-text="field.help"></p>
+                                        </div>
+
+                                        <div class="setting-control"
+                                            :class="{ 'is-number': field.kind === 'int' || field.kind === 'float' }">
+                                            <!-- Secret: never pre-filled; type a new value to replace it -->
+                                            <template x-if="field.secret">
+                                                <div class="setting-secret">
+                                                    <input :id="'setting-' + field.key" type="password"
+                                                        autocomplete="new-password" class="setting-input mono"
+                                                        x-model="settingsDraft[field.key]"
+                                                        :disabled="settingsClear[field.key]"
+                                                        :placeholder="settingsClear[field.key] ? 'Will be cleared' : field.is_set ? 'Set — type to replace' : 'Not set'">
+                                                    <button type="button" class="btn btn-small btn-secondary" x-show="field.is_set"
+                                                        @click="settingsClear[field.key] = !settingsClear[field.key]; settingsDraft[field.key] = ''"
+                                                        x-text="settingsClear[field.key] ? 'Keep' : 'Clear'"></button>
+                                                </div>
+                                            </template>
+
+                                            <!-- On / off switch -->
+                                            <template x-if="!field.secret && field.kind === 'bool'">
+                                                <button :id="'setting-' + field.key" type="button" role="switch"
+                                                    class="switch" :aria-checked="settingsDraft[field.key] === 'true' ? 'true' : 'false'"
+                                                    @click="settingsDraft[field.key] = settingsDraft[field.key] === 'true' ? 'false' : 'true'">
+                                                    <span class="switch-knob"></span>
+                                                </button>
+                                            </template>
+
+                                            <!-- List: removable chips plus an add box -->
+                                            <template x-if="!field.secret && field.kind === 'list'">
+                                                <div class="chip-editor">
+                                                    <div class="chip-list">
+                                                        <template x-for="(item, index) in settingsDraft[field.key]" :key="item">
+                                                            <span class="chip" :title="item">
+                                                                <span class="mono" x-text="item.split('::')[0]"></span>
+                                                                <button type="button" class="chip-remove"
+                                                                    :aria-label="'Remove ' + item"
+                                                                    @click="removeListItem(field.key, index)">×</button>
+                                                            </span>
+                                                        </template>
+                                                        <span x-show="settingsDraft[field.key].length === 0"
+                                                            class="setting-help">None</span>
+                                                    </div>
+                                                    <form class="chip-add" @submit.prevent="addListItem(field, $event.target.elements.entry)">
+                                                        <input :id="'setting-' + field.key" name="entry" type="text"
+                                                            autocomplete="off" class="setting-input mono"
+                                                            :placeholder="field.key === 'FIXED_MARKETS' ? 'Add a market, e.g. SOL/EUR' : field.key === 'NEWS_SOURCES' ? 'Add a feed as Name::URL' : 'Add an entry'">
+                                                        <button type="submit" class="btn btn-small btn-secondary">Add</button>
+                                                        <span class="setting-help chip-count"
+                                                            x-text="settingsDraft[field.key].length + (settingsDraft[field.key].length === 1 ? ' entry' : ' entries')"></span>
+                                                        <button type="button" class="btn btn-small btn-secondary"
+                                                            x-show="settingsDraft[field.key].length > 1"
+                                                            @click="settingsDraft[field.key] = []">Remove all</button>
+                                                    </form>
+                                                </div>
+                                            </template>
+
+                                            <!-- Text and numbers (the server validates ranges) -->
+                                            <template x-if="!field.secret && field.kind !== 'bool' && field.kind !== 'list'">
+                                                <input :id="'setting-' + field.key" type="text" autocomplete="off"
+                                                    class="setting-input mono" x-model="settingsDraft[field.key]"
+                                                    :inputmode="field.kind === 'int' || field.kind === 'float' ? 'decimal' : 'text'">
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
+                            </section>
+                        </template>
+                    </div>
+                </div>
+
+                <p x-show="settingsError" x-text="settingsError" class="settings-error settings-message"></p>
+                <p x-show="settingsNotice" x-text="settingsNotice" class="settings-notice settings-message"></p>
+
+                <div class="settings-actions">
+                    <span class="setting-help" x-text="settingsChangeCount() === 0 ? 'No unsaved changes'
+                        : settingsChangeCount() + ' unsaved change' + (settingsChangeCount() === 1 ? '' : 's')"></span>
+                    <button type="button" class="btn btn-secondary" @click="resetSettingsDraft()"
+                        :disabled="settingsChangeCount() === 0">Undo changes</button>
+                    <button type="button" class="btn btn-approve" @click="saveSettings()"
+                        :disabled="settingsChangeCount() === 0 || settingsSaving">Save…</button>
+                </div>
+            </div>
+        </div>
+        <!-- /settings-dialog -->
 
         <!-- Signal Detail Modal -->
         <div x-show="signalModal" x-cloak
@@ -1081,6 +1280,26 @@
                 llmReflection: null,
                 llmBriefing: null,
                 signalModal: null,
+                // Trading settings dialog
+                tradingSettingsOpen: false,
+                showLiveConfirm: false,
+                liveConfirmText: '',
+                tradingSettingsError: '',
+                // Settings dialog
+                settingsOpen: false,
+                settingsFields: [],
+                settingsDraft: {},      // key -> edited value (lists: arrays; secrets: '' = unchanged)
+                settingsGroup: '',      // group shown in the dialog
+                settingsClear: {},      // secret key -> true when it should be cleared on save
+                settingsRestartRequired: [],
+                settingsError: '',
+                settingsNotice: '',
+                settingsSaving: false,
+                tradingModes: [
+                    { id: 'manual', label: 'Manual', description: 'Signals are shown only. Nothing is traded.' },
+                    { id: 'semi_automated', label: 'Semi-automated', description: 'Each trade waits for your approval.' },
+                    { id: 'fully_automated', label: 'Fully automated', description: 'Confident signals are traded without approval.' },
+                ],
                 signalBreakdown: null,
                 signalVoteRows: [],
                 ledgerStatus: 'Loading…',
@@ -1117,6 +1336,7 @@
                         Notification.requestPermission();
                     }
                     this.loadDashboard();
+                    this.loadSettings();
                     this.loadNews();
                     this.loadLedger();
                     this.loadClosedTrades();
@@ -1322,6 +1542,219 @@
                     this.loadDashboard();
                 },
 
+                // ── Trading settings (mode and paper / live) ──────────────────────────
+
+                openTradingSettings() {
+                    this.tradingSettingsError = '';
+                    this.showLiveConfirm = false;
+                    this.liveConfirmText = '';
+                    this.tradingSettingsOpen = true;
+                },
+
+                closeTradingSettings() {
+                    this.tradingSettingsOpen = false;
+                    this.showLiveConfirm = false;
+                    this.liveConfirmText = '';
+                },
+
+                // Reads the API's {"detail": ...} message from a refused request.
+                async _refusalDetail(response) {
+                    const body = await response.json().catch(() => ({}));
+                    return body.detail || `Change refused (HTTP ${response.status})`;
+                },
+
+                async setTradingMode(mode) {
+                    if (mode === this.mode) return;
+                    const option = this.tradingModes.find(m => m.id === mode);
+                    // Every mode change is confirmed so a stray click changes nothing.
+                    if (!confirm(`Change trading mode to ${option ? option.label : mode}?\n\n${option ? option.description : ''}`)) return;
+                    this.tradingSettingsError = '';
+                    const response = await fetch('/api/control/trading-mode', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ mode }),
+                    });
+                    if (!response.ok) {
+                        this.tradingSettingsError = await this._refusalDetail(response);
+                        return;
+                    }
+                    this.mode = mode;
+                    this.loadDashboard();
+                },
+
+                async setTradingEnvironment(environment) {
+                    if (environment === this.environment) return;
+                    // Back to paper: a plain confirm. To live: the typed LIVE in the dialog is the confirmation.
+                    if (environment === 'paper' && !confirm('Switch to PAPER trading?\n\nOrders will be simulated and nothing will be sent to Kraken.')) return;
+                    if (environment === 'live' && this.liveConfirmText !== 'LIVE') return;
+                    this.tradingSettingsError = '';
+                    const response = await fetch('/api/control/trading-environment', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ environment, confirmation: this.liveConfirmText }),
+                    });
+                    if (!response.ok) {
+                        this.tradingSettingsError = await this._refusalDetail(response);
+                        return;
+                    }
+                    this.environment = environment;
+                    this.showLiveConfirm = false;
+                    this.liveConfirmText = '';
+                    this.loadDashboard();
+                },
+
+                // ── Settings dialog ───────────────────────────────────────────────────
+
+                // Fields grouped in the order the API lists them.
+                get settingsGroups() {
+                    const groups = [];
+                    for (const field of this.settingsFields) {
+                        let group = groups.find(g => g.name === field.group);
+                        if (!group) groups.push(group = { name: field.group, fields: [] });
+                        group.fields.push(field);
+                    }
+                    return groups;
+                },
+
+                async loadSettings() {
+                    const response = await fetch('/api/settings');
+                    if (!response.ok) return;
+                    const data = await response.json();
+                    // Fill the draft first: the dialog's list templates read it as soon as the fields arrive.
+                    this.resetSettingsDraft(data.fields);
+                    this.settingsFields = data.fields;
+                    this.settingsRestartRequired = data.restart_required;
+                },
+
+                async openSettings() {
+                    this.settingsError = '';
+                    this.settingsNotice = '';
+                    await this.loadSettings();
+                    this.resetSettingsDraft();
+                    if (!this.settingsGroups.some(g => g.name === this.settingsGroup)) {
+                        this.settingsGroup = this.settingsGroups[0]?.name || '';
+                    }
+                    this.settingsOpen = true;
+                },
+
+                closeSettings() {
+                    if (!this.settingsOpen) return;
+                    if (this.settingsChangeCount() > 0 && !confirm('Discard your unsaved settings changes?')) return;
+                    this.settingsOpen = false;
+                },
+
+                // Fills the form with the saved values (lists as arrays, secrets blank).
+                resetSettingsDraft(fields = this.settingsFields) {
+                    const draft = {};
+                    const clear = {};
+                    for (const field of fields) {
+                        if (field.secret) {
+                            draft[field.key] = '';
+                            clear[field.key] = false;
+                        } else if (field.kind === 'list') {
+                            draft[field.key] = JSON.parse(field.value || '[]');
+                        } else {
+                            draft[field.key] = field.value;
+                        }
+                    }
+                    this.settingsDraft = draft;
+                    this.settingsClear = clear;
+                },
+
+                // Adds the typed entry to a list setting (market symbols are upper-cased); duplicates are ignored.
+                addListItem(field, input) {
+                    let value = input.value.trim();
+                    if (field.key === 'FIXED_MARKETS') value = value.toUpperCase();
+                    if (value && !this.settingsDraft[field.key].includes(value)) {
+                        this.settingsDraft[field.key] = [...this.settingsDraft[field.key], value];
+                    }
+                    input.value = '';
+                    input.focus();
+                },
+
+                removeListItem(key, index) {
+                    this.settingsDraft[key] = this.settingsDraft[key].filter((_, i) => i !== index);
+                },
+
+                // The edited settings as the API expects them: {KEY: text}. Lists become JSON arrays.
+                settingsChanges() {
+                    const changes = {};
+                    for (const field of this.settingsFields) {
+                        const draft = this.settingsDraft[field.key];
+                        if (draft === undefined) continue;
+                        if (field.secret) {
+                            if (this.settingsClear[field.key]) changes[field.key] = '';
+                            else if (draft !== '') changes[field.key] = draft;
+                        } else if (field.kind === 'list') {
+                            const edited = JSON.stringify(draft);
+                            if (edited !== JSON.stringify(JSON.parse(field.value || '[]'))) changes[field.key] = edited;
+                        } else if (draft.trim() !== field.value) {
+                            changes[field.key] = draft.trim();
+                        }
+                    }
+                    return changes;
+                },
+
+                settingsChangeCount() {
+                    return Object.keys(this.settingsChanges()).length;
+                },
+
+                settingsGroupChanged(group) {
+                    const changes = this.settingsChanges();
+                    return group.fields.some(f => f.key in changes);
+                },
+
+                // One confirmation line per change; secret values are never shown and lists show what was added/removed.
+                _describeSettingChange(field, value) {
+                    const when = field.live ? 'applies now' : 'after restart';
+                    if (field.secret) return `• ${field.label}: ${value === '' ? 'cleared' : 'new value'} (${when})`;
+                    if (field.kind === 'list') {
+                        const before = JSON.parse(field.value || '[]');
+                        const after = JSON.parse(value);
+                        const added = after.filter(x => !before.includes(x));
+                        const removed = before.filter(x => !after.includes(x));
+                        const parts = [];
+                        if (added.length) parts.push(`+ ${added.join(', ')}`);
+                        if (removed.length) parts.push(`− ${removed.join(', ')}`);
+                        if (!parts.length) parts.push('reordered');
+                        return `• ${field.label}: ${parts.join('; ')} (${when})`;
+                    }
+                    const show = text => (text === '' ? '(empty)' : text);
+                    return `• ${field.label}: ${show(field.value)} → ${show(value)} (${when})`;
+                },
+
+                async saveSettings() {
+                    const changes = this.settingsChanges();
+                    const fields = this.settingsFields.filter(f => f.key in changes);
+                    if (fields.length === 0) return;
+                    // Every save is confirmed with the full list of changes so a stray click changes nothing.
+                    const summary = fields.map(f => this._describeSettingChange(f, changes[f.key])).join('\n');
+                    if (!confirm(`Save ${fields.length} setting change${fields.length === 1 ? '' : 's'}?\n\n${summary}`)) return;
+                    this.settingsError = '';
+                    this.settingsNotice = '';
+                    this.settingsSaving = true;
+                    try {
+                        const response = await fetch('/api/settings', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ changes }),
+                        });
+                        if (!response.ok) {
+                            this.settingsError = await this._refusalDetail(response);
+                            return;
+                        }
+                        const result = await response.json();
+                        this.settingsNotice = result.applied_live.length > 0
+                            ? `Saved. In use now: ${result.applied_live.join(', ')}.`
+                            : 'Saved.';
+                        await this.loadSettings();
+                        this.resetSettingsDraft();
+                        this.loadDashboard();
+                    } finally {
+                        this.settingsSaving = false;
+                    }
+                },
+
                 async resumeBot() {
                     this.emergencyStop = false;
                     await fetch('/api/control/resume', { method: 'POST' });
@@ -1329,15 +1762,28 @@
                 },
 
                 async selectStrategy(id) {
-                    // Optimistic update so the button flips immediately without waiting for the dashboard poll.
-                    this.strategies = this.strategies.map(s => ({ ...s, selected: s.id === id }));
                     const selected = this.strategies.find(s => s.id === id);
-                    if (selected) {
-                        this.activeStrategyId = id;
-                        this.activeStrategyLabel = selected.label || this._strategyLabel(id);
+                    if (!selected || selected.selected) return;
+                    // Every strategy change is confirmed so a stray click changes nothing.
+                    const parts = this._strategyLabelParts(selected);
+                    if (!confirm(`Change strategy to ${parts.title}?\n\n${parts.text}`)) return;
+                    this.tradingSettingsError = '';
+                    const response = await fetch(`/api/control/strategies/${encodeURIComponent(id)}/select`, { method: 'POST' });
+                    if (!response.ok) {
+                        this.tradingSettingsError = await this._refusalDetail(response);
+                        return;
                     }
-                    await fetch(`/api/control/strategies/${encodeURIComponent(id)}/select`, { method: 'POST' });
+                    this.strategies = this.strategies.map(s => ({ ...s, selected: s.id === id }));
+                    this.activeStrategyId = id;
+                    this.activeStrategyLabel = selected.label || this._strategyLabel(id);
                     this.loadDashboard();
+                },
+
+                // Splits a strategy label "Name (what it does)" into a title and a description.
+                _strategyLabelParts(strategy) {
+                    const label = strategy.label || strategy.id;
+                    const match = label.match(/^(.*?)\s*\((.*)\)$/);
+                    return match ? { title: match[1], text: match[2] } : { title: label, text: '' };
                 },
 
                 async toggleMarket(market) {

@@ -1,9 +1,9 @@
 # Risk Engine
 
-**File:** `backend/risk/engine.py`  
-**Class:** `RiskEngine`
+**File:** `internal/risk/engine.go` (persistence helper in `internal/risk/persistence.go`)  
+**Type:** `risk.Engine`
 
-The risk engine is the single universal enforcement point for all portfolio-level trading constraints. Every signal — whether from the strategy loop, a manual approval, or fully-automated execution — must pass through `evaluate_trade()` before any order is placed. The engine is environment-agnostic: it applies identically to paper and live trading.
+The risk engine is the single universal enforcement point for all portfolio-level trading constraints. Every signal — whether from the strategy loop, a manual approval, or fully-automated execution — must pass through `EvaluateTrade()` before any order is placed. The engine is environment-agnostic: it applies identically to paper and live trading.
 
 ---
 
@@ -11,185 +11,232 @@ The risk engine is the single universal enforcement point for all portfolio-leve
 
 1. **Universal gate** — risk logic lives in one place. No mode-specific bypass.
 2. **Fail closed** — any check that cannot be evaluated (missing data) defaults to safe behaviour.
-3. **Context-aware** — the engine receives live portfolio state (open positions, cash) so checks are based on reality, not stale approximations.
-4. **Configurable** — all thresholds come from `settings` and can be adjusted via `.env` without code changes.
+3. **Context-aware** — the engine receives live portfolio state (open positions, cash, price, 24-hour volume) so checks are based on reality, not stale approximations.
+4. **Configurable** — all thresholds come from `config.Settings` and can be changed in the dashboard's Settings dialog without code changes or a restart (`Engine.SetSettings` swaps them in while keeping equity and today's loss counters).
+5. **Concurrency-safe** — every method takes the engine's `sync.Mutex`, so the strategy loop, HTTP handlers, and equity ticker can call it concurrently.
 
 ---
 
 ## State
 
-```python
-class RiskEngine:
-    current_equity: float          # updated each tick via update_equity()
-    daily_loss: float              # accumulated losses today (UTC)
-    daily_start_equity: float      # equity at the start of today
-    _last_reset_date: date         # tracks UTC date for daily reset
+```go
+type Engine struct {
+	mu               sync.Mutex
+	settings         config.Settings
+	now              func() time.Time // injectable clock; defaults to UTC now
+	currentEquity    float64          // updated each tick via UpdateEquity()
+	dailyLoss        float64          // accumulated losses today (UTC)
+	dailyStartEquity float64          // equity at the start of today
+	lastResetDate    time.Time        // UTC midnight of the tracked day
+}
+
+func NewEngine(settings config.Settings, now func() time.Time) *Engine
 ```
 
-`current_equity` is updated every strategy tick with the real mark-to-market total equity. This ensures that percentage-based limits (per-trade loss and daily loss) are always computed against the current portfolio value, not the starting capital.
+`NewEngine` seeds `currentEquity` and `dailyStartEquity` with `STARTING_CAPITAL`. `currentEquity` is then updated every strategy tick (and every equity-ticker tick) with the real mark-to-market total equity. This ensures that percentage-based limits (per-trade loss and daily loss) are always computed against the current portfolio value, not the starting capital.
+
+The daily counters are exposed as `risk.State` (`DailyLoss`, `DailyStartEquity`, `LastResetDate`) through `Snapshot()` and `RestoreState()`.
 
 ---
 
-## `evaluate_trade()` — Check Order
+## `EvaluateTrade()` — Check Order
 
-```python
-async def evaluate_trade(
-    self,
-    trade_idea: TradeIdea,
-    *,
-    open_positions: Optional[List[PositionRecord]] = None,
-    available_cash: Optional[float] = None,
-    market_price: Optional[float] = None,
-) -> RiskDecision:
+```go
+type EvaluateOptions struct {
+	OpenPositions   []domain.PositionRecord
+	AvailableCash   *float64
+	MarketPrice     *float64
+	MarketVolume24h *float64
+}
+
+func (e *Engine) EvaluateTrade(idea domain.TradeIdea, opts EvaluateOptions) domain.RiskDecision
 ```
 
-Checks are applied in strict order. The first failure returns an immediate rejection — later checks are not evaluated.
+Nil pointer options mean "not supplied" and skip the related check. Checks are applied in strict order. The first failure returns an immediate rejection — later checks are not evaluated.
 
-### Check 1: One Position Per Trading Pair
+### Step 0: Daily Reset and Sizing
 
-```python
-if open_positions is not None:
-    mkt = [p for p in open_positions if p.market == trade_idea.market]
-    same_direction = any(
-        (p.size > 0 and trade_idea.direction == Direction.LONG) or
-        (p.size < 0 and trade_idea.direction == Direction.SHORT)
-        for p in mkt
-    )
-    if same_direction:
-        return self._reject(trade_idea, "Position already open for {market} — one position per pair")
-```
+`checkDailyResetLocked()` runs first. The engine then computes the notional it will evaluate:
 
-This check is direction-aware. A LONG signal is blocked if any long already exists for that market. A SHORT (closing) signal is not blocked by an existing long — that is the intended close trade.
-
-If `open_positions` is `None` (not passed by the caller), this check is skipped. All current call-sites pass it.
-
-### Check 2: Target Trade Amount And Cash Adjustment
-
-```python
-strategy_size_eur = trade_idea.position_sizing_proposal * self.current_equity
-proposed_size_eur = TARGET_TRADE_AMOUNT_EUR if TARGET_TRADE_AMOUNT_EUR > 0 else strategy_size_eur
-
-if proposed_size_eur < MIN_TRADE_SIZE_EUR:
-    proposed_size_eur = MIN_TRADE_SIZE_EUR
+```go
+strategySize := idea.PositionSizingProposal * e.currentEquity
+proposedSize := strategySize
+if s.TargetTradeAmount > 0 {
+	proposedSize = s.TargetTradeAmount
+}
+if proposedSize < s.MinTradeSize {
+	proposedSize = s.MinTradeSize // a floor, not a rejection
+}
 ```
 
 `TARGET_TRADE_AMOUNT` is the preferred fixed notional order value in `BASE_CURRENCY` (default 100). `MIN_TRADE_SIZE` is an absolute floor (default 50), not a percentage. If `TARGET_TRADE_AMOUNT` is set to `0`, the engine falls back to the strategy's percentage sizing.
 
+### Check 1: Liquidity
+
+```go
+if s.Min24hVolume > 0 && opts.MarketVolume24h != nil && *opts.MarketVolume24h < s.Min24hVolume {
+	return e.reject(idea, "Insufficient liquidity: 24h volume ... below minimum ...")
+}
+```
+
+Disabled when `MIN_24H_VOLUME` is `0` (the default) or no volume is supplied.
+
+### Check 2: One Position Per Trading Pair
+
+```go
+for _, p := range marketPositions {
+	if (p.Size > 0 && idea.Direction == domain.Long) || (p.Size < 0 && idea.Direction == domain.Short) {
+		return e.reject(idea, fmt.Sprintf("Position already open for %s - one position per pair", idea.Market))
+	}
+}
+```
+
+This check is direction-aware. A LONG signal is blocked if any long already exists for that market. A SHORT (closing) signal is not blocked by an existing long — that is the intended close trade.
+
+If `OpenPositions` is empty or nil, no position can match and the check passes. All current call sites pass the paper engine's open positions.
+
+### Check 3: Cash Sufficiency And Cash Adjustment
+
 When a trade requires cash and the account has less than the target plus fee/slippage, risk reduces the notional to spendable cash as long as the result remains at or above `MIN_TRADE_SIZE`:
 
-```python
-cost = proposed_size_eur * (1 + _FEE_AND_SLIPPAGE)
-if available_cash < cost:
-    cash_sized_eur = available_cash / (1 + _FEE_AND_SLIPPAGE)
-    if cash_sized_eur < MIN_TRADE_SIZE_EUR:
-        return self._reject(trade_idea, "Insufficient cash")
-    proposed_size_eur = cash_sized_eur
+```go
+feeFactor := 1 + s.FeeAndSlippage
+if opts.AvailableCash != nil && hasPrice && requiresCash {
+	cash := *opts.AvailableCash
+	if cash < proposedSize*feeFactor {
+		cashSized := cash / feeFactor
+		if cashSized < s.MinTradeSize {
+			return e.reject(idea, "Insufficient cash: need at least ..., have ...")
+		}
+		proposedSize = cashSized
+		adjusted = true
+	}
+}
 ```
 
-`_FEE_AND_SLIPPAGE = 0.0036` (0.26% taker fee + 0.1% slippage). This is intentionally conservative.
+`FEE_AND_SLIPPAGE = 0.0036` (0.26% taker fee + 0.1% slippage). This is intentionally conservative. The check only runs when both available cash and a positive market price are supplied.
 
-Short signals that fully close an existing long are exempt from the cash requirement. New short exposure still requires cash as margin in paper mode.
+Short signals that fully close an existing long (total long size ≥ `proposedSize / marketPrice`) are exempt from the cash requirement. New short exposure still requires cash as margin in paper mode.
 
-### Check 3: Per-Trade Loss Limit
+### Check 4: Per-Trade Loss Limit
 
-```python
-max_loss = self.current_equity * settings.max_loss_per_trade_percent / 100
-estimated_loss = proposed_size_eur * STOP_LOSS_ASSUMPTION
-if estimated_loss > max_loss:
-    return self._reject(trade_idea, f"Estimated loss €{estimated_loss:.2f} exceeds limit €{max_loss:.2f}")
+```go
+maxLoss := e.currentEquity * s.MaxLossPerTradePercent / 100
+estimatedLoss := proposedSize * s.StopLossPct
+if estimatedLoss > maxLoss {
+	return e.reject(idea, "Estimated loss €X exceeds per-trade limit €Y")
+}
 ```
 
-Estimated loss assumes the stop-loss fires at exactly `STOP_LOSS_PCT` (5%). This is an upper-bound estimate, not a guarantee.
+Estimated loss assumes the stop-loss fires at exactly `STOP_LOSS_PCT` (default 5%, exposed as `Engine.StopLossAssumption()`). This is an upper-bound estimate, not a guarantee.
 
-### Check 4: Daily Loss Limit
+### Check 5: Daily Loss Limit
 
-```python
-daily_limit = self.current_equity * settings.max_daily_loss_percent / 100
-if self.daily_loss >= daily_limit:
-    return self._reject(trade_idea, f"Daily loss limit reached: €{self.daily_loss:.2f} of €{daily_limit:.2f}")
+```go
+dailyLimit := e.currentEquity * s.MaxDailyLossPercent / 100
+if e.dailyLoss+estimatedLoss >= dailyLimit {
+	return e.reject(idea, "Daily loss limit reached: €A accumulated + €B estimated = €C of €D")
+}
 ```
 
-`daily_loss` accumulates throughout the UTC day. At midnight UTC, `_check_daily_reset()` resets it to zero.
+The check includes the new trade's estimated loss, so a trade that would push the day past the limit is blocked before it happens. `dailyLoss` accumulates throughout the UTC day. When the UTC date changes, `checkDailyResetLocked()` resets it to zero. Currency symbols in reasons come from `config.CurrencySymbol(BASE_CURRENCY)`.
 
 ### Approval
 
 If all checks pass:
 
-```python
-return RiskDecision(
-    trade_idea_id=trade_idea.id,
-    approved=True,
-    reason="All risk checks passed",
-    adjusted_sizing=proposed_size_eur / self.current_equity if adjusted else None,
-    timestamp=datetime.utcnow(),
-)
+```go
+decision := domain.RiskDecision{
+	TradeIdeaID:  idea.ID,
+	Approved:     true,
+	Reason:       "All risk checks passed",
+	ProposedSize: domain.Float(proposedSize),
+	Timestamp:    e.now().UTC(),
+}
+if adjusted {
+	decision.AdjustedSizing = domain.Float(proposedSize / e.currentEquity)
+}
 ```
 
-`adjusted_sizing` is returned whenever risk uses the fixed target amount, clamps to the minimum, or reduces to available cash. Existing execution paths already consume this field when converting the final notional amount into base-currency order size.
+`ProposedSize` (JSON `proposed_size_eur`) is always set on approval and is the exact quote-currency amount to trade; execution paths divide it by the market price to get the base-asset order size. `AdjustedSizing` is set whenever risk uses the fixed target amount, clamps to the minimum, or reduces to available cash, and is only used as a fallback when `ProposedSize` is absent.
 
 ---
 
 ## State Update Methods
 
-### `update_equity(new_equity: float)`
+### `UpdateEquity(newEquity float64)`
 
-Called every strategy tick from `main.py` immediately after computing the current total equity. Keeps percentage-based limits current.
+Called by `App.recordEquitySnapshot()` on every strategy tick and every equity-ticker tick, immediately after computing the current total equity. Keeps percentage-based limits current.
 
-### `record_trade_result(pnl: float)`
+### `RecordTradeResult(pnl float64)`
 
-Called after every position close (stop-loss, auto-execution, or manual approval). Updates `daily_loss` and `current_equity`.
+Updates `dailyLoss` and `currentEquity`:
 
-```python
-def record_trade_result(self, pnl: float) -> None:
-    self._check_daily_reset()
-    self.daily_loss += max(0.0, -pnl)   # only losses accumulate
-    self.current_equity += pnl
+```go
+func (e *Engine) recordTradeResultLocked(pnl float64) {
+	e.checkDailyResetLocked()
+	e.dailyLoss += math.Max(0, -pnl) // only losses accumulate
+	e.currentEquity += pnl
+}
 ```
 
-### `_check_daily_reset()`
+In the app, every position close (stop-loss, trailing stop, auto-execution, manual approval, manual close, operator reset) goes through `risk.RecordTradeResultAndPersist(engine, store, pnl)`, which records the result and then saves the daily counters to the `risk_state` table. The engine is always updated even if saving fails; the store error is returned and logged as a warning.
 
-Automatically called at the start of `evaluate_trade()` and `record_trade_result()`. Resets `daily_loss` and `daily_start_equity` when the UTC date changes.
+### `RestoreState(state State) bool`
+
+Called at start-up with the row loaded by `Repository.LoadRiskState()`. The persisted counters are applied only if `LastResetDate` is today (UTC); stale state is ignored so the daily reset still happens after a restart on a new day. This means the daily loss limit survives a same-day restart.
+
+### `checkDailyResetLocked()`
+
+Automatically called at the start of `EvaluateTrade()` and `RecordTradeResult()`. Resets `dailyLoss` to zero and `dailyStartEquity` to the current equity when the UTC date changes.
 
 ---
 
 ## Second-Layer Defence: Execution Engine
 
-The risk engine is the primary guard. The `PaperExecutionEngine._has_sufficient_funds()` method provides a secondary defence at execution time:
+The risk engine is the primary guard. `paper.Engine.rejectionReasonLocked()` provides a secondary defence at execution time:
 
-```python
-if intent.direction == Direction.LONG:
-    if any(p.size > 0 for p in market_positions):   # hard block
-        return False
-    return self.cash >= fill_value + fee
-
-# SHORT
-if total_long >= intent.size:
-    return True   # closing existing long, no cash needed
-if any(p.size < 0 for p in market_positions):   # hard block on double-short
-    return False
-return self.cash >= fill_value + fee
+```go
+if intent.Direction == domain.Long {
+	if hasLong {
+		return ReasonLongAlreadyOpen // hard block
+	}
+	if !affordable { // cash >= fillValue + fee
+		return ReasonInsufficientFunds
+	}
+	return ""
+}
+// SHORT
+if totalLong >= intent.Size {
+	return "" // closing existing long, no cash needed
+}
+if hasShort {
+	return ReasonShortAlreadyOpen // hard block on double-short
+}
+if !affordable {
+	return ReasonInsufficientFunds
+}
+return ""
 ```
 
-This secondary check exists because the risk engine evaluates the *proposed* trade, while the execution engine enforces at the moment of actual state mutation. Both must pass for an order to fill.
+This secondary check exists because the risk engine evaluates the *proposed* trade, while the execution engine enforces at the moment of actual state mutation (under the paper engine's mutex). Both must pass for an order to fill. The live Kraken engine has its own local guards, described in the execution engine documentation.
 
 ---
 
 ## Risk Rejection Visibility
 
-All risk rejections are recorded in the module-level `_risk_rejections` deque (maxlen=50) in `main.py` and surfaced on the dashboard. This gives the operator visibility into why signals are being blocked without cluttering the activity feed.
+All risk rejections are prepended to `App.riskRejections` (capped at 50, newest first) and persisted to the `risk_rejections` table, then surfaced on the dashboard. This gives the operator visibility into why signals are being blocked without cluttering the activity feed.
 
-```python
-_risk_rejections.appendleft({
-    "market":     idea.market,
-    "direction":  idea.direction.value,
-    "confidence": idea.confidence,
-    "thesis":     idea.thesis,
-    "reason":     risk_decision.reason,
-    "timestamp":  datetime.utcnow().isoformat(),
-})
+```go
+// internal/app/loops.go (handleIdea)
+rejection := storage.RiskRejection{
+	Market: idea.Market, Direction: direction, Confidence: idea.Confidence, Thesis: idea.Thesis,
+	Reason: decision.Reason, TradeIdeaID: idea.ID, Timestamp: portfolio.FormatISO(now),
+}
+a.riskRejections = trimHead(append([]storage.RiskRejection{rejection}, a.riskRejections...), riskRejectionsMax)
 ```
 
-The dashboard displays the last 20 rejections in the "Risk Rejections" panel.
+A rejection whose reason mentions the daily loss limit also sends a `daily_loss_limit_hit` webhook alert. The dashboard displays the last 20 rejections (`riskRejectionsShown`) in the "Risk Rejections" panel.
 
 ---
 
@@ -199,7 +246,8 @@ The dashboard displays the last 20 rejections in the "Risk Rejections" panel.
 |---|---|---|---|
 | Target trade amount | `TARGET_TRADE_AMOUNT` | EUR 100 | Preferred fixed notional order value |
 | Min trade size | `MIN_TRADE_SIZE` | EUR 50 | Absolute minimum final order value |
-| Stop-loss | `STOP_LOSS_PCT` | 5% | Fraction loss triggering auto-close |
+| Stop-loss | `STOP_LOSS_PCT` | 5% | Fraction loss triggering auto-close; also the per-trade loss estimate |
 | Fee + slippage | `FEE_AND_SLIPPAGE` | 0.36% | Cost estimate for cash sufficiency check |
 | Per-trade loss | `MAX_LOSS_PER_TRADE_PERCENT` | 5% | Max estimated loss per trade vs equity |
-| Daily loss | `MAX_DAILY_LOSS_PERCENT` | 5% | Max cumulative loss per UTC day |
+| Daily loss | `MAX_DAILY_LOSS_PERCENT` | 5% | Max cumulative (realised + estimated) loss per UTC day |
+| Liquidity | `MIN_24H_VOLUME` | 0 (off) | Minimum 24-hour volume for the market |

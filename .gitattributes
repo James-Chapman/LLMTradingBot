@@ -1,0 +1,5 @@
+# Windows batch scripts must use CRLF line endings: cmd.exe misparses
+# LF-only batch files (e.g. "setlocal" runs as "tlocal"). Git stores them
+# normalised (LF) and writes CRLF on checkout, on every OS.
+*.bat text eol=crlf
+*.cmd text eol=crlf

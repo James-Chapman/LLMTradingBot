@@ -1,156 +1,178 @@
 # Configuration Reference
 
-All runtime configuration is managed by `backend/config/settings.py` using Pydantic v2's `BaseSettings`. Values are read from environment variables or from a `.env` file in the backend working directory. Unknown keys are silently ignored (`extra="ignore"`). Keys are case-sensitive, so use the uppercase names shown here.
+Since v0.8.0 the bot has **no `.env` file and reads no environment variables**. Settings come from three places:
+
+1. **Start-up flags**: the database file, listen address, port and log file. These are needed before the database opens.
+2. **Dashboard settings**: everything else, edited in the dashboard's **⚙ Settings** dialog and stored in the database's `settings` table.
+3. **Trading settings dialog**: trading mode (manual / semi-automated / fully automated) and paper / live, stored in `control_state` (see [10-approval-and-control.md](10-approval-and-control.md)).
+
+A setting never saved from the dashboard uses its built-in default (`config.Defaults()`).
+
+> **Upgrading from 0.7 or earlier:** `.env` (in the repository root or `backend/`) is ignored and nothing is imported from it. The bot starts on the built-in defaults: paper trading, manual mode unless a mode was already chosen in the dashboard. Re-enter your settings, including the Kraken API keys, in the Settings dialog. `.gitignore` still lists `.env`, so an old file is never committed by accident; delete it when you no longer need it.
 
 ---
 
-## Settings Class: `BotSettings`
+## Start-up Flags
 
-```python
-# backend/config/settings.py
-from pydantic_settings import BaseSettings, SettingsConfigDict
-
-class BotSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
+```text
+tradingbot.exe [-db FILE] [-host ADDR] [-port N] [-log FILE] [-frontend DIR]
 ```
 
-A singleton instance `settings` is created at module level and imported everywhere.
+| Flag | Default | Description |
+|---|---|---|
+| `-db` | `./trading_bot.db` | SQLite file. Holds trades, control state and every dashboard setting. Created and migrated on start-up |
+| `-host` | `127.0.0.1` | Bind address. Use `0.0.0.0` for LAN access |
+| `-port` | `8000` | HTTP port (1–65535) |
+| `-log` | `trading_bot.log` | Log file. LLM client and analyser records are also written to `llm.log` in the same directory |
+| `-frontend` | `frontend` | Directory holding `index.html`, `approvals.html`, `sw.js` and `static/` |
+
+`-h` prints the flags. `launch.bat` starts the bot without flags, so the defaults apply. The CLI's `run` command passes its `-db`, `-host`, `-port` and `-log` through (see [12-operations.md](12-operations.md)).
 
 ---
 
-## Full Settings Reference
+## How Settings Load
 
-### Application
+`cmd/tradingbot` starts in this order:
 
-`APP_NAME` and `APP_VERSION` are hard-coded constants in `backend/main.py` and are not configurable via `.env`. To change the app name or version, edit those constants directly.
+1. Logging starts at `INFO`, writing to the `-log` file.
+2. The database opens.
+3. `app.LoadSettings` builds the settings. It starts from `config.Defaults()`, overlays every value saved in the `settings` table, then applies the start-up flags.
+   - `CORS_ORIGINS` follows the port (`http://localhost:<port>` and `http://127.0.0.1:<port>`) unless it was saved.
+   - A saved value that no longer parses, or a secret that cannot be decrypted, is skipped. It falls back to the default with a `Saved setting ignored` warning in the log, so the bot still starts.
+4. `Settings.Validate()` runs.
+5. The log level switches to `LOG_LEVEL` (`DEBUG` when the `DEBUG` switch is on).
+6. If no markets were saved, `app.UseLiveDefaultMarkets` replaces the built-in list with Kraken's 50 biggest pairs (see **Default markets** below).
 
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `DEBUG` | bool | `False` | Enables Uvicorn hot-reload and verbose output |
+The `settings` table:
 
-### Server
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `HOST` | str | `"127.0.0.1"` | Bind address. Use `0.0.0.0` for LAN access |
-| `PORT` | int | `8000` | HTTP port |
-
-### Database
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `DATABASE_URL` | str | `"sqlite:///./trading_bot.db"` | SQLAlchemy connection string. Only SQLite is used in practice |
-
-### Trading Behaviour
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `BASE_CURRENCY` | str | `"EUR"` | Quote currency for all markets and P&L display |
-| `STARTING_CAPITAL` | float | `500.0` | Initial paper cash balance in `BASE_CURRENCY` |
-| `TARGET_TRADE_AMOUNT` | float | `100.0` | Preferred notional order value in `BASE_CURRENCY`; risk can reduce it to available cash |
-| `MAX_LOSS_PER_TRADE_PERCENT` | float | `5.0` | Maximum allowable loss per trade as a percentage of current equity |
-| `MAX_DAILY_LOSS_PERCENT` | float | `5.0` | Maximum allowable cumulative loss in a calendar day (UTC) |
-| `MIN_TRADE_SIZE` | float | `50.0` | Minimum final order value in `BASE_CURRENCY`; cash-adjusted trades below this are rejected |
-| `STOP_LOSS_PCT` | float | `0.05` | Fraction loss at which a position is automatically closed (5%) |
-| `FEE_AND_SLIPPAGE` | float | `0.0036` | Combined cost estimate: Kraken taker fee (0.26%) + one-way slippage (0.1%) |
-| `MIN_SIGNAL_CONFIDENCE` | float | `0.65` | Minimum signal confidence required to execute a trade in fully-automated mode. Signals below this threshold are skipped and logged. Has no effect in manual or semi-automated modes. |
-| `LLM_VETO_THRESHOLD` | float | `0.70` | If the LLM returns a `confidence_scale` below this value the signal is vetoed. Set to `0.0` to disable the veto. |
-| `MIN_24H_VOLUME` | float | `0.0` | Minimum 24-hour market volume required by the risk engine. `0.0` disables the liquidity gate. |
-| `ALERT_WEBHOOK_URL` | str \| None | `None` | Optional webhook URL for emergency stop, daily loss, stop-loss, and restart alerts. Blank disables alerts. |
-
-### Trading Modes
-
-| Key | Type | Default | Allowed Values |
-|---|---|---|---|
-| `TRADING_MODE` | str | `"manual"` | `manual`, `semi_automated`, `fully_automated` |
-| `TRADING_ENVIRONMENT` | str | `"paper"` | `paper`, `live` |
-
-Both fields are validated against a regex pattern in the Pydantic model. Invalid values cause a startup error.
-
-### Exchange
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `KRAKEN_API_KEY` | str \| None | `None` | Kraken REST API key. Required for live trading only |
-| `KRAKEN_API_SECRET` | str \| None | `None` | Kraken REST API secret. Required for live trading only |
-
-In paper mode these fields are ignored. The Kraken adapter is used for read-only market data regardless of environment.
-
-### News Sources
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `NEWS_SOURCES` | list[str] | 9 built-in feeds | RSS sources to ingest. Each entry must be `"Name::URL"`. Use JSON array syntax in `.env`. `FearGreedAdapter` is always included and does not need a `NEWS_SOURCES` entry. |
-
-### Market Universe
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `FIXED_MARKETS` | list[str] | `["BTC/EUR", "ETH/EUR"]` | Always-active trading pairs |
-| `DYNAMIC_UNIVERSE_SOURCE` | str | `"coinmarketcap"` | Source for dynamic market resolution (stub — not yet implemented) |
-| `MAX_ETH_ECOSYSTEM_COINS` | int | `10` | Maximum dynamic pairs from the ETH ecosystem |
-
-Market symbols use Kraken's public format (`BASE/QUOTE`). The adapter internally maps to Kraken's altname convention (e.g. `XBT/EUR` for `BTC/EUR`).
-
-### External LLM (OpenAI-compatible)
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `OPENAI_BASE_URL` | str | `""` | Base URL for an OpenAI-compatible API, for example `http://127.0.0.1:1234/v1` |
-| `OPENAI_API_KEY` | str | `""` | Optional bearer token for hosted APIs. Leave blank for local servers that do not require auth |
-| `OPENAI_MODEL` | str | `""` | Chat model name exposed by the configured OpenAI-compatible server |
-| `OPENAI_TIMEOUT` | int | `30` | Per-request timeout in seconds |
-
-`OpenAiClient.chat()` posts a standard chat-completions JSON object with `model` and `messages`. The plain prompt in debug logs is only a readable transcript for troubleshooting.
-
-### Local LLM (Transformers)
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `TRANSFORMERS_LLM_MODEL` | str | `""` | Hugging Face model ID used when the OpenAI-compatible backend is not configured or unavailable |
-| `TRANSFORMERS_TIMEOUT` | int | `60` | Per-request timeout in seconds. Needs to be high (>=30s) on first call as the model loads into memory |
-| `LLM_ONLY_MAX_CONCURRENCY` | int | `3` | Maximum number of concurrent per-market LLM-only recommendations per strategy tick. |
-
-### Logging
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `LOG_LEVEL` | str | `"INFO"` | Python logging level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
-| `LOG_FILE` | str | `"trading_bot.log"` | Log file path relative to the backend working directory |
+| Column | Type | Description |
+|---|---|---|
+| `key` | VARCHAR (primary key) | Setting key, e.g. `MIN_SIGNAL_CONFIDENCE` |
+| `value` | TEXT | Text form of the value. Lists are JSON arrays; secrets are sealed (below) |
+| `updated_at` | DATETIME | Last save |
 
 ---
 
-## Example `.env` File
+## Changing Settings
 
-The complete commented template lives at `backend/.env.example`. It contains every `BotSettings` option, uses parseable defaults, and documents operational impact for each setting. Copy it to `backend/.env`, then replace local values such as capital, markets, webhook URL, and Kraken credentials.
+Open **⚙ Settings** in the dashboard header, edit, and press **Save…**. A confirmation lists every change (`label: old → new`, and whether it applies now or after a restart) before anything is sent. Every value is validated before anything is written, so one bad value saves nothing and the error names the key.
 
----
+- **Applies now** settings are copied into the running bot at once. The risk engine receives the new values but keeps today's equity and loss counters, the strategies are rebuilt, and the background loops read the current values.
+- **Restart** settings are saved and used after the next restart. Until then the dashboard shows a *Restart the bot to apply* banner listing them, and the field shows *saved — restart to apply*. There is no restart button: stop the bot (Ctrl+C in its window) and start it again.
 
-## Runtime Constants
-
-Some values are derived from settings at module import time. They are exposed as module-level names so other modules can import them directly:
-
-```python
-# backend/risk/engine.py
-MIN_TRADE_SIZE_EUR   = settings.min_trade_size    # alias for backward compat
-TARGET_TRADE_AMOUNT_EUR = settings.target_trade_amount
-STOP_LOSS_ASSUMPTION = settings.stop_loss_pct
-_FEE_AND_SLIPPAGE    = settings.fee_and_slippage
-```
-
-These module-level names exist so existing `from risk.engine import STOP_LOSS_ASSUMPTION` imports continue to work while the actual value is driven by the settings file.
+Every save is logged (`Settings saved`) and appears in the activity log. The API is `GET` / `POST /api/settings` (see [08-api-endpoints.md](08-api-endpoints.md#settings)).
 
 ---
 
-## Settings Access Pattern
+## Secrets
 
-The `settings` singleton is imported directly:
+`KRAKEN_API_KEY`, `KRAKEN_API_SECRET`, `LMSTUDIO_API_KEY` and `OPENAI_API_KEY` are secrets.
 
-```python
-from config.settings import settings
+- **Encrypted at rest.** They are encrypted with Windows DPAPI (`CryptProtectData`, bound to the current Windows user, with fixed extra entropy) and stored as `sealed:` + base64.
+- **Write-only.** The API and dashboard only say whether a secret is set; a value is never returned. To replace a secret, type a new value; **Clear** removes it.
+- **Moving the database.** A database copied to another Windows user or machine cannot decrypt them. The bot logs a warning, treats them as not set, and they must be entered again.
+- **Non-Windows builds** cannot store secrets: saving one is refused.
 
-# Use anywhere
-max_loss = settings.max_loss_per_trade_percent
-```
+Live trading needs the Kraken keys *in use*. Keys saved but not yet loaded (no restart since) are refused when switching to live with *Kraken API keys were saved but are not in use yet: restart the bot, then switch to live*.
 
-There is no dependency injection. All modules read from the same singleton at startup. Changing a `.env` value requires a process restart to take effect.
+---
+
+## Settings Reference
+
+Grouped as in the Settings dialog. "Now" = applies immediately; "Restart" = used after the next restart.
+
+### Risk & sizing
+
+| Key | Default | Applies | Description |
+|---|---|---|---|
+| `STARTING_CAPITAL` | `500` | Restart | Initial paper cash balance in `BASE_CURRENCY` for a new database |
+| `TARGET_TRADE_AMOUNT` | `100` | Now | Preferred order value in `BASE_CURRENCY`; risk can reduce it to available cash |
+| `MIN_TRADE_SIZE` | `50` | Now | Minimum final order value; cash-adjusted trades below this are rejected |
+| `MAX_LOSS_PER_TRADE_PERCENT` | `5` | Now | Maximum loss one trade may risk, as a percentage of equity (0–100) |
+| `MAX_DAILY_LOSS_PERCENT` | `5` | Now | New trades stop for the UTC day once this percentage of equity is lost (0–100) |
+| `STOP_LOSS_PCT` | `0.05` | Now | Fraction loss at which a position is closed (0–1) |
+| `TRAILING_STOP_PCT` | `0.03` | Now | Fraction retracement from a position's peak that closes it (0–1) |
+| `FEE_AND_SLIPPAGE` | `0.0036` | Now | Round-trip cost estimate: Kraken taker fee (0.26%) + slippage (0.1%) |
+| `MIN_24H_VOLUME` | `0` | Now | Minimum 24-hour market volume required by the risk engine. `0` disables the gate |
+
+### Signals
+
+| Key | Default | Applies | Description |
+|---|---|---|---|
+| `MIN_SIGNAL_CONFIDENCE` | `0.65` | Now | Minimum confidence to trade in fully automated mode. No effect in manual or semi-automated mode |
+| `LLM_VETO_THRESHOLD` | `0.70` | Now | The combined strategy vetoes signals the LLM rates below this. `0` disables the veto |
+| `MOMENTUM_LOOKBACK_TICKS` | `10` | Now | 30-second ticks of price history used for the momentum baseline (≥ 1) |
+| `LLM_ONLY_MAX_CONCURRENCY` | `3` | Now | Markets the LLM-only strategy analyses at once per tick (≥ 1) |
+
+### Markets
+
+| Key | Default | Applies | Description |
+|---|---|---|---|
+| `BASE_CURRENCY` | `EUR` | Restart | Quote currency for all markets and P&L. `EUR`/`GBP`/`USD` display as `€`/`£`/`$` |
+| `FIXED_MARKETS` | The 50 biggest pairs on Kraken (see below) | Restart | Always-active pairs in Kraken's `BASE/QUOTE` format, edited as removable chips in the dialog |
+| `DYNAMIC_UNIVERSE_SOURCE` | `coinmarketcap` | Restart | Any value except `none` enables the CoinGecko-backed dynamic resolver; `none` trades only `FIXED_MARKETS` |
+| `MAX_ETH_ECOSYSTEM_COINS` | `10` | Restart | Cap on pairs the dynamic resolver adds (≥ 0) |
+
+**Default markets.** Until `FIXED_MARKETS` is saved from the dashboard, the bot asks Kraken at every start for the 50 biggest online pairs quoted in `BASE_CURRENCY`. Two public calls are made, `AssetPairs` and `Ticker` for all pairs (`kraken.MarketAdapter.TopPairsByVolume`), with a 20-second limit.
+- **Ranking:** 24h traded value, that is 24h volume × 24h VWAP.
+- **Pegged pairs skipped:** pairs whose 24h high–low range is under 0.5% are left out. This drops stablecoins such as USDC/EUR, USDT/EUR and EURC/EUR.
+- **Fallback:** if Kraken cannot be reached, the built-in list (`config.Defaults()`, the 50 biggest EUR pairs on 2026-11-14) is used and a warning is logged.
+- **Saved lists:** once markets are saved in the dashboard, that list is used as-is and Kraken is not asked.
+
+The OHLC loop fetches candles one market at a time (about 3.5 s per market for Kraken's rate limit), so with 50 markets each candle refresh cycle takes about three minutes.
+
+### Kraken
+
+| Key | Default | Applies | Description |
+|---|---|---|---|
+| `KRAKEN_API_KEY` | not set | Restart | Secret. Needed for live trading only |
+| `KRAKEN_API_SECRET` | not set | Restart | Secret. Needed for live trading only |
+| `KRAKEN_REST_URL` | `https://api.kraken.com` | Restart | Kraken spot REST base URL for the market adapter and live engine. Only change for testing |
+
+Market data uses Kraken's public REST and WebSocket v2 endpoints in both paper and live, and never sends API keys.
+
+### LLM
+
+| Key | Default | Applies | Description |
+|---|---|---|---|
+| `LMSTUDIO_BASE_URL` | `http://localhost:1234/v1` | Restart | LM Studio's OpenAI-compatible server. Empty disables it |
+| `LMSTUDIO_MODEL` | empty | Restart | Model id from `GET /v1/models`. Empty uses the first model LM Studio reports |
+| `LMSTUDIO_API_KEY` | not set | Restart | Secret. Only if the LM Studio server requires one |
+| `LMSTUDIO_TIMEOUT` | `60` | Restart | Seconds to wait for an LM Studio reply |
+| `OPENAI_BASE_URL` | empty | Restart | Remote OpenAI-compatible fallback, e.g. `https://api.openai.com/v1`. Empty disables it |
+| `OPENAI_MODEL` | empty | Restart | Chat model name for the fallback |
+| `OPENAI_API_KEY` | not set | Restart | Secret. API key for the fallback |
+| `OPENAI_TIMEOUT` | `30` | Restart | Seconds to wait for a fallback reply |
+
+The fallback is used only while LM Studio is unreachable; `llm.SwitchingClient` re-probes LM Studio on each news cycle and switches back. With both URLs empty the dashboard reports the LLM as `not_configured`.
+
+### News & alerts
+
+| Key | Default | Applies | Description |
+|---|---|---|---|
+| `NEWS_SOURCES` | 9 built-in feeds | Restart | RSS feeds as `Name::URL`, one per line. The Fear & Greed adapter is always included |
+| `ALERT_WEBHOOK_URL` | empty | Now | Webhook for start, emergency stop, daily loss and stop-loss alerts. Empty disables alerts |
+
+### Advanced
+
+| Key | Default | Applies | Description |
+|---|---|---|---|
+| `CORS_ORIGINS` | `http://localhost:<port>`, `http://127.0.0.1:<port>` | Restart | Browser origins allowed to call the API |
+| `LOG_LEVEL` | `INFO` | Restart | `DEBUG`, `INFO`, `WARNING` or `ERROR` |
+| `DEBUG` | off | Restart | Log at `DEBUG` whatever `LOG_LEVEL` says |
+
+---
+
+## Code
+
+| Piece | Where |
+|---|---|
+| `config.Settings`, `Defaults()`, `Validate()`, `EffectiveLogLevel()`, `Bootstrap` (the start-up flags) | `internal/config/settings.go` |
+| Settings registry: key, label, group, help, kind, live, secret, parse/format | `internal/config/fields.go` (`Fields()`, `FieldByKey()`) |
+| DPAPI box, `sealed:` encoding | `internal/secret` |
+| `settings` table load/save | `internal/storage/settings.go` |
+| `LoadSettings`, `SettingsView`, `UpdateSettings` | `internal/app/settings.go` |
+
+The registry is the single list of dashboard settings. Adding a setting means adding a field to `config.Settings`, a default in `Defaults()`, and one registry entry. The entry's `Live` flag must only be set if every consumer reads the value through the risk engine (`risk.Engine.SetSettings`), the strategy factory, or `App.cfg()` at use time.
+
+`app.App` keeps two copies under a lock: the **running** settings (what components use) and the **saved** settings (what the database holds). A key whose two values differ is "restart pending". Values that are not settings, such as loop intervals and buffer sizes, are constants in `internal/app/app.go` and the `app.Intervals` struct.

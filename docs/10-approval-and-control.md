@@ -2,122 +2,131 @@
 
 ---
 
-## Approval Service (`backend/approval/service.py`)
+## Approval Service (`internal/approval/service.go`)
 
-**Class:** `ApprovalService`
+**Type:** `approval.Service`
 
-Manages the queue of pending trade approvals in `semi_automated` mode. Approvals are held in memory only — the queue does not survive a process restart (any pending approvals are lost on shutdown).
+Manages the queue of pending trade approvals in `semi_automated` mode. The queue is held in memory and mirrored to the `approval_requests` table, so pending approvals survive a restart. The same service backs the HTTP API and the CLI (which approves and rejects through the running bot's API), so both approval paths see identical state. It is safe for concurrent use.
 
-```python
-DEFAULT_TTL_MINUTES = 30
+```go
+const DefaultTTL = 30 * time.Minute
 
-class ApprovalService:
-    def __init__(self, ttl_minutes: int = DEFAULT_TTL_MINUTES):
-        self._ttl:     timedelta                      # approval lifetime
-        self._pending: Dict[str, ApprovalRequest]     # id → ApprovalRequest
+type Service struct {
+	mu      sync.Mutex
+	ttl     time.Duration            // approval lifetime
+	repo    Repository               // persistence; nil = in-memory only
+	now     func() time.Time         // injectable clock (UTC)
+	pending []domain.ApprovalRequest // submission order
+}
+
+func NewService(ttl time.Duration, repo Repository, now func() time.Time) *Service
+```
+
+The app builds it with `approval.NewService(approval.DefaultTTL, approvalStore{repo: repo}, nil)`.
+
+---
+
+### `ApprovalRequest` Model (`internal/domain`)
+
+```go
+type ApprovalRequest struct {
+	ID           string       `json:"id"`         // UUID
+	TradeIdea    TradeIdea    `json:"trade_idea"`
+	RiskDecision RiskDecision `json:"risk_decision"`
+	ExpiresAt    time.Time    `json:"expires_at"` // now (UTC) + TTL
+	Status       string       `json:"status"`     // pending | approved | rejected | expired
+}
+```
+
+The `TradeIdea` embedded in the request carries the full signal context: market, direction, strategy, confidence, thesis, entry/exit plans, and position sizing proposal.
+
+---
+
+### `Submit()`
+
+```go
+func (s *Service) Submit(idea domain.TradeIdea, risk domain.RiskDecision) (domain.ApprovalRequest, bool)
+```
+
+Purges expired entries, then creates a new approval and adds it to the pending queue. Returns `false` (without adding to the queue) if an approval for the same `market` is already pending, which prevents duplicate queuing.
+
+```go
+if s.hasMarketLocked(idea.Market) {
+	return domain.ApprovalRequest{}, false
+}
+req := domain.ApprovalRequest{
+	ID:           domain.NewID(),
+	TradeIdea:    idea,
+	RiskDecision: risk,
+	ExpiresAt:    s.now().UTC().Add(s.ttl),
+	Status:       "pending",
+}
+s.pending = append(s.pending, req)
+// ...then persisted with repo.SaveApprovalRequest(req); failures are logged
 ```
 
 ---
 
-### `ApprovalRequest` Model
+### `GetPending()`
 
-```python
-@dataclass
-class ApprovalRequest:
-    id:             str            # UUID4
-    trade_idea:     TradeIdea
-    risk_decision:  RiskDecision
-    expires_at:     datetime       # utcnow() + TTL
-    status:         str            # "pending" | "approved" | "rejected" | "expired"
+```go
+func (s *Service) GetPending() []domain.ApprovalRequest
 ```
 
-The `trade_idea` embedded in the request carries the full signal context: market, direction, confidence, thesis, entry/exit plans, and position sizing proposal.
+Returns all non-expired approvals in submission order. Internally purges expired entries first. This is the data source for `GET /api/approvals` and the dashboard approval panel.
 
 ---
 
-### `submit()`
+### `Get()`
 
-```python
-def submit(
-    self,
-    idea:           TradeIdea,
-    risk_decision:  RiskDecision,
-) -> Optional[ApprovalRequest]
+```go
+func (s *Service) Get(approvalID string) (domain.ApprovalRequest, bool)
 ```
 
-Creates a new approval and adds it to the pending queue. Returns `None` (without adding to queue) if:
-- An approval for the same `market` is already pending (prevents duplicate queuing).
-
-```python
-if self.has_pending_for_market(idea.market):
-    return None
-
-approval = ApprovalRequest(
-    id            = str(uuid.uuid4()),
-    trade_idea    = idea,
-    risk_decision = risk_decision,
-    expires_at    = datetime.utcnow() + self._ttl,
-    status        = "pending",
-)
-self._pending[approval.id] = approval
-return approval
-```
+Returns a single approval by ID, or `false` if it does not exist or has expired.
 
 ---
 
-### `get_pending()`
+### `Approve()` / `Reject()`
 
-```python
-def get_pending(self) -> List[ApprovalRequest]
+```go
+func (s *Service) Approve(approvalID string) (domain.ApprovalRequest, bool)
+func (s *Service) Reject(approvalID string) (domain.ApprovalRequest, bool)
 ```
 
-Returns all non-expired approvals. Internally calls `_purge_expired()` first to remove stale entries before returning. This is the data source for `GET /api/approvals` and the dashboard approval panel.
+Both methods call `resolve()`, which checks existence and expiry (`validIndexLocked()`). If valid:
+- Sets `Status` to `"approved"` or `"rejected"`.
+- Removes the approval from the queue.
+- Persists the new status.
+- Returns the `ApprovalRequest` (the caller uses it to extract the trade idea and execute).
+
+Returns `false` if the approval doesn't exist or has expired. The API handler converts this to a `404` response.
 
 ---
 
-### `get()`
+### `HasPendingForMarket()`
 
-```python
-def get(self, approval_id: str) -> Optional[ApprovalRequest]
+```go
+func (s *Service) HasPendingForMarket(market string) bool
 ```
 
-Returns a single approval by ID, or `None` if it does not exist or has expired.
+Reports whether a non-expired approval exists for a market. `Submit()` performs the same check itself, so the strategy loop simply calls `Submit()` and logs "approval already pending" when it returns `false`.
 
 ---
 
-### `approve()` / `reject()`
+### `ClearPending()`
 
-```python
-def approve(self, approval_id: str) -> Optional[ApprovalRequest]
-def reject(self, approval_id: str)  -> Optional[ApprovalRequest]
+```go
+func (s *Service) ClearPending() int
 ```
 
-Both methods call `_get_if_valid()` first, which checks both existence and expiry. If valid:
-- Sets `status` to `"approved"` or `"rejected"`.
-- Removes the approval from `_pending`.
-- Returns the `ApprovalRequest` (caller uses it to extract `trade_idea` and execute).
-
-Returns `None` if the approval doesn't exist or has expired. The API handler converts this to a `404` response.
+Discards every pending approval, in memory and in the database, and returns how many were cleared. Called when the emergency stop is activated.
 
 ---
 
-### `has_pending_for_market()`
+### `purgeExpiredLocked()`
 
-```python
-def has_pending_for_market(self, market: str) -> bool
-```
-
-Used by the strategy loop before calling `submit()` to prevent queuing a second approval for a market that already has one waiting. Iterates non-expired pending approvals.
-
----
-
-### `_purge_expired()`
-
-```python
-def _purge_expired(self) -> None
-```
-
-Removes all entries from `_pending` where `expires_at < datetime.utcnow()`. Called automatically on `get_pending()` and before any validation. There is no background task for purging — expiry is evaluated on-demand.
+Removes every queued approval whose `ExpiresAt` is in the past and persists status `"expired"` for each. Called automatically by `GetPending()`, `Submit()` and `HasPendingForMarket()`. `Get()`, `Approve()` and `Reject()` expire the single approval they look at. There is no background goroutine for purging; expiry is evaluated on demand.
 
 ---
 
@@ -130,205 +139,241 @@ Strategy generates TradeIdea (semi_automated mode)
     │
     ├── Check: existing same-direction position? → skip if yes
     │
-    ├── Check: pending approval for this market? → skip if yes
-    │
-    └── approval_service.submit(idea, risk_decision)
+    └── approvals.Submit(idea, decision)
               │
-              ├── ApprovalRequest created (TTL: 30 min)
+              ├── pending approval for this market? → skip (returns false)
               │
-              ├── Dashboard polls /api/approvals every 5s
+              ├── ApprovalRequest created and persisted (TTL: 30 min)
+              │
+              ├── Dashboard polls /api/dashboard every 5s
               │
               └── User action:
                     ├── APPROVE → POST /api/approvals/{id}/approve
                     │               │
-                    │               ├── validate emergency_stop
+                    │               ├── validate emergency stop
+                    │               ├── validate approval exists and is not expired
                     │               ├── validate live price available
-                    │               ├── paper_engine.execute(intent, price)
-                    │               ├── record_closed_trade (if SHORT)
-                    │               └── activity.success(...)
+                    │               ├── execute on Kraken (live market) or paper engine
+                    │               ├── RecordClosedTrade (if paper SHORT closed a position)
+                    │               └── activity.Success(...)
                     │
                     └── REJECT → POST /api/approvals/{id}/reject
-                                    └── approval removed, activity.info(...)
+                                    └── approval removed, activity.Warn(...)
 ```
 
-If neither action is taken within 30 minutes, the approval expires and is removed on the next `get_pending()` call.
+If neither action is taken within 30 minutes, the approval expires and is removed the next time the queue is read.
 
 ---
 
 ### Persistence
 
-The `ApprovalRequestModel` SQLAlchemy table exists for audit trail purposes. The `ApprovalService` in-memory `_pending` dict starts empty on restart — **pending approvals are not recovered after a restart**. Any approval that was awaiting operator action when the bot stopped will be lost. The 30-minute TTL window means this is only a concern if the bot is restarted mid-session.
+Every approval is written to `approval_requests` when submitted, and every status change (`approved`, `rejected`, `expired`) is written back. Persistence failures are logged and never block the queue. At startup the app calls `LoadPendingFromRepository()`, which restores the persisted approvals that are still `pending` and not expired. Approvals awaiting operator action therefore survive a restart within their 30-minute TTL.
 
 ---
 
-## Control State (`backend/control/state.py`)
+## Control State (`internal/control/state.go`)
 
-**Class:** `ControlState`
+**Type:** `control.State`
 
 A thread-safe control board. Controls which markets are active, which single strategy is selected, which markets route to live execution, and whether the emergency stop is engaged. State is persisted to the `control_state` table on every change and restored at startup.
 
-```python
-class ControlState:
-    def __init__(self):
-        self._emergency_stop:   bool          = False
-        self._stop_timestamp:   Optional[datetime] = None
-        self._disabled_markets:    Set[str]   = set()
-        self._disabled_strategies: Set[str]   = set()
-        self._selected_strategy_id: str        = "combined"
-        self._lock: threading.Lock
-        self._repo = None  # injected via set_repo() at startup
+```go
+type State struct {
+	mu                 sync.Mutex
+	now                func() time.Time
+	repo               Repository
+	emergencyStop      bool
+	stopTimestamp      *time.Time
+	disabledMarkets    map[string]bool
+	disabledStrategies map[string]bool
+	liveMarkets        map[string]bool
+	selectedStrategyID string // DefaultSelectedStrategy = "basic_and_llm_strategy"
+	tradingMode        string // manual | semi_automated | fully_automated
+	tradingEnvironment string // paper | live
+}
 ```
 
-The lock is acquired for all reads and writes because toggles can arrive from FastAPI request handlers (via thread-pool workers) while the strategy loop runs in the asyncio event loop on the main thread.
+The mutex is taken for all reads and writes because toggles arrive from HTTP handler goroutines while the strategy loop runs in its own goroutine.
 
-### `set_repo()` / `load_from_db()`
+### `SetRepo()` / `LoadFromDB()`
 
-```python
-def set_repo(self, repo) -> None
-def load_from_db(self) -> None
+```go
+func (s *State) SetRepo(repo Repository)
+func (s *State) LoadFromDB() error
 ```
 
-`set_repo()` is called once at startup (from `main.py`) to inject the `Repository`. `load_from_db()` is then called to restore the last persisted state. If the `control_state` table has no row (first ever startup), defaults apply (everything enabled, no emergency stop).
+`SetRepo()` is called once at startup (from `app.New`) to inject the repository. `LoadFromDB()` is then called to restore the last persisted state. If the `control_state` table has no row (first ever startup), defaults apply: everything enabled, no live markets, no emergency stop. Legacy strategy IDs (`basic_trend`, `llm_only`) are mapped to their canonical IDs on load.
 
-Every state-mutating method (`activate_stop`, `resume`, `disable_market`, `enable_market`, `disable_strategy`, `enable_strategy`) calls the private `_persist()` helper, which writes the current state to `control_state` row `id=1` via an upsert.
+Every state-mutating method (`ActivateStop`, `Resume`, `DisableMarket`, `EnableMarket`, `SetMarketLive`, `DisableStrategy`, `EnableStrategy`, `SelectStrategy`, `SetTradingMode`, `SetTradingEnvironment`) calls the private `persistLocked()` helper while holding the lock, so saves are applied in change order. Save failures are logged and non-fatal.
 
 ---
 
 ### Emergency Stop
 
-```python
-@property
-def emergency_stop(self) -> bool
+```go
+func (s *State) EmergencyStop() bool
 
-def activate_stop(self) -> None
-    # Sets _emergency_stop = True, records _stop_timestamp
-
-def resume(self) -> None
-    # Clears _emergency_stop, clears _stop_timestamp
-    # Does NOT clear pending approvals — that is done by the API handler
+func (s *State) ActivateStop() // sets emergencyStop = true, records stopTimestamp
+func (s *State) Resume()       // clears emergencyStop and stopTimestamp
 ```
 
-When `emergency_stop` is `True`, the strategy loop checks it at the top of every tick and skips all processing:
+`Resume()` does not touch the approval queue. Clearing pending approvals is done by `App.ActivateEmergencyStop()` when the stop is engaged.
 
-```python
-if control.emergency_stop:
-    await asyncio.sleep(30)
-    continue
+When the emergency stop is active, the strategy loop checks it at the top of every tick, logs "Emergency stop active - tick skipped" to the activity feed, and waits a full interval:
+
+```go
+if a.control.EmergencyStop() {
+	a.activity.Warn("Emergency stop active - tick skipped", "")
+	return true, nil // skipped
+}
 ```
 
-The approval handler also rejects any execution attempt if `emergency_stop` is active.
+The approve and manual-close handlers also refuse with `503` while the emergency stop is active.
 
 ---
 
 ### Market Toggles
 
-```python
-def disable_market(self, market: str) -> None
-def enable_market(self, market: str) -> None
-def is_market_enabled(self, market: str) -> bool
-    # Returns True if market NOT in _disabled_markets
+```go
+func (s *State) DisableMarket(market string)
+func (s *State) EnableMarket(market string)
+func (s *State) IsMarketEnabled(market string) bool // true if market is not disabled
+
+func (s *State) SetMarketLive(market string, live bool)
+func (s *State) IsMarketLive(market string) bool
 ```
 
-`_active_markets` in `main.py` is computed each strategy tick:
+The strategy loop filters the validated market list on every tick:
 
-```python
-_active_markets = [m for m in settings.fixed_markets if control.is_market_enabled(m)]
+```go
+for _, m := range a.activeMarkets {
+	if a.control.IsMarketEnabled(m) {
+		active = append(active, m)
+	}
+}
 ```
 
-Disabling a market removes it from the tick's price fetch and strategy evaluation. Any existing open position for that market is **not** automatically closed — it remains open and is subject to stop-loss monitoring (which runs before the market filter).
+Disabling a market removes it from the tick's price fetch and strategy evaluation, and the OHLC loop stops refreshing its candles. Any existing open position for that market is **not** automatically closed.
+
+`IsMarketLive()` decides whether an approved or automated order for that market goes to the Kraken live engine or the paper engine. The live flag only takes effect when the trading environment is `live`; in the paper environment the order is executed on paper and a warning is logged.
+
+---
+
+### Trading Settings
+
+```go
+func (s *State) SeedTradingSettings(mode, environment string) // fills only unset values
+func (s *State) TradingMode() string
+func (s *State) TradingEnvironment() string
+func (s *State) SetTradingMode(mode string) error               // refuses unknown modes
+func (s *State) SetTradingEnvironment(environment string) error // refuses unknown values
+```
+
+The trading mode and paper/live environment live in control state (`internal/control/trading.go`), so they can change while the bot runs and survive restarts. At start-up `app.New` calls `LoadFromDB()` first, then `SeedTradingSettings(settings.TradingMode, settings.TradingEnvironment)`: values saved from the web interface win, and the defaults (`manual`, `paper`) only fill values that were never saved. This happens before `restoreState`, which needs the effective environment to choose the equity source.
+
+`App.TradingMode()` / `App.TradingEnvironment()` (`internal/app/trading_settings.go`) are the only way the app reads these values; nothing reads `settings.TradingMode` / `settings.TradingEnvironment` after start-up. The strategy loop reads the mode once per signal, so a change mid-tick cannot split one signal across two modes.
+
+`App.SetTradingMode()` and `App.SetTradingEnvironment(environment, confirmation)` add the safety rules on top:
+
+| Change | Requirement |
+|---|---|
+| Any mode change | Valid mode. The dashboard shows a confirm dialog first. |
+| Paper → live | `confirmation == "LIVE"` (`app.LiveConfirmation`) **and** Kraken API key + secret in use. Keys saved in Settings but not loaded yet (no restart since) are refused with a message to restart first. |
+| Live → paper | None server-side. The dashboard shows a confirm dialog first. |
+
+Each change writes a `warn` activity entry ("Trading mode changed: manual → semi_automated") and bumps the dashboard version. Changing mode does not clear pending approvals; approvals queued in semi-automated mode can still be approved or rejected.
 
 ---
 
 ### Strategy Selection
 
-```python
-def select_strategy(self, strategy_id: str) -> None
-def is_strategy_selected(self, strategy_id: str) -> bool
+```go
+func (s *State) SelectStrategy(strategyID string)
+func (s *State) SelectedStrategyID() string
+func (s *State) IsStrategySelected(strategyID string) bool
 ```
 
 The strategy loop evaluates only the selected strategy:
 
-```python
-active_strategy = _strategy_by_id(control.selected_strategy_id)
-strategy_ideas = await active_strategy.evaluate(...)
+```go
+active := a.strategyByID(a.control.SelectedStrategyID())
 ```
 
-Registered strategy IDs are `"basic_strategy"`, `"basic_and_llm_strategy"`, and `"llm_only_strategy"`. The UI selector writes the selected ID through `POST /api/control/strategies/{strategy_id}/select`.
+Registered strategy IDs are `"basic_strategy"`, `"basic_and_llm_strategy"`, and `"llm_only_strategy"`. The **Strategy** section of the dashboard's Trading settings dialog (between Trading mode and Money) writes the selected ID through `POST /api/control/strategies/{strategy_id}/select`, after a confirm dialog.
 
 ---
 
-### `snapshot()`
+### `Snapshot()`
 
-```python
-def snapshot(self) -> dict
+```go
+func (s *State) Snapshot() Snapshot
 ```
 
-Returns the current state as a serialisable dict. Included in every `/api/dashboard` response under the `"control"` key.
+Returns the current state as a JSON-serialisable struct. Included in every `/api/dashboard` response under the `"control"` key and returned by `GET /api/control`.
 
-```python
-{
-    "emergency_stop":     bool,
-    "stop_since":         "ISO timestamp" | null,
-    "disabled_markets":   ["sorted", "list"],
-    "disabled_strategies": ["sorted", "list"],
-    "selected_strategy":  "basic_and_llm_strategy",
-    "live_markets":       ["sorted", "list"]
+```go
+type Snapshot struct {
+	EmergencyStop      bool       `json:"emergency_stop"`
+	StopSince          *time.Time `json:"stop_since"` // null when not stopped
+	DisabledMarkets    []string   `json:"disabled_markets"`    // sorted
+	DisabledStrategies []string   `json:"disabled_strategies"` // sorted
+	SelectedStrategy   string     `json:"selected_strategy"`
+	LiveMarkets        []string   `json:"live_markets"`        // sorted
+	TradingMode        string     `json:"trading_mode"`
+	TradingEnvironment string     `json:"trading_environment"`
 }
 ```
 
 ---
 
-### Activity Log (`backend/observability/activity.py`)
+### Activity Log (`internal/observability/activity.go`)
 
-**Class:** `ActivityLog`
+**Type:** `observability.ActivityLog`
 
-An event feed for the dashboard — persisted to the `activity_log` database table in addition to the in-memory rolling buffer. Not part of Python's standard logging system, which is reserved for developer/operations output.
+An event feed for the dashboard, persisted to the `activity_log` database table in addition to the in-memory rolling buffer. It is separate from the `slog` application log, which is reserved for developer and operations output. It is safe for concurrent use.
 
-```python
-class ActivityLog:
-    def __init__(self, maxlen: int = 200):
-        self._entries: deque   # collections.deque(maxlen=200)
-        self._repo = None      # injected via set_repo() at startup
+```go
+func NewActivityLog(maxLen int) *ActivityLog // the app uses maxLen = 200
 
-    def set_repo(self, repo) -> None
-    def seed_from_db(self) -> None   # call once at startup after set_repo()
+func (a *ActivityLog) SetStore(store ActivityStore) // wire in persistence
+func (a *ActivityLog) SeedFromStore()               // call once at startup after SetStore
 
-    def info(self,    message: str, detail: str = "") -> None
-    def warn(self,    message: str, detail: str = "") -> None
-    def error(self,   message: str, detail: str = "") -> None
-    def success(self, message: str, detail: str = "") -> None
+func (a *ActivityLog) Info(message, detail string)
+func (a *ActivityLog) Warn(message, detail string)
+func (a *ActivityLog) Error(message, detail string)
+func (a *ActivityLog) Success(message, detail string)
 
-    def recent(self, n: int = 100) -> List[dict]
+func (a *ActivityLog) Recent(n int) []ActivityEntry
 ```
 
 **Entry structure:**
 
-```python
-{
-    "timestamp": "2026-04-23T14:32:10",   # ISO format, UTC
-    "level":     "info | warn | error | success",
-    "message":   str,
-    "detail":    str,   # optional context (e.g., thesis, price)
+```go
+type ActivityEntry struct {
+	Timestamp string `json:"timestamp"` // RFC 3339, UTC
+	Level     string `json:"level"`     // info | warn | error | success
+	Message   string `json:"message"`
+	Detail    string `json:"detail"`    // optional context (e.g. thesis, price)
 }
 ```
 
-Entries are inserted at the front (`appendleft`) so the most recent event is always at index 0. When the buffer reaches 200 entries, the oldest is automatically discarded by the `deque` maxlen. The database retains the last 2,000 entries (trimmed every ~5 minutes).
+Entries are prepended so the most recent event is always at index 0. When the buffer exceeds 200 entries, the oldest is discarded. The database retains the last 2,000 entries (trimmed by the strategy loop every 10 ticks, about every 5 minutes).
 
-`recent(n)` returns the first `n` entries (most recent first). The dashboard fetches `recent(60)` as part of `/api/dashboard`.
+`Recent(n)` returns the first `n` entries (most recent first). The dashboard includes `Recent(60)` in `/api/dashboard`.
 
 **Persistence flow:**
 
-1. At startup, `activity.set_repo(repo)` wires in the repository.
-2. `activity.seed_from_db()` loads the last 200 entries from the database into the in-memory deque — history is visible in the dashboard from the first page load.
-3. Every subsequent `_add()` call writes to both the in-memory deque and `repo.save_activity_log()`. DB failures are silently absorbed (never break the bot loop).
+1. At startup, `activity.SetStore(repo)` wires in the repository.
+2. `activity.SeedFromStore()` loads the last 200 entries from the database into the buffer, so history is visible in the dashboard from the first page load.
+3. Every subsequent entry is written to both the buffer and `store.SaveActivityLog()`. DB failures are ignored so they never break a bot loop.
 
-**Usage examples from `main.py`:**
+**Usage examples from `internal/app`:**
 
-```python
-activity.success(f"LONG {market} @ £{price:.2f} — {pos_id[:8]}", idea.thesis)
-activity.warn(f"STOP-LOSS: {market} closed at £{price} ({loss_pct:.1%} loss)")
-activity.info(f"LLM briefing ({len(new_articles)} new article(s)): {briefing.key_insight}", ...)
-activity.error("Strategy loop error", str(e))
+```go
+a.activity.Success(fmt.Sprintf("Signal %s %s %s - submitted for approval", idea.Market, label, pct0(idea.Confidence)), idea.Thesis)
+a.activity.Warn(fmt.Sprintf("Manual rejection: %s %s - operator declined", market, label), "")
+a.activity.Info(fmt.Sprintf("LLM briefing (%d new article(s)): %s", len(articles), briefing.KeyInsight), outlooks)
+a.activity.Error("News fetch failed", err.Error())
 ```
 
 Level mapping for dashboard display:

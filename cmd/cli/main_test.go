@@ -1,0 +1,103 @@
+package main
+
+import (
+	"bytes"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+)
+
+// addrFlags returns the -host/-port/-log flags pointing the CLI at srv.
+func addrFlags(t *testing.T, srv *httptest.Server) []string {
+	t.Helper()
+	host, port, _ := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
+	return []string{"-host", host, "-port", port, "-log", filepath.Join(t.TempDir(), "cli.log")}
+}
+
+// TestCLI covers the status, approve and reject commands against a running bot.
+func TestCLI(t *testing.T) {
+	var gotPath, gotMethod string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotMethod = r.URL.Path, r.Method
+		switch {
+		case r.URL.Path == "/api/dashboard":
+			_, _ = w.Write([]byte(`{"version":"0.8.0","mode":"semi_automated","environment":"paper","currency_symbol":"€","equity":"512.34","cash":"400.00"}`))
+		case strings.Contains(r.URL.Path, "missing"):
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"detail":"Approval not found"}`))
+		default:
+			_, _ = w.Write([]byte(`{"status":"approved","id":"abc"}`))
+		}
+	}))
+	defer srv.Close()
+	flags := addrFlags(t, srv)
+
+	t.Run("GIVEN a running bot WHEN status runs THEN the bot's live mode, environment and equity are shown", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		code := run(append(slices.Clone(flags), "status"), &out, &errOut)
+		for _, want := range []string{"Trading Bot Status", "Version: 0.8.0", "Mode: semi_automated", "Environment: paper", "Equity: €512.34"} {
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("status output missing %q (exit %d): %s %s", want, code, out.String(), errOut.String())
+			}
+		}
+		if code != 0 || gotPath != "/api/dashboard" {
+			t.Errorf("expected exit 0 after GET /api/dashboard, got %d %s", code, gotPath)
+		}
+	})
+
+	t.Run("GIVEN a running bot WHEN approve runs THEN it POSTs the approval and prints the result", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		code := run(append(slices.Clone(flags), "approve", "abc"), &out, &errOut)
+		if code != 0 || gotMethod != http.MethodPost || gotPath != "/api/approvals/abc/approve" || !strings.Contains(out.String(), "Approved:") {
+			t.Errorf("unexpected approve (%d) %s %s: %s", code, gotMethod, gotPath, out.String())
+		}
+	})
+
+	t.Run("GIVEN an unknown approval WHEN reject runs THEN the API error is reported with exit code 1", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		code := run(append(slices.Clone(flags), "reject", "missing"), &out, &errOut)
+		if code != 1 || !strings.Contains(errOut.String(), "API error 404") || gotPath != "/api/approvals/missing/reject" {
+			t.Errorf("unexpected reject (%d): %s", code, errOut.String())
+		}
+	})
+
+	t.Run("GIVEN the removed .env and mode flags WHEN parsed THEN usage exit code 2 is returned", func(t *testing.T) {
+		for _, args := range [][]string{{"--config", ".env", "status"}, {"--mode", "manual", "status"}, {"--environment", "paper", "status"}} {
+			var out, errOut bytes.Buffer
+			if code := run(args, &out, &errOut); code != 2 {
+				t.Errorf("%v: expected exit 2, got %d", args, code)
+			}
+		}
+	})
+
+	t.Run("GIVEN approve without an ID WHEN parsed THEN usage exit code 2 is returned", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		if code := run(append(slices.Clone(flags), "approve"), &out, &errOut); code != 2 {
+			t.Errorf("expected exit 2, got %d", code)
+		}
+	})
+
+	t.Run("GIVEN no bot listening WHEN status or approve runs THEN a cannot-reach message exits 1", func(t *testing.T) {
+		dead := httptest.NewServer(http.NotFoundHandler())
+		deadFlags := addrFlags(t, dead)
+		dead.Close()
+		for _, command := range [][]string{{"status"}, {"approve", "x"}} {
+			var out, errOut bytes.Buffer
+			if code := run(append(slices.Clone(deadFlags), command...), &out, &errOut); code != 1 || !strings.Contains(errOut.String(), "Cannot reach bot at") {
+				t.Errorf("%v: unexpected (%d): %s", command, code, errOut.String())
+			}
+		}
+	})
+
+	t.Run("GIVEN start-up flags WHEN run starts the bot THEN they are passed through to tradingbot", func(t *testing.T) {
+		args := botArgs("data/bot.db", "0.0.0.0", 9000, "logs/bot.log")
+		want := []string{"-db", "data/bot.db", "-host", "0.0.0.0", "-port", "9000", "-log", "logs/bot.log"}
+		if !slices.Equal(args, want) {
+			t.Fatalf("got %v, want %v", args, want)
+		}
+	})
+}

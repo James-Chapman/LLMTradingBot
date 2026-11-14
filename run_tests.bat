@@ -1,29 +1,37 @@
 @echo off
 REM ==================================================
 REM LLM Trading Bot — Test Runner
-REM Activates the virtual environment and runs the full
-REM test suite via pytest with verbose output.
+REM Runs go vet and the full Go test suite with
+REM verbose GIVEN/WHEN/THEN output.
 REM ==================================================
 
+pushd "%~dp0"
+
 echo.
-echo Activating virtual environment...
-call .venv\Scripts\activate.bat
+echo ==================================================
+echo Running go vet...
+echo ==================================================
+go vet ./...
+if %errorlevel% neq 0 goto failed
 
 echo.
 echo ==================================================
 echo Running all tests...
 echo ==================================================
 echo.
-python -m pytest -v --tb=short
+go test -v ./...
+if %errorlevel% neq 0 goto failed
 
-if %errorlevel% neq 0 (
-    echo.
-    echo !!! TESTS FAILED — review the output above. !!!
-) else (
-    echo.
-    echo *** All tests passed. ***
-)
+echo.
+echo *** All tests passed. ***
+goto done
 
+:failed
+echo.
+echo !!! TESTS FAILED — review the output above. !!!
+
+:done
+popd
 echo.
 echo ==================================================
 echo Done.

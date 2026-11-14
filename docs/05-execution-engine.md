@@ -1,308 +1,344 @@
 # Execution Engines
 
-**File:** `backend/execution/paper.py`  
-**Class:** `PaperExecutionEngine`
+**File:** `internal/paper/engine.go` (operator reset in `internal/paper/operator_reset.go`)  
+**Type:** `paper.Engine`
 
-Simulates Kraken spot order execution with realistic fee and slippage modelling. All state is held in memory and persisted to SQLite so positions survive restarts.
+Simulates Kraken spot order execution with realistic fee and slippage modelling. All state is held in memory behind a `sync.Mutex` and persisted to SQLite through the `paper.Repository` interface so positions survive restarts. Persistence failures are logged; the in-memory state stays authoritative.
 
-Live execution is handled by `backend/execution/kraken.py` / `KrakenExecutionEngine`. It mirrors the paper engine's `execute()` signature, submits Kraken `AddOrder` private REST calls, stores accepted orders in `order_records` with the returned Kraken transaction ID, and returns an empty `position_id` because exchange balances/fills are the live source of truth. Live submission failures are stored in `rejected_trades`, not the trade ledger.
+Live execution is handled by `internal/kraken/execution.go` / `kraken.ExecutionEngine`, built on the official Kraken Go SDK (`github.com/krakenfx/api-go/v2`). Its `Execute()` returns the same `(domain.OrderRecord, positionID)` pair as the paper engine, submits a Kraken `AddOrder` private REST call (market order, or limit order when `ExecutionIntent.Price` is set), stores accepted orders in `order_records` with status `pending` and the returned Kraken transaction ID, and returns an empty position ID because exchange balances/fills are the live source of truth. Order volume and limit price are formatted with the pair's lot and tick precision from the SDK's `spot.Normalizer` (loaded lazily from Kraken's public asset metadata, falling back to 8 decimal places). Live submission failures are stored in `rejected_trades`, not the trade ledger.
 
-Per-market routing is controlled by `ControlState.live_markets`: paper markets use `PaperExecutionEngine`; live markets use `KrakenExecutionEngine`.
+The live engine has two local guards that refuse an order before any network call, recording it in `rejected_trades` with the reason in `OrderRecord.ExchangeOrderID`:
 
-Kraken private REST calls use `kraken_retry.call_with_kraken_backoff()`. `AddOrder` and `QueryOrders` retry transient rate-limit, temporary-lockout, service-unavailable, and too-many-requests responses with exponential backoff before rejecting/logging the operation.
+- `paper_mode_read_only` — `ExecuteOptions.Environment` is anything other than `"live"`. This guard is new in the Go version; the Python engine had no equivalent.
+- `missing_api_credentials` — `KRAKEN_API_KEY` or `KRAKEN_API_SECRET` is empty.
 
-In live mode, dashboard account totals use Kraken `Balance` via `KrakenExecutionEngine.get_account_snapshot()`. The selected quote currency balance becomes Available Cash, and non-quote asset balances are marked to the latest internal prices such as `BTC/EUR` to produce Total Equity. If Kraken balance lookup fails, the backend logs a warning and falls back to the paper snapshot so the dashboard endpoint remains available.
+Per-market routing is controlled by `control.State.IsMarketLive()` (`control_state.live_markets`) together with `TRADING_ENVIRONMENT`: `App.executeIntent()` sends an order to `kraken.ExecutionEngine` with `Environment: "live"` only when the environment is `live` and the market is flagged live. Otherwise it goes to `paper.Engine`. A live-flagged market in the paper environment is executed on paper, and the app records a `warn` activity entry plus a "Live order blocked by paper environment" log line (since v0.6.1; earlier versions sent real orders regardless of `TRADING_ENVIRONMENT`).
+
+Kraken private REST calls use `kraken.CallWithBackoff()`. `AddOrder`, `QueryOrders` and `CancelOrder` retry transient rate-limit, temporary-lockout, service-unavailable, and too-many-requests errors with exponential backoff and up to 10% jitter (3 attempts, starting at 500 ms) before rejecting/logging the operation. The SDK reports Kraken's in-body `error` array as a Go error, so both transport and in-response rate limits are retried.
+
+Pending live orders are reconciled every 2 strategy ticks (~60 s) in the live environment by `ReconcilePendingOrders()`, which queries Kraken in batches of 50 transaction IDs and marks orders `filled` (with fill price and fee), `canceled`, or `expired`.
+
+In live mode, dashboard account totals use `kraken.ExecutionEngine.GetAccountSnapshot()`. The quote-currency balance from Kraken `Balance` (`ZEUR`, falling back to the bare `EUR` key) becomes Available Cash, and Total Equity is Kraken's `TradeBalance` equivalent balance (`eb`), falling back to cash if that call fails. If the balance lookup fails entirely, the app logs a warning and keeps serving the last-known live cash and equity. This differs from the Python version, which fell back to the paper snapshot.
 
 ---
 
 ## Constants
 
-```python
-TAKER_FEE_RATE     = 0.0026   # 0.26% Kraken taker fee (low-volume account)
-SLIPPAGE_RATE      = 0.001    # 0.10% one-way conservative slippage estimate
-SIMULATED_LATENCY_MS = 150    # logged only; not actually awaited
+```go
+const (
+	TakerFeeRate       = 0.0026 // 0.26% Kraken taker fee (low-volume account)
+	SlippageRate       = 0.001  // 0.10% one-way conservative slippage estimate
+	SimulatedLatencyMS = 150    // nominal only; never slept
+)
+
+// Execution rejection reasons, persisted with rejected trades.
+const (
+	ReasonInsufficientFunds = "insufficient_funds"
+	ReasonLongAlreadyOpen   = "long_position_already_open"
+	ReasonShortAlreadyOpen  = "short_position_already_open"
+)
 ```
 
 ---
 
 ## Internal State
 
-```python
-self.cash: float                          # liquid cash in quote currency
-self.positions: Dict[str, PositionRecord] # position_id → PositionRecord
-self.orders: List[OrderRecord]            # all orders this session
-self.fills: List[FillRecord]              # all fills this session
-self._repo: Optional[Repository]         # DB access; None in unit tests
-self._position_meta: Dict[str, dict]     # position_id → metadata dict
-```
-
-### `_position_meta` Schema
-
-For each position, metadata is stored separately to avoid bloating the domain model:
-
-```python
-{
-    "strategy_id":      str,          # source strategy
-    "direction":        str,          # "long" or "short"
-    "confidence":       float,        # signal confidence at entry
-    "opened_at":        datetime,     # position open time
-    "market":           str,          # trading pair
-    "trade_idea_id":    str,          # UUID of the opening signal (persisted to DB so it survives restarts)
-    # Set when closing:
-    "avg_price_at_close": float,      # entry price (used for P&L in record_closed_trade)
-    "size_at_close":      float,      # quantity closed
+```go
+type Engine struct {
+	mu        sync.Mutex
+	repo      Repository                       // DB access; nil in unit tests
+	now       func() time.Time                 // injectable clock
+	cash      float64                          // liquid cash in quote currency
+	positions map[string]domain.PositionRecord // position_id → PositionRecord
+	openOrder []string                         // open position ids in insertion order
+	meta      map[string]*PositionMeta         // position_id → metadata
+	orders    []domain.OrderRecord             // all orders this session
+	fills     []domain.FillRecord              // all fills this session
 }
 ```
 
----
+### `PositionMeta`
 
-## `execute()` — Main Fill Method
+For each position, metadata is stored separately to avoid bloating the domain model. It outlives the position after a close so the outcome can be recorded:
 
-```python
-async def execute(
-    self,
-    intent: ExecutionIntent,
-    market_price: float,
-    strategy_id: str = "",
-    signal_confidence: Optional[float] = None,
-    environment: str = "paper",
-    trade_idea_id: str = "",
-) -> Tuple[OrderRecord, str]:
+```go
+type PositionMeta struct {
+	StrategyID    string    // source strategy
+	Direction     string    // "long" | "short" ("" if unknown)
+	Confidence    *float64  // signal confidence at entry
+	OpenedAt      time.Time // position open time
+	Market        string    // trading pair
+	TradeIdeaID   string    // opening signal (persisted to DB so it survives restarts)
+	EntryFee      float64   // fee paid on the opening fill
+	ShortProceeds *float64  // locked sale value of a paper short; nil for longs/restored rows
+	TrailingHigh  *float64  // best price seen for a long
+	TrailingLow   *float64  // best price seen for a short
+
+	// Set when closing:
+	Closed           bool
+	AvgPriceAtClose  float64 // entry price
+	SizeAtClose      float64 // quantity closed
+	ExitPriceAtClose float64 // fill price of the closing order
+	ExitFeeAtClose   float64 // fee paid on the closing fill
+}
 ```
 
-Returns `(OrderRecord, position_id)`. For a rejection, `position_id` is `""`.
+`Engine.Meta(positionID)` returns a copy.
+
+---
+
+## `Execute()` — Main Fill Method
+
+```go
+type ExecuteOptions struct {
+	StrategyID       string
+	SignalConfidence *float64
+	Environment      string // default "paper"
+	TradeIdeaID      string
+}
+
+func (e *Engine) Execute(intent domain.ExecutionIntent, marketPrice float64, opts ExecuteOptions) (domain.OrderRecord, string)
+```
+
+Returns `(OrderRecord, positionID)`. For a rejection, `positionID` is `""`.
 
 ### Execution Flow
 
 ```
-1.  Apply slippage to market_price         → fill_price
-2.  Compute fill_value = size * fill_price
-3.  Compute fee = fill_value * TAKER_FEE_RATE
-4.  Check _has_sufficient_funds()          → save `rejected_trades` row and reject if False
-5.  Set order.status = "filled"
-6.  Create FillRecord
-7.  Call _apply_fill()                     → mutates cash + positions; returns position_id
-8.  Set order.position_id = position_id
-9.  Persist to DB: order, fill, position upsert/delete
-10. Return (order, position_id)
+1.  Apply slippage to marketPrice             → fillPrice
+2.  Compute fillValue = size * fillPrice
+3.  Compute fee = fillValue * TakerFeeRate
+4.  rejectionReasonLocked()                   → save rejected_trades row and return status "rejected" if non-empty
+5.  Create FillRecord
+6.  applyFillLocked()                         → mutates cash + positions; returns positionID
+7.  Set order.Status = "filled", order.PositionID = positionID
+8.  Persist to DB: order, fill, and position upsert (or delete when a short closed a long)
+9.  Return (order, positionID)
 ```
 
-Rejected orders return `order.status == "rejected"` and `position_id == ""`, but they are not saved to `order_records`. The rejected-trades register stores timestamp, market, direction, size, attempted price, signal confidence, reason, and `trade_idea_id`.
+Rejected orders return `order.Status == "rejected"` and `positionID == ""`, but they are not saved to `order_records`. The rejected-trades register stores timestamp, market, direction, size, attempted price, signal confidence, reason, and `trade_idea_id`.
 
 ---
 
-## `_apply_slippage()`
+## `applySlippage()`
 
-```python
-def _apply_slippage(self, direction: Direction, price: float) -> float:
-    return price * (1 + SLIPPAGE_RATE) if direction == Direction.LONG else price * (1 - SLIPPAGE_RATE)
+```go
+func applySlippage(direction domain.Direction, price float64) float64 {
+	if direction == domain.Long {
+		return price * (1 + SlippageRate)
+	}
+	return price * (1 - SlippageRate)
+}
 ```
 
 LONGs pay more (adverse slippage on buy). SHORTs receive less (adverse slippage on sell). This models realistic market impact conservatively.
 
 ---
 
-## `_has_sufficient_funds()`
+## `rejectionReasonLocked()`
 
-Secondary enforcement layer (primary is the risk engine).
+Secondary enforcement layer (primary is the risk engine). Returns `""` when the intent can fill.
 
 **For LONG:**
-- Block if any long already exists for this market → returns `False`
-- Otherwise: require `cash >= fill_value + fee`
+- Any long already open for this market → `long_position_already_open`
+- Otherwise require `cash >= fillValue + fee` → else `insufficient_funds`
 
 **For SHORT:**
-- If existing longs cover the short size (`total_long >= intent.size`) → allow (closing a long, no cash needed)
-- Block if any short already exists for this market → returns `False`
-- Otherwise (paper short, no existing long): require `cash >= fill_value + fee`
+- If existing longs cover the short size (`totalLong >= intent.Size`) → allow (closing a long, no cash needed)
+- Any short already open for this market → `short_position_already_open`
+- Otherwise (paper short, no existing long): require `cash >= fillValue + fee` → else `insufficient_funds`
 
 ---
 
-## `_apply_fill()`
+## `applyFillLocked()`
 
-Mutates `self.cash` and `self.positions`. Returns the affected `position_id`.
+Mutates `cash` and `positions`. Returns the affected position ID.
 
 ### LONG Path
 
-```python
-self.cash -= fill_value + fee
-position_id = str(uuid.uuid4())
-self.positions[position_id] = PositionRecord(
-    position_id=position_id, market=market, size=intent.size,
-    avg_price=fill_price, unrealized_pnl=0.0, timestamp=datetime.utcnow()
-)
-self._position_meta[position_id] = {
-    "strategy_id": strategy_id, "direction": "long",
-    "confidence": signal_confidence, "opened_at": datetime.utcnow(),
-    "market": market, "trade_idea_id": trade_idea_id,
+```go
+e.cash -= fillValue + fee
+id := e.openPositionLocked(intent.Market, intent.Size, fillPrice, now) // new UUID
+e.meta[id] = &PositionMeta{
+	StrategyID: opts.StrategyID, Direction: "long", Confidence: copyFloat(opts.SignalConfidence),
+	OpenedAt: now, Market: intent.Market, TradeIdeaID: opts.TradeIdeaID,
+	EntryFee: fee, TrailingHigh: domain.Float(fillPrice),
 }
-return position_id
+return id
 ```
 
 ### SHORT Path
 
-```python
-self.cash += fill_value - fee   # receive cash from sale
+```go
+// FIFO: find the oldest long for this market.
+var longs []domain.PositionRecord
+for _, id := range e.openOrder {
+	if pos := e.positions[id]; pos.Market == intent.Market && pos.Size > 0 {
+		longs = append(longs, pos)
+	}
+}
+sort.SliceStable(longs, func(i, j int) bool { return longs[i].Timestamp.Before(longs[j].Timestamp) })
+if len(longs) > 0 {
+	oldest := longs[0]
+	e.cash += fillValue - fee // receive sale proceeds minus fee
+	markClosed(e.metaLocked(oldest.PositionID), oldest.AvgPrice, oldest.Size, fillPrice, fee)
+	e.removePositionLocked(oldest.PositionID)
+	return oldest.PositionID // return the CLOSED position's ID
+}
 
-# FIFO: find oldest long for this market
-market_longs = sorted(
-    [(pid, p) for pid, p in self.positions.items() if p.market == market and p.size > 0],
-    key=lambda x: x[1].timestamp,
-)
-
-if market_longs:
-    pid, pos = market_longs[0]
-    meta[pid]["avg_price_at_close"] = pos.avg_price
-    meta[pid]["size_at_close"] = pos.size
-    del self.positions[pid]     # position closed
-    return pid                  # return the CLOSED position's ID
-else:
-    # Open a paper short (no existing long to close)
-    position_id = str(uuid.uuid4())
-    self.positions[position_id] = PositionRecord(
-        ..., size=-intent.size, ...   # negative size = short
-    )
-    return position_id
+// No long to close: open a paper short. Only the fee leaves cash; the sale
+// proceeds are locked as margin so free cash cannot increase.
+e.cash -= fee
+id := e.openPositionLocked(intent.Market, -intent.Size, fillPrice, now) // negative size = short
+e.meta[id] = &PositionMeta{ /* ... */ EntryFee: fee, ShortProceeds: domain.Float(fillValue), TrailingLow: domain.Float(fillPrice)}
+return id
 ```
 
-The returned `position_id` is the same ID as the original LONG order. This is what links the BUY and SELL entries in the trade ledger — both `order_records` rows share the same `position_id`.
+The returned position ID is the same ID as the original LONG order. This is what links the BUY and SELL entries in the trade ledger — both `order_records` rows share the same `position_id`.
 
 ---
 
-## `close_position()` — Targeted Stop-Loss Closure
+## `ClosePosition()` — Targeted Closure
 
-```python
-async def close_position(
-    self,
-    position_id: str,
-    market_price: float,
-    environment: str = "paper",
-    approval_request_id: str = "stop_loss",
-) -> Optional[OrderRecord]:
+```go
+type CloseOptions struct {
+	Environment       string // default "paper"
+	ApprovalRequestID string // close source recorded on the order; default "stop_loss"
+}
+
+func (e *Engine) ClosePosition(positionID string, marketPrice float64, opts CloseOptions) (domain.OrderRecord, bool)
 ```
 
-Unlike `execute()`, this targets a specific position by ID. Used by the stop-loss loop in `main.py`. It does **not** go through `_has_sufficient_funds()` — stop-losses always execute.
+Unlike `Execute()`, this targets a specific position by ID. It is used by the stop-loss and trailing-stop checks in `App.checkStops()`, by manual UI closes (`ApprovalRequestID: "manual_close"`), and by the operator reset (`"operator_reset"`). It does **not** go through `rejectionReasonLocked()` — stop-losses always execute.
 
 ```
-1.  Look up position by position_id        → return None if not found
-2.  Determine exit direction               → SHORT if pos.size > 0 (closing long)
-3.  Apply slippage
-4.  Update cash (receive proceeds if long, pay if short)
-5.  Create order + fill records
-6.  Save close metadata to _position_meta
-7.  Delete from self.positions
+1.  Look up position by ID                 → return (OrderRecord{}, false) if not open
+2.  Determine exit direction               → SHORT if pos.Size > 0 (closing long), else LONG
+3.  Apply slippage; compute fee
+4.  Update cash:
+      closing a long  → cash += fillValue - fee
+      closing a short → cash += ShortProceeds - fillValue - fee
+                        (restored shorts fall back to AvgPrice × size)
+5.  Create order + fill records (status "filled")
+6.  Save close details to PositionMeta (markClosed)
+7.  Remove from positions
 8.  Persist to DB: order, fill, delete open_positions row
-9.  Return the OrderRecord
+9.  Return (order, true)
 ```
+
+The stop-loss check calls `StopLossTriggered(positionID, marketPrice, stopLossPct)` first. That helper compares the current price with the entry price and returns `true` only when the position is losing by at least the configured percentage. The trailing stop is a separate check: `UpdateTrailingPrices()` keeps a high watermark for longs and a low watermark for shorts every tick, and `TrailingStopTriggered(positionID, marketPrice, trailPct)` fires when price retraces `TRAILING_STOP_PCT` from that watermark. Watermarks of restored positions start empty and are seeded from the first live price, not the stale entry price.
 
 ---
 
-## `record_closed_trade()`
+## `RecordClosedTrade()`
 
-`close_position()` is called only after the stop-loss loop has checked `stop_loss_triggered(position_id, market_price, stop_loss_pct)`. That helper compares the current price with the entry price and returns `True` only when the position is losing by at least the configured percentage. Trailing high/low metadata is not used for `stop_loss` exits.
+Called after `Execute()` or `ClosePosition()` to write a `signal_outcomes` row and return the realised P&L. This is the source of truth for the learning system and LLM reflection.
 
-Manual UI closes also use `close_position()`, but pass `approval_request_id="manual_close"` so the trade ledger is not labelled as a stop-loss.
-
-Called after `execute()` or `close_position()` to write a `SignalOutcomeModel` row. This is the source of truth for the learning system and LLM reflection.
-
-```python
-def record_closed_trade(
-    self,
-    position_id: str,
-    exit_price: float,
-    exit_reason: str = "manual",
-    closing_trade_idea_id: str = "",
-) -> None:
-    meta = self._position_meta.get(position_id, {})
-    avg_price = meta.get("avg_price_at_close")
-    size      = meta.get("size_at_close")
-    direction = meta.get("direction", "")
-    signed_size = size if direction == "long" else -size
-    pnl = signed_size * (exit_price - avg_price)
-    self._repo.save_signal_outcome(..., closing_trade_idea_id=closing_trade_idea_id)
+```go
+func (e *Engine) RecordClosedTrade(positionID string, exitPrice float64, exitReason, closingTradeIdeaID string) (float64, bool)
 ```
 
-- `closing_trade_idea_id` — the `trade_idea_id` of the SHORT signal that triggered the close. Populated only for `"auto"` (fully-automated mode) and `"manual_approve"` closes. Empty for stop-loss and manual UI closes (no signal is available in those paths).
+It returns `false` when no repository is configured or the position has not been closed. The exit price recorded is the close order's actual fill price (`ExitPriceAtClose`), falling back to the `exitPrice` argument. Missing strategy IDs are stored as `"unknown"`.
 
-This is **not** called automatically — the caller in `main.py` is responsible for calling it at the right time with the right `exit_reason`.
+- `closingTradeIdeaID` — the `trade_idea_id` of the SHORT signal that triggered the close. Populated only for `"auto"` (fully-automated mode) and `"manual_approve"` closes. Empty for stop-loss, trailing-stop, manual UI, and operator-reset closes (no signal is available in those paths).
+
+This is **not** called automatically — the caller in `internal/app` is responsible for calling it at the right time with the right `exitReason`, then passing the returned P&L to `App.recordClosedOutcome()` (risk engine, `order_records.pnl`, learner).
 
 ---
 
-## `update_mark_prices()`
+## `UpdateMarkPrices()`
 
 Called every tick from the strategy loop:
 
-```python
-def update_mark_prices(self, prices: Dict[str, float]) -> None:
-    for pid, pos in self.positions.items():
-        price = prices.get(pos.market)
-        if price is not None:
-            pnl = pos.size * (price - pos.avg_price)
-            self.positions[pid] = pos.model_copy(update={"unrealized_pnl": pnl})
+```go
+func (e *Engine) UpdateMarkPrices(prices map[string]float64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for id, pos := range e.positions {
+		if price, ok := prices[pos.Market]; ok {
+			pos.UnrealizedPnL = pos.Size * (price - pos.AvgPrice)
+			e.positions[id] = pos
+		}
+	}
+}
 ```
 
-Uses Pydantic's `model_copy(update=...)` to produce an immutable update (avoids mutating the original model directly).
+`PositionRecord` is stored by value, so the update copies the record, changes it, and writes it back.
 
 ---
 
-## `restore_from_db()`
+## `RestoreFromDB()`
 
-Called at startup to reload open positions:
+Called at start-up to reload open positions:
 
-```python
-def restore_from_db(self) -> None:
-    rows = self._repo.get_open_positions()
-    for row in rows:
-        self.positions[row.position_id] = PositionRecord(...)
-        self._position_meta[row.position_id] = {
-            "strategy_id":  row.strategy_id,
-            "direction":    row.direction,
-            "confidence":   row.signal_confidence,
-            "opened_at":    row.opened_at,
-            "market":       row.market,
-            "trade_idea_id": row.trade_idea_id or "",  # restored for signal linkage
-        }
+```go
+func (e *Engine) RestoreFromDB() error {
+	rows, err := e.repo.GetOpenPositions()
+	// ...
+	for _, row := range rows {
+		e.positions[row.PositionID] = domain.PositionRecord{ /* ... */ }
+		e.meta[row.PositionID] = &PositionMeta{
+			StrategyID:  row.StrategyID,
+			Direction:   row.Direction,
+			Confidence:  copyFloat(row.SignalConfidence),
+			OpenedAt:    openedAt,
+			Market:      row.Market,
+			TradeIdeaID: row.TradeIdeaID, // restored for signal linkage
+		}
+	}
+	return nil
+}
 ```
 
-`trade_idea_id` is now persisted to `open_positions` so the link from a position to its opening signal survives restarts. Without this, any close after a restart would produce an unlinked `signal_outcomes` row.
+`trade_idea_id` is persisted to `open_positions` so the link from a position to its opening signal survives restarts. Without this, any close after a restart would produce an unlinked `signal_outcomes` row. Entry fees and short proceeds are not persisted, so a restored position's P&L excludes its entry fee and a restored short closes against `AvgPrice × size`.
 
-The cash balance is restored separately in `main.py` via `repo.get_latest_cash()` before `restore_from_db()` is called.
+The cash balance is restored separately in `App.restoreState()` via `repo.GetLatestCash()` and `paper.Engine.SetCash()` before `RestoreFromDB()` is called.
 
 ---
 
-## `get_total_equity()`
+## `TotalEquity()`
 
-```python
-def get_total_equity(self, prices: Dict[str, float]) -> float:
-    positions_value = sum(
-        pos.size * prices.get(pos.market, pos.avg_price)
-        for pos in self.positions.values()
-    )
-    return self.cash + positions_value
+```go
+func (e *Engine) TotalEquity(prices map[string]float64) float64 {
+	positionsValue := 0.0
+	for _, pos := range e.positions {
+		price, ok := prices[pos.Market]
+		if !ok {
+			price = pos.AvgPrice
+		}
+		if pos.Size > 0 {
+			positionsValue += pos.Size * price // long: mark-to-market value
+		} else {
+			positionsValue += (pos.AvgPrice - price) * math.Abs(pos.Size) // short: unrealised P&L
+		}
+	}
+	return e.cash + positionsValue
+}
 ```
 
-Falls back to `avg_price` if no live price is available for a market.
+Falls back to `AvgPrice` if no live price is available for a market. Shorts contribute only their unrealised P&L because their sale proceeds never entered free cash.
 
 ---
 
 ## Position Reset (Admin)
 
-`POST /api/positions/reset` (paper mode only).
+`POST /api/positions/reset` calls `App.ResetPositions()`, which is refused with HTTP 403 in live mode.
 
-Before clearing anything, the endpoint iterates every open position and writes a full audit trail:
+Before clearing anything, `paper.ClosePositionsForOperatorReset()` iterates every open position and closes it through the normal accounting path:
 
-1. Sets `avg_price_at_close` and `size_at_close` in `_position_meta` so `record_closed_trade()` can proceed.
-2. Calls `paper_engine.record_closed_trade(position_id, exit_price, "operator_reset")` — writes a `signal_outcomes` row with `exit_reason = "operator_reset"`. Exit price is the last known market price, falling back to `avg_price` if no live price is cached.
-3. Calls `risk_engine.record_trade_result(pnl)` and `learner.record_outcome(...)` so the in-memory learner and drawdown tracker reflect the forced close.
+1. Calls `ClosePosition(positionID, exitPrice, CloseOptions{ApprovalRequestID: "operator_reset"})`. The exit price is the last known market price, falling back to `AvgPrice` if no live price is cached.
+2. Calls `RecordClosedTrade(positionID, order.Price, "operator_reset", "")` — writes a `signal_outcomes` row with `exit_reason = "operator_reset"`.
+3. Records the P&L with the risk engine (and persists the daily counters), stamps it on the close order (`UpdateOrderPnL`), and calls `learner.RecordOutcome(...)` so the learner and drawdown tracker reflect the forced close.
 
-After all outcomes are recorded, positions are cleared:
+After all outcomes are recorded, positions are cleared and an equity snapshot is saved:
 
-```python
-repo.clear_all_open_positions()
-paper_engine.positions.clear()
-paper_engine._position_meta.clear()
+```go
+a.repo.ClearAllOpenPositions(ctx)
+a.paper.ClearPositions() // drops positions and metadata from memory
+a.savePaperEquity(ctx, prices)
 ```
 
-This means a reset no longer produces unexplained "CLOSED" entries — every reset position has a `signal_outcomes` row visible in the Closed Trades panel and available to the LLM reflection loop.
+This means a reset never produces unexplained "CLOSED" entries — every reset position has a close order in the ledger and a `signal_outcomes` row visible in the Closed Trades panel and available to the LLM reflection loop.
 
 ---
 
@@ -311,17 +347,20 @@ This means a reset no longer produces unexplained "CLOSED" entries — every res
 For a LONG → SELL cycle:
 
 ```
-Cash paid on BUY:   fill_value + fee      = size × buy_price × (1 + slippage) × (1 + fee_rate)
-Cash received on SELL: fill_value - fee   = size × sell_price × (1 - slippage) × (1 - fee_rate)
-
-Gross P&L = size × (sell_price - buy_price)
-Net  P&L  = Gross P&L - (buy_fee + sell_fee + buy_slippage_cost + sell_slippage_cost)
+Cash paid on BUY:      fillValue + fee   = size × price × (1 + slippage) × (1 + fee_rate)
+Cash received on SELL: fillValue - fee   = size × price × (1 - slippage) × (1 - fee_rate)
 ```
 
-The `pnl` stored in `order_records` and `signal_outcomes` is computed as:
+The `pnl` stored in `order_records` and `signal_outcomes` is the realised P&L net of both fees:
 
-```python
-pnl = closing_long.size * (market_price - closing_long.avg_price)
+```go
+func realisedPnL(meta *PositionMeta) float64 {
+	signedSize := -meta.SizeAtClose
+	if meta.Direction == "long" {
+		signedSize = meta.SizeAtClose
+	}
+	return signedSize*(meta.ExitPriceAtClose-meta.AvgPriceAtClose) - meta.EntryFee - meta.ExitFeeAtClose
+}
 ```
 
-This is the gross P&L before fees. Fees are captured separately in `order_records.fee` and `fill_records.fee`.
+Both prices are actual fill prices, so slippage is already included. Fees are also recorded individually in `order_records.fee` and `fill_records.fee`. Any direction other than `"long"` is treated as a short.
