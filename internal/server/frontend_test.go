@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -260,6 +261,25 @@ func TestFrontendLayout(t *testing.T) {
 	t.Run("GIVEN strategy context WHEN markup is inspected THEN the header and tables show strategy", func(t *testing.T) {
 		mustContain(t, "index", index, "Active Strategy", "activeStrategyLabel", "_strategyLabel(",
 			`<th style="padding:6px 10px;color:var(--muted);font-weight:600;">Strategy</th>`, "this._strategyLabel(t.strategy)")
+	})
+
+	t.Run("GIVEN a signal is clicked WHEN its detail modal opens THEN the panel is centred like the other dialogs", func(t *testing.T) {
+		modal := between(t, index, "<!-- Signal Detail Modal", `<template x-if="signalModal">`)
+		mustContain(t, "signal modal", modal, `x-show="signalModal" x-cloak class="modal-backdrop"`, `class="modal-panel signal-panel"`)
+		mustContain(t, "css", css, ".modal-backdrop {\n    position: fixed;\n    inset: 0;\n    z-index: 1000;\n    display: flex;\n    align-items: center;\n    justify-content: center;",
+			".signal-panel {")
+	})
+
+	t.Run("GIVEN elements toggled by x-show WHEN shown THEN their layout does not rely on an inline display style", func(t *testing.T) {
+		// Alpine's x-show removes the inline display property when it shows an
+		// element, so an inline display:flex would silently become display:block.
+		tag := regexp.MustCompile(`<[a-z]+\b[^>]*>`)
+		inlineDisplay := regexp.MustCompile(`style="[^"]*display\s*:`)
+		for _, el := range tag.FindAllString(index, -1) {
+			if strings.Contains(el, " x-show=") && inlineDisplay.MatchString(el) {
+				t.Errorf("x-show element with an inline display style: %s", strings.Join(strings.Fields(el), " "))
+			}
+		}
 	})
 
 	t.Run("GIVEN the header LLM indicator WHEN markup is inspected THEN the dot sits in a flex container", func(t *testing.T) {

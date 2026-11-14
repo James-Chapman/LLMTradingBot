@@ -32,6 +32,8 @@ The dashboard and approvals page load `/static/styles.css`. This file contains t
 - `.chart-pair-grid` is the only content grid that may place items side by side; it is reserved for the 5-minute and 15-minute chart panes inside each market chart card.
 - `.panel`, `.panel-header`, `.panel-body`, `.responsive-table`, `.trade-table`, `.activity-list`, `.core-panel`, `.core-scroll`, `.llm-status`, and `.llm-row` standardise panel structure while preserving existing Alpine state and DOM IDs.
 - `.chart-pane` and `.equity-chart-shell` use `clamp()` so widescreen users get larger charts while mobile users avoid horizontal page scroll.
+- `.modal-backdrop` (fixed, full-screen flex box) and `.modal-panel` centre every dialog: trading settings, Settings and the signal detail (`.signal-panel`, 820 px wide).
+- Elements toggled with `x-show` must not set `display` in an inline `style`: when Alpine shows an element it removes the inline `display` property, so an inline `display:flex` turns into `display:block`. Put the layout in a CSS class instead (for example `.modal-backdrop`, `.live-indicator`).
 - `.area-charts` and `.area-news` share `--news-chart-panel-height`; Price Charts starts expanded, both panels are three times taller than the previous chart/news height, Price Charts scrolls vertically inside the panel, and the 5-minute and 15-minute panes stay side by side until the mobile breakpoint.
 
 Breakpoint coverage used for layout verification:

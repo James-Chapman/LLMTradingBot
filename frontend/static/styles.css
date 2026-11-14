@@ -947,6 +947,21 @@ body.layout-ledger-glass {
     border-radius: 12px;
 }
 
+/* Signal detail: wider than the settings dialogs to fit the vote breakdown. */
+.signal-panel {
+    width: min(820px, 96vw);
+    padding: 28px;
+}
+
+/* Header badge shown while the service worker streams live updates. */
+.live-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    color: var(--green);
+}
+
 .modal-close {
     font-size: 16px;
     color: var(--muted);

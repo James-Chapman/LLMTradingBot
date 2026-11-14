@@ -7,6 +7,14 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.9.1] — 2026-11-14
+
+### Fixed
+- **Signal detail modal centred.** Clicking a signal opened its detail modal at the left edge of the page. The modal's centring was an inline `display:flex`, which Alpine's `x-show` removes when it shows the element. It now uses the shared `.modal-backdrop` / `.modal-panel` classes, like the Settings dialogs.
+- The header's live-updates badge had the same inline-style problem and lost its icon/text spacing when shown; it now uses a `.live-indicator` class.
+
+---
+
 ## [0.9.0] — 2026-11-14
 
 ### Changed
