@@ -174,15 +174,16 @@ type Adapter interface {
 
 ### Configurable RSS Sources
 
-RSS sources are configured via `NEWS_SOURCES` in `.env` as a JSON array of `"Name::URL"` strings:
+RSS sources are the `NEWS_SOURCES` setting (dashboard → ⚙ Settings → News & alerts), one `Name::URL` entry per line:
 
 ```
-NEWS_SOURCES=["CoinDesk::https://www.coindesk.com/arc/outboundfeeds/rss/","My Feed::https://example.com/rss"]
+CoinDesk::https://www.coindesk.com/arc/outboundfeeds/rss/
+My Feed::https://example.com/rss
 ```
 
 At startup, `news.BuildRSSAdapters(settings.NewsSources)` parses each entry into an `RSSAdapter`. Invalid entries (missing `::`, empty name, or empty URL) are skipped with a warning log. A `FearGreedAdapter` is always appended automatically; it does not need a `NEWS_SOURCES` entry.
 
-To add a new RSS source, update `NEWS_SOURCES` in `.env` and restart the bot.
+To add a new RSS source, add a line to **News feeds** in the Settings dialog, save, and restart the bot.
 
 ---
 

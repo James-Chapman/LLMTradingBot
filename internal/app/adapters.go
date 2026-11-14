@@ -64,6 +64,8 @@ func (s controlStore) LoadControlState() (control.PersistedState, bool, error) {
 		DisabledStrategies: st.DisabledStrategies,
 		LiveMarkets:        st.LiveMarkets,
 		SelectedStrategy:   st.SelectedStrategy,
+		TradingMode:        st.TradingMode,
+		TradingEnvironment: st.TradingEnvironment,
 	}, true, nil
 }
 
@@ -75,6 +77,8 @@ func (s controlStore) SaveControlState(state control.PersistedState) error {
 		DisabledStrategies: state.DisabledStrategies,
 		LiveMarkets:        state.LiveMarkets,
 		SelectedStrategy:   state.SelectedStrategy,
+		TradingMode:        state.TradingMode,
+		TradingEnvironment: state.TradingEnvironment,
 	})
 }
 

@@ -212,8 +212,16 @@ var createTableStatements = []string{
 	disabled_strategies JSON,
 	selected_strategy VARCHAR,
 	live_markets JSON,
+	trading_mode VARCHAR,
+	trading_environment VARCHAR,
 	updated_at DATETIME,
 	PRIMARY KEY (id)
+)`,
+	`CREATE TABLE IF NOT EXISTS settings (
+	key VARCHAR NOT NULL,
+	value TEXT NOT NULL,
+	updated_at DATETIME,
+	PRIMARY KEY (key)
 )`,
 	`CREATE TABLE IF NOT EXISTS llm_briefings (
 	id INTEGER NOT NULL,
@@ -309,7 +317,12 @@ var columnMigrations = []struct {
 	}},
 	{"signal_outcomes", []columnDef{{"trade_idea_id", "TEXT"}, {"position_id", "TEXT"}, {"closing_trade_idea_id", "TEXT"}}},
 	{"open_positions", []columnDef{{"trade_idea_id", "TEXT"}}},
-	{"control_state", []columnDef{{"live_markets", "JSON"}, {"selected_strategy", "TEXT DEFAULT 'unknown'"}}},
+	{"control_state", []columnDef{
+		{"live_markets", "JSON"},
+		{"selected_strategy", "TEXT DEFAULT 'unknown'"},
+		{"trading_mode", "TEXT"},
+		{"trading_environment", "TEXT"},
+	}},
 }
 
 // Repository is the single gateway for all database reads and writes.

@@ -440,6 +440,8 @@ Single-row table (always `id = 1`) storing operator toggles. Written on every to
 | `disabled_strategies` | JSON | List of disabled strategy IDs |
 | `selected_strategy` | VARCHAR | Selected strategy ID |
 | `live_markets` | JSON | Markets flagged for live execution |
+| `trading_mode` | VARCHAR | Mode chosen in the web interface; NULL until first changed there (then the default, `manual`) |
+| `trading_environment` | VARCHAR | `paper` / `live` chosen in the web interface; NULL until first changed there (then the default, `paper`) |
 | `updated_at` | DATETIME | Last modification time |
 
 ---
@@ -508,7 +510,7 @@ One row per hourly reflection. Loaded at start-up by `LLMAnalyser.LoadFromDB()` 
    - `trade_ideas`: `momentum_pct`, `indicators`, `llm_*`, `news_context`, `risk_*`
    - `signal_outcomes`: `trade_idea_id`, `position_id`, `closing_trade_idea_id`
    - `open_positions`: `trade_idea_id`
-   - `control_state`: `live_markets`, `selected_strategy`
+   - `control_state`: `live_markets`, `selected_strategy`, `trading_mode`, `trading_environment`
 
 4. **Indexes** — every index is created with `CREATE INDEX IF NOT EXISTS`, skipping any whose columns are missing on a legacy table.
 

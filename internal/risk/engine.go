@@ -66,7 +66,17 @@ func NewEngine(settings config.Settings, now func() time.Time) *Engine {
 // StopLossAssumption returns the stop-loss fraction used to estimate trade loss
 // (the Python STOP_LOSS_ASSUMPTION constant, sourced from settings).
 func (e *Engine) StopLossAssumption() float64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	return e.settings.StopLossPct
+}
+
+// SetSettings applies new risk limits from the dashboard. Equity, daily loss
+// and the daily reset date are account state, not settings, so they are kept.
+func (e *Engine) SetSettings(settings config.Settings) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.settings = settings
 }
 
 // CurrentEquity returns the equity used by the risk limits.

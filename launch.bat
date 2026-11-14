@@ -19,11 +19,6 @@ if errorlevel 1 (
     exit /b 1
 )
 
-if not exist "%ROOT%.env" (
-    echo No .env found - copying .env.example to .env with safe paper/manual defaults.
-    copy "%ROOT%.env.example" "%ROOT%.env" >nul
-)
-
 echo Building tradingbot...
 pushd "%ROOT%"
 go build -o "%BIN%" ./cmd/tradingbot

@@ -39,6 +39,8 @@ type PersistedState struct {
 	DisabledStrategies []string
 	LiveMarkets        []string
 	SelectedStrategy   string
+	TradingMode        string // "" when never chosen in the web interface
+	TradingEnvironment string // "" when never chosen in the web interface
 }
 
 // Repository loads and saves the single control-state row (implemented by the
@@ -56,6 +58,8 @@ type Snapshot struct {
 	DisabledStrategies []string   `json:"disabled_strategies"`
 	SelectedStrategy   string     `json:"selected_strategy"`
 	LiveMarkets        []string   `json:"live_markets"`
+	TradingMode        string     `json:"trading_mode"`
+	TradingEnvironment string     `json:"trading_environment"`
 }
 
 // State is the operator control state. It is safe for concurrent use.
@@ -69,6 +73,8 @@ type State struct {
 	disabledStrategies map[string]bool
 	liveMarkets        map[string]bool
 	selectedStrategyID string
+	tradingMode        string
+	tradingEnvironment string
 }
 
 // NewState creates control state with defaults. A nil clock defaults to UTC now.
@@ -117,6 +123,12 @@ func (s *State) LoadFromDB() error {
 		selected = DefaultSelectedStrategy
 	}
 	s.selectedStrategyID = CanonicalStrategyID(selected)
+	s.tradingMode = stored.TradingMode
+	s.tradingEnvironment = stored.TradingEnvironment
+	if s.tradingMode != "" || s.tradingEnvironment != "" {
+		logger.Info("Control state restored — trading settings from the web interface",
+			"mode", s.tradingMode, "environment", s.tradingEnvironment)
+	}
 
 	if s.emergencyStop {
 		logger.Warn("Control state restored — emergency stop is ACTIVE")
@@ -268,6 +280,8 @@ func (s *State) Snapshot() Snapshot {
 		DisabledStrategies: sortedKeys(s.disabledStrategies),
 		SelectedStrategy:   s.selectedStrategyID,
 		LiveMarkets:        sortedKeys(s.liveMarkets),
+		TradingMode:        s.tradingMode,
+		TradingEnvironment: s.tradingEnvironment,
 	}
 }
 
@@ -283,6 +297,8 @@ func (s *State) persistLocked() {
 		DisabledStrategies: sortedKeys(s.disabledStrategies),
 		LiveMarkets:        sortedKeys(s.liveMarkets),
 		SelectedStrategy:   s.selectedStrategyID,
+		TradingMode:        s.tradingMode,
+		TradingEnvironment: s.tradingEnvironment,
 	})
 	if err != nil {
 		logger.Warn("Could not persist control state", "error", err.Error())

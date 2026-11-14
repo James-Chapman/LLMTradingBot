@@ -73,11 +73,11 @@ Live prices reach the strategy loop through the Kraken WebSocket v2 ticker chann
 | Frontend | Alpine.js + local CSS | No build step; utility styling in `/static/styles.css` |
 | Charts | Lightweight Charts (candles), Chart.js (equity) | CDN-loaded |
 | Database | SQLite via `database/sql` + `modernc.org/sqlite` | Pure Go (no cgo); one shared connection (`SetMaxOpenConns(1)`); WAL journal; schema compatible with Python-created DBs |
-| Settings | `internal/config` (`Settings` struct) | Defaults → `.env` file in the repo root → real environment variables |
+| Settings | `internal/config` (`Settings` struct + field registry) | Built-in defaults → values saved from the dashboard's Settings dialog (SQLite `settings` table, secrets DPAPI-encrypted) → start-up flags `-db -host -port -log`. No `.env`, no environment variables |
 | Exchange API | Official Kraken Go SDK `github.com/krakenfx/api-go/v2` | REST plus WebSocket v2 ticker; market data is public and key-free |
 | LLM | LM Studio (OpenAI-compatible, preferred) → remote OpenAI-compatible API (fallback) | `llm.SwitchingClient` probes and routes |
 | HTTP client | `net/http` | Used for LLM chat-completions, RSS, Fear & Greed, CoinGecko, alert webhook |
-| Logging | `log/slog` JSON handler | stdout + `LOG_FILE`; LLM components also write `llm.log` |
+| Logging | `log/slog` JSON handler | stdout + the `-log` file; LLM components also write `llm.log` |
 | Numeric compute | Go standard library (`math`) | Indicator reductions, replay metrics, learner statistics |
 
 ---
@@ -87,14 +87,12 @@ Live prices reach the strategy loop through the Kraken WebSocket v2 ticker chann
 ```text
 LLMTradingBot/
 |-- go.mod / go.sum                 Module github.com/James-Chapman/LLMTradingBot
-|-- .env.example                    Commented settings template (copy to .env)
-|-- .env                            Runtime configuration (not committed)
-|-- setup.bat                       Windows setup (Go toolchain check, .env)
+|-- setup.bat                       Windows setup (Go toolchain check, module download, build)
 |-- launch.bat                      Windows launcher (go build + run + open dashboard)
 |-- run_tests.bat                   Runs go test
 |-- docs/                           Project documentation
 |-- cmd/
-|   |-- tradingbot/main.go          Server entry point (flags -env, -frontend)
+|   |-- tradingbot/main.go          Server entry point (flags -db, -host, -port, -log, -frontend)
 |   |-- cli/main.go                 Operator CLI: status, approve, reject, run
 |   `-- backtest/main.go            Historical replay against Kraken OHLC
 |-- internal/
@@ -103,8 +101,8 @@ LLMTradingBot/
 |   |   `-- apptest/                Network-free fakes for tests
 |   |-- approval/service.go         Approval queue with TTL
 |   |-- backtest/replay.go          Historical replay engine
-|   |-- config/                     Settings struct, .env loader, currency symbols
-|   |-- control/state.go            Emergency stop, market toggles, strategy selection
+|   |-- config/                     Settings struct, defaults, dashboard field registry, currency symbols
+|   |-- control/state.go            Emergency stop, market toggles, strategy selection, trading mode/environment
 |   |-- domain/models.go            Core value types and enums
 |   |-- kraken/                     Kraken SDK wrapper: market data, live execution, retry
 |   |-- learner/learner.go          Exponential-decay performance learner
@@ -143,6 +141,8 @@ LLMTradingBot/
 
 ### Trading Mode (`TRADING_MODE`)
 
+Both can be changed at runtime from the dashboard's **Trading settings** dialog (click the PAPER/LIVE and mode badges in the header). A choice made there is saved in `control_state` and kept across restarts; a fresh database starts in manual mode on paper. See [10-approval-and-control.md](10-approval-and-control.md#trading-settings).
+
 | Mode | Behaviour |
 |---|---|
 | `manual` | Signals are generated and displayed in the dashboard. No orders are placed. |
@@ -158,7 +158,7 @@ LLMTradingBot/
 
 The risk engine, one-position-per-pair rule, and cash sufficiency checks are enforced identically in both environments.
 
-Order routing is per market, gated by environment: an order goes to `kraken.ExecutionEngine` only when `TRADING_ENVIRONMENT=live` **and** the market is toggled live in the dashboard (`control_state.live_markets`). Every other order goes to `paper.Engine`; in the paper environment a live-toggled market trades on paper and logs a warning. `TRADING_ENVIRONMENT` also selects where the dashboard's equity and cash come from (paper engine or Kraken balances) and whether live orders are reconciled.
+Order routing is per market, gated by environment: an order goes to `kraken.ExecutionEngine` only when the environment is `live` **and** the market is toggled live in the dashboard (`control_state.live_markets`). Every other order goes to `paper.Engine`; in the paper environment a live-toggled market trades on paper and logs a warning. The environment also selects where the dashboard's equity and cash come from (paper engine or Kraken balances) and whether live orders are reconciled.
 
 ---
 

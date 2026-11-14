@@ -188,6 +188,8 @@ type State struct {
 	disabledStrategies map[string]bool
 	liveMarkets        map[string]bool
 	selectedStrategyID string // DefaultSelectedStrategy = "basic_and_llm_strategy"
+	tradingMode        string // manual | semi_automated | fully_automated
+	tradingEnvironment string // paper | live
 }
 ```
 
@@ -202,7 +204,7 @@ func (s *State) LoadFromDB() error
 
 `SetRepo()` is called once at startup (from `app.New`) to inject the repository. `LoadFromDB()` is then called to restore the last persisted state. If the `control_state` table has no row (first ever startup), defaults apply: everything enabled, no live markets, no emergency stop. Legacy strategy IDs (`basic_trend`, `llm_only`) are mapped to their canonical IDs on load.
 
-Every state-mutating method (`ActivateStop`, `Resume`, `DisableMarket`, `EnableMarket`, `SetMarketLive`, `DisableStrategy`, `EnableStrategy`, `SelectStrategy`) calls the private `persistLocked()` helper while holding the lock, so saves are applied in change order. Save failures are logged and non-fatal.
+Every state-mutating method (`ActivateStop`, `Resume`, `DisableMarket`, `EnableMarket`, `SetMarketLive`, `DisableStrategy`, `EnableStrategy`, `SelectStrategy`, `SetTradingMode`, `SetTradingEnvironment`) calls the private `persistLocked()` helper while holding the lock, so saves are applied in change order. Save failures are logged and non-fatal.
 
 ---
 
@@ -253,7 +255,33 @@ for _, m := range a.activeMarkets {
 
 Disabling a market removes it from the tick's price fetch and strategy evaluation, and the OHLC loop stops refreshing its candles. Any existing open position for that market is **not** automatically closed.
 
-`IsMarketLive()` decides whether an approved or automated order for that market goes to the Kraken live engine or the paper engine. The live flag only takes effect when `TRADING_ENVIRONMENT=live`; in the paper environment the order is executed on paper and a warning is logged.
+`IsMarketLive()` decides whether an approved or automated order for that market goes to the Kraken live engine or the paper engine. The live flag only takes effect when the trading environment is `live`; in the paper environment the order is executed on paper and a warning is logged.
+
+---
+
+### Trading Settings
+
+```go
+func (s *State) SeedTradingSettings(mode, environment string) // fills only unset values
+func (s *State) TradingMode() string
+func (s *State) TradingEnvironment() string
+func (s *State) SetTradingMode(mode string) error               // refuses unknown modes
+func (s *State) SetTradingEnvironment(environment string) error // refuses unknown values
+```
+
+The trading mode and paper/live environment live in control state (`internal/control/trading.go`), so they can change while the bot runs and survive restarts. At start-up `app.New` calls `LoadFromDB()` first, then `SeedTradingSettings(settings.TradingMode, settings.TradingEnvironment)`: values saved from the web interface win, and the defaults (`manual`, `paper`) only fill values that were never saved. This happens before `restoreState`, which needs the effective environment to choose the equity source.
+
+`App.TradingMode()` / `App.TradingEnvironment()` (`internal/app/trading_settings.go`) are the only way the app reads these values; nothing reads `settings.TradingMode` / `settings.TradingEnvironment` after start-up. The strategy loop reads the mode once per signal, so a change mid-tick cannot split one signal across two modes.
+
+`App.SetTradingMode()` and `App.SetTradingEnvironment(environment, confirmation)` add the safety rules on top:
+
+| Change | Requirement |
+|---|---|
+| Any mode change | Valid mode. The dashboard shows a confirm dialog first. |
+| Paper → live | `confirmation == "LIVE"` (`app.LiveConfirmation`) **and** Kraken API key + secret in use. Keys saved in Settings but not loaded yet (no restart since) are refused with a message to restart first. |
+| Live → paper | None server-side. The dashboard shows a confirm dialog first. |
+
+Each change writes a `warn` activity entry ("Trading mode changed: manual → semi_automated") and bumps the dashboard version. Changing mode does not clear pending approvals; approvals queued in semi-automated mode can still be approved or rejected.
 
 ---
 
@@ -291,6 +319,8 @@ type Snapshot struct {
 	DisabledStrategies []string   `json:"disabled_strategies"` // sorted
 	SelectedStrategy   string     `json:"selected_strategy"`
 	LiveMarkets        []string   `json:"live_markets"`        // sorted
+	TradingMode        string     `json:"trading_mode"`
+	TradingEnvironment string     `json:"trading_environment"`
 }
 ```
 

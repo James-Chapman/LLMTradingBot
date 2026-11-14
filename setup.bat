@@ -6,8 +6,6 @@ title Kraken Bot — Setup
 ::  Paths (all relative to this script's location)
 :: ─────────────────────────────────────────────────────────────────────────────
 set ROOT=%~dp0
-set ENV_FILE=%ROOT%.env
-set ENV_TEMPLATE=%ROOT%.env.example
 set DOCS_DIR=%ROOT%docs
 
 :: ─────────────────────────────────────────────────────────────────────────────
@@ -30,7 +28,7 @@ echo.
 :: ═════════════════════════════════════════════════════════════════════════════
 ::  STEP 1 — Check Go
 :: ═════════════════════════════════════════════════════════════════════════════
-echo %BOLD%[1/4] Checking prerequisites...%RESET%
+echo %BOLD%[1/3] Checking prerequisites...%RESET%
 echo.
 
 where go >nul 2>&1
@@ -49,7 +47,7 @@ echo.
 :: ═════════════════════════════════════════════════════════════════════════════
 ::  STEP 2 — Download modules
 :: ═════════════════════════════════════════════════════════════════════════════
-echo %BOLD%[2/4] Downloading Go modules...%RESET%
+echo %BOLD%[2/3] Downloading Go modules...%RESET%
 echo.
 pushd "%ROOT%"
 go mod download
@@ -64,7 +62,7 @@ echo.
 :: ═════════════════════════════════════════════════════════════════════════════
 ::  STEP 3 — Build
 :: ═════════════════════════════════════════════════════════════════════════════
-echo %BOLD%[3/4] Building tradingbot...%RESET%
+echo %BOLD%[3/3] Building tradingbot...%RESET%
 echo.
 go build -o bin\tradingbot.exe ./cmd/tradingbot
 if errorlevel 1 (
@@ -82,27 +80,14 @@ popd
 echo %GREEN%  ✓  Built bin\tradingbot.exe and bin\tradingbot-cli.exe%RESET%
 echo.
 
-:: ═════════════════════════════════════════════════════════════════════════════
-::  STEP 4 — Create .env if missing
-:: ═════════════════════════════════════════════════════════════════════════════
-echo %BOLD%[4/4] Configuring environment...%RESET%
-echo.
-if exist "%ENV_FILE%" (
-    echo %GREEN%  ✓  .env already exists — leaving it untouched%RESET%
-) else (
-    copy "%ENV_TEMPLATE%" "%ENV_FILE%" >nul
-    echo %GREEN%  ✓  Created %ENV_FILE% from .env.example%RESET%
-    echo %YELLOW%  ℹ  Default config: paper trading, manual mode%RESET%
-)
-echo.
-
 echo %BOLD%%GREEN%╔══════════════════════════════════════════════╗%RESET%
 echo %BOLD%%GREEN%║              Setup complete!                 ║%RESET%
 echo %BOLD%%GREEN%╚══════════════════════════════════════════════╝%RESET%
 echo.
 echo %BOLD%Configuration%RESET%
-echo   Edit settings:   %CYAN%%ENV_FILE%%RESET%
-echo   Key options:     TRADING_MODE, STARTING_CAPITAL, FIXED_MARKETS, LMSTUDIO_MODEL
+echo   Edit settings:   the Settings button on the dashboard
+echo   First start:     paper trading, manual mode, built-in defaults
+echo   Start-up flags:  tradingbot.exe -db -host -port -log  (see -h)
 echo.
 echo %BOLD%LLM%RESET%
 echo   Start LM Studio's local server (Developer tab) on port 1234 and load a model.

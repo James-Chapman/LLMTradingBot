@@ -578,7 +578,7 @@ The JSON parser also handles common LLM formatting mistakes: Markdown code fence
 
 ## Logging
 
-The `llm_client` and `llm_analyser` loggers write to the main log and also to `llm.log` beside `LOG_FILE`, so LLM traffic can be tailed separately. Full prompts and raw responses are logged at `DEBUG` level only.
+The `llm_client` and `llm_analyser` loggers write to the main log and also to `llm.log` beside the main log file (start-up flag `-log`), so LLM traffic can be tailed separately. Full prompts and raw responses are logged at `DEBUG` level only.
 
 ---
 

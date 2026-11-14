@@ -57,6 +57,10 @@ func SetupLogging(level, logFile string) (func(), error) {
 	}, nil
 }
 
+// SetLevel changes the minimum level of every logger (DEBUG/INFO/WARNING/ERROR).
+// The bot starts logging at INFO and switches once its saved settings load.
+func SetLevel(level string) { levelVar.Set(ParseLevel(level)) }
+
 // ParseLevel converts DEBUG/INFO/WARNING/ERROR to a slog level (INFO default).
 func ParseLevel(level string) slog.Level {
 	switch strings.ToUpper(level) {

@@ -26,13 +26,14 @@ import (
 	"github.com/James-Chapman/LLMTradingBot/internal/paper"
 	"github.com/James-Chapman/LLMTradingBot/internal/portfolio"
 	"github.com/James-Chapman/LLMTradingBot/internal/risk"
+	"github.com/James-Chapman/LLMTradingBot/internal/secret"
 	"github.com/James-Chapman/LLMTradingBot/internal/storage"
 	"github.com/James-Chapman/LLMTradingBot/internal/strategy"
 	"github.com/James-Chapman/LLMTradingBot/internal/universe"
 )
 
 // Version is the application version reported by /health and the dashboard.
-const Version = "0.6.1"
+const Version = "0.8.0"
 
 // Name is the application display name.
 const Name = "Kraken Trading Bot"
@@ -137,6 +138,7 @@ type Options struct {
 	HTTPClient      *http.Client // alert webhook client (default 5 s timeout)
 	Now             func() time.Time
 	Intervals       Intervals
+	SecretBox       secret.Box // seals API keys in the settings table (nil: Windows DPAPI)
 }
 
 // App owns every piece of runtime state main.py kept in module globals.
@@ -145,7 +147,14 @@ type Options struct {
 // themselves safe for concurrent use. mu is never held across network,
 // LLM or exchange calls.
 type App struct {
+	// settings is what the running components use; saved is what the
+	// database holds. They differ only for restart-required settings changed
+	// since start-up. Both are guarded by settingsMu; read through cfg().
+	settingsMu      sync.RWMutex
 	settings        config.Settings
+	saved           config.Settings
+	saveMu          sync.Mutex // serialises UpdateSettings
+	box             secret.Box
 	currencySymbol  string
 	repo            *storage.Repository
 	logger          *slog.Logger
@@ -203,6 +212,8 @@ func NewWithOptions(ctx context.Context, settings config.Settings, repo *storage
 	}
 	a := &App{
 		settings:        settings,
+		saved:           settings,
+		box:             opts.SecretBox,
 		currencySymbol:  config.CurrencySymbol(settings.BaseCurrency),
 		repo:            repo,
 		logger:          opts.Logger,
@@ -245,12 +256,13 @@ func NewWithOptions(ctx context.Context, settings config.Settings, repo *storage
 		a.logger.Warn("Could not reload pending approvals", "error", err.Error())
 	}
 
-	if err := a.restoreState(ctx); err != nil {
-		return nil, err
-	}
-
 	if err := a.control.LoadFromDB(); err != nil {
 		a.logger.Warn("Could not restore control state", "error", err.Error())
+	}
+	a.seedTradingSettings()
+
+	if err := a.restoreState(ctx); err != nil {
+		return nil, err
 	}
 	a.analyser.LoadFromDB(ctx)
 	a.activity.SeedFromStore()
@@ -273,6 +285,9 @@ func (a *App) applyDefaults() {
 	}
 	if a.httpClient == nil {
 		a.httpClient = &http.Client{Timeout: 5 * time.Second}
+	}
+	if a.box == nil {
+		a.box = secret.Default()
 	}
 	if a.strategyFactory == nil {
 		a.strategyFactory = strategy.All
@@ -359,7 +374,7 @@ func (a *App) restoreState(ctx context.Context) error {
 		}
 		// In live mode the display values come from Kraken, never from a
 		// (possibly depleted) paper balance.
-		if s.TradingEnvironment == string(domain.EnvPaper) {
+		if a.TradingEnvironment() == string(domain.EnvPaper) {
 			a.currentEquity = history[len(history)-1].Equity
 			if lastCash != nil {
 				a.currentCash = *lastCash
@@ -406,7 +421,7 @@ func (a *App) restoreState(ctx context.Context) error {
 // probeLLM checks LLM availability once at start-up (main.py's lifespan).
 func (a *App) probeLLM(ctx context.Context) {
 	if a.llmStatus() == "not_configured" {
-		a.logger.Warn("No LLM configured — set LMSTUDIO_BASE_URL or OPENAI_BASE_URL in .env")
+		a.logger.Warn("No LLM configured — set the LM Studio or fallback LLM URL under Settings → LLM")
 	}
 	if !a.llmClient.Probe(ctx) {
 		a.logger.Warn("Both LLM backends unavailable — LLM features disabled")
@@ -506,7 +521,7 @@ func (a *App) strategyByID(id string) strategy.Strategy {
 
 // llmStatus returns not_configured, available or unavailable for the dashboard.
 func (a *App) llmStatus() string {
-	if a.settings.LMStudioBaseURL == "" && a.settings.OpenAIBaseURL == "" {
+	if s := a.cfg(); s.LMStudioBaseURL == "" && s.OpenAIBaseURL == "" {
 		return "not_configured"
 	}
 	if a.llmClient.Available() {

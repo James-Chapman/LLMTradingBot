@@ -452,8 +452,31 @@ Displays all articles published in the **last 12 hours** in a responsive grid of
 | Resume trading | `resumeBot()` | `POST /api/control/resume` |
 | Toggle market | `toggleMarket(market)` | `POST /api/control/markets/{market}/toggle` |
 | Select strategy | `selectStrategy(id)` | `POST /api/control/strategies/{id}/select` |
+| Change trading mode | `setTradingMode(mode)` (confirm dialog first) | `POST /api/control/trading-mode` |
+| Switch paper / live | `setTradingEnvironment(env)` (typed `LIVE` to go live, confirm dialog to go back to paper) | `POST /api/control/trading-environment` |
+| Load settings | `loadSettings()` (on start-up and when the dialog opens) | `GET /api/settings` |
+| Save settings | `saveSettings()` (confirm dialog listing every change first) | `POST /api/settings` |
 | Close position | `closePosition(positionIdFull)` | `POST /api/positions/{position_id_full}/close` |
 | Reset positions | `resetPositions()` | `POST /api/positions/reset` |
+
+The PAPER/LIVE and mode badges in the header are one button that opens the **Trading settings** dialog (`#trading-settings`, `openTradingSettings()`). Nothing changes on a single click: each mode button and the Paper button ask `confirm()` first, and the Live button opens a red panel whose "Switch to live" button stays disabled until `LIVE` is typed. A refused change (for example missing Kraken API keys) shows the API's `detail` message in the dialog (`tradingSettingsError`). The mode panel's **Change trading mode** button opens the same dialog.
+
+### Settings Dialog
+
+**⚙ Settings** in the header opens `#settings-dialog` (`openSettings()`), which reloads `GET /api/settings` and fills a draft. Fields are grouped by their `group` (`settingsGroups` getter), and each is tagged *applies now* or *restart*, plus *saved — restart to apply* while `restart_pending`.
+
+| Kind | Input |
+|---|---|
+| `string`, `int`, `float` | Text input (the server validates numbers and ranges) |
+| `bool` | Checkbox |
+| `list` | Textarea, one entry per line; sent as a JSON array |
+| secret | `type="password"`, `autocomplete="new-password"`, never pre-filled. Placeholder *Set — type to replace* / *Not set*; **Clear** / **Keep** toggles clearing it |
+
+State: `settingsFields` (from the API), `settingsDraft` (key → edited text; `''` for an untouched secret), `settingsClear` (secrets to clear), `settingsRestartRequired`, `settingsError`, `settingsNotice`, `settingsSaving`. `settingsChanges()` compares the draft with the saved values and returns only the changed keys; the footer shows the count, **Undo changes** (`resetSettingsDraft()`) and **Save…**.
+
+`saveSettings()` asks `confirm()` with one line per change (`label: old → new (applies now|after restart)`; secrets only say *new value* or *cleared*) before posting. A refusal shows the API's `detail` (`settingsError`); success shows which keys are in use now, reloads the settings and refreshes the dashboard. Closing the dialog with unsaved changes asks before discarding them.
+
+While `settingsRestartRequired` is non-empty, a `.restart-banner` under the header lists the keys: *Settings saved. Restart the bot to apply: …*.
 
 All actions call `loadDashboard()` on completion to immediately reflect the new state. `closePosition` additionally refreshes the trade ledger and closed trades panels.
 

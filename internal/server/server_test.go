@@ -19,6 +19,7 @@ import (
 	"github.com/James-Chapman/LLMTradingBot/internal/domain"
 	"github.com/James-Chapman/LLMTradingBot/internal/news"
 	"github.com/James-Chapman/LLMTradingBot/internal/observability"
+	"github.com/James-Chapman/LLMTradingBot/internal/secret"
 	"github.com/James-Chapman/LLMTradingBot/internal/storage"
 	"github.com/James-Chapman/LLMTradingBot/internal/strategy"
 )
@@ -84,6 +85,7 @@ func newHarness(t *testing.T, cfg harnessConfig) *harness {
 		Activity:        observability.NewActivityLog(200),
 		Logger:          slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		Intervals:       app.Intervals{Strategy: time.Hour, ReflectionDelay: time.Hour, OHLCRefresh: time.Hour},
+		SecretBox:       secret.Reversible(),
 	})
 	if err != nil {
 		t.Fatalf("NewWithOptions: %v", err)

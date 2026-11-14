@@ -93,9 +93,9 @@ func (a *App) bootStrategyLoop(ctx context.Context) {
 
 	a.activity.Info(
 		fmt.Sprintf("Bot started - %d markets active", len(active)),
-		fmt.Sprintf("Markets: %s | Mode: %s", strings.Join(active, ", "), a.settings.TradingMode),
+		fmt.Sprintf("Markets: %s | Mode: %s", strings.Join(active, ", "), a.TradingMode()),
 	)
-	a.sendAlert(ctx, "bot_started", map[string]any{"markets": active, "mode": a.settings.TradingMode})
+	a.sendAlert(ctx, "bot_started", map[string]any{"markets": active, "mode": a.TradingMode()})
 	a.logger.Info("Active markets confirmed", "markets", active)
 	a.market.Start(active, a.cacheMarketSnapshot)
 }
@@ -275,7 +275,7 @@ func (a *App) strategyTick(ctx context.Context) (skipped bool, err error) {
 	}
 
 	// Reconcile pending live orders every 2 ticks (~60 s) so fills show promptly.
-	if tick%2 == 0 && a.settings.TradingEnvironment == string(domain.EnvLive) {
+	if tick%2 == 0 && a.TradingEnvironment() == string(domain.EnvLive) {
 		a.live.ReconcilePendingOrders(ctx)
 	}
 
@@ -312,7 +312,7 @@ func (a *App) strategyTick(ctx context.Context) (skipped bool, err error) {
 // buildMarketData assembles the per-market strategy context for this tick.
 func (a *App) buildMarketData(ordered []pricedSnapshot, histories map[string][]float64, ohlc5, ohlc15 map[string][]domain.Candle) map[string]strategy.MarketData {
 	briefing := a.analyser.LatestBriefing()
-	lookback := a.settings.MomentumLookbackTicks + 1
+	lookback := a.cfg().MomentumLookbackTicks + 1
 	out := make(map[string]strategy.MarketData, len(ordered))
 	for _, ps := range ordered {
 		hist := histories[ps.symbol]
@@ -353,7 +353,7 @@ func (a *App) checkStops(ctx context.Context, prices map[string]float64) {
 			lossPct = (pos.AvgPrice - marketPrice) / pos.AvgPrice
 		}
 		stopHit := a.paper.StopLossTriggered(pos.PositionID, marketPrice, a.risk.StopLossAssumption())
-		trailHit := !stopHit && a.paper.TrailingStopTriggered(pos.PositionID, marketPrice, a.settings.TrailingStopPct)
+		trailHit := !stopHit && a.paper.TrailingStopTriggered(pos.PositionID, marketPrice, a.cfg().TrailingStopPct)
 		if !stopHit && !trailHit {
 			continue
 		}
@@ -482,6 +482,9 @@ func (a *App) handleIdea(ctx context.Context, idea *domain.TradeIdea, marketData
 		Thesis: idea.Thesis, RiskApproved: decision.Approved, RiskReason: decision.Reason, TradeIdeaID: idea.ID,
 	}
 
+	// Read the mode once so a change from the web interface mid-signal cannot
+	// split this signal across two modes.
+	mode := a.TradingMode()
 	switch {
 	case !decision.Approved:
 		a.activity.Warn(fmt.Sprintf("Signal %s %s %s - risk blocked", idea.Market, label, pct0(idea.Confidence)), decision.Reason)
@@ -503,10 +506,10 @@ func (a *App) handleIdea(ctx context.Context, idea *domain.TradeIdea, marketData
 			a.sendAlert(ctx, "daily_loss_limit_hit", map[string]any{"market": idea.Market, "reason": decision.Reason})
 		}
 
-	case a.settings.TradingMode == string(domain.ModeManual):
+	case mode == string(domain.ModeManual):
 		a.activity.Info(fmt.Sprintf("Signal %s %s %s - visible in dashboard (manual mode, no action taken)", idea.Market, label, pct0(idea.Confidence)), idea.Thesis)
 
-	case a.settings.TradingMode == string(domain.ModeSemiAutomated):
+	case mode == string(domain.ModeSemiAutomated):
 		// One position per pair: skip when a same-direction position is open.
 		if a.sameDirectionOpen(idea.Market, direction) {
 			a.activity.Info(fmt.Sprintf("Signal %s %s - skipped (position already open)", idea.Market, label), idea.Thesis)
@@ -516,11 +519,11 @@ func (a *App) handleIdea(ctx context.Context, idea *domain.TradeIdea, marketData
 			a.activity.Info(fmt.Sprintf("Signal %s %s - skipped (approval already pending)", idea.Market, label), idea.Thesis)
 		}
 
-	case a.settings.TradingMode == string(domain.ModeFullyAutomated):
+	case mode == string(domain.ModeFullyAutomated):
 		// Gate 1: the configurable confidence threshold.
-		if idea.Confidence < a.settings.MinSignalConfidence {
+		if idea.Confidence < a.cfg().MinSignalConfidence {
 			a.activity.Info(fmt.Sprintf("Signal %s %s skipped - confidence %s below threshold %s",
-				idea.Market, label, pct0(idea.Confidence), pct0(a.settings.MinSignalConfidence)), "")
+				idea.Market, label, pct0(idea.Confidence), pct0(a.cfg().MinSignalConfidence)), "")
 			return SignalView{}, false, nil
 		}
 		marketPrice := prices[idea.Market]
@@ -564,7 +567,7 @@ func sizeInBase(idea domain.TradeIdea, decision domain.RiskDecision, equity, mar
 // in the paper environment a live-toggled market trades on paper instead.
 func (a *App) executeIntent(ctx context.Context, intent domain.ExecutionIntent, idea domain.TradeIdea, marketPrice float64) (domain.OrderRecord, string, bool) {
 	marketLive := a.control.IsMarketLive(idea.Market)
-	isLive := marketLive && a.settings.TradingEnvironment == string(domain.EnvLive)
+	isLive := marketLive && a.TradingEnvironment() == string(domain.EnvLive)
 	if marketLive && !isLive {
 		a.logger.Warn("Live order blocked by paper environment", "market", idea.Market, "trade_idea_id", idea.ID)
 		a.activity.Warn(
@@ -630,8 +633,8 @@ func mergeSignals(fresh, existing []SignalView) []SignalView {
 // accountSnapshot returns cash, equity and position value for the active
 // environment: Kraken balances in live mode, the paper engine otherwise.
 func (a *App) accountSnapshot(ctx context.Context, prices map[string]float64) portfolio.EquitySnapshot {
-	if a.settings.TradingEnvironment == string(domain.EnvLive) {
-		snap, err := a.live.GetAccountSnapshot(ctx, a.settings.BaseCurrency)
+	if a.TradingEnvironment() == string(domain.EnvLive) {
+		snap, err := a.live.GetAccountSnapshot(ctx, a.cfg().BaseCurrency)
 		if err == nil && snap != nil {
 			return portfolio.EquitySnapshot{Cash: snap.Cash, Equity: snap.Equity, PositionsValue: snap.PositionsValue}
 		}
@@ -909,7 +912,7 @@ func (a *App) refreshOHLC(ctx context.Context, market string, interval int) {
 // sendAlert posts a JSON event to the configured webhook, if any. Failures
 // are logged and never interrupt trading.
 func (a *App) sendAlert(ctx context.Context, eventType string, payload map[string]any) {
-	if a.settings.AlertWebhookURL == "" {
+	if a.cfg().AlertWebhookURL == "" {
 		return
 	}
 	body := map[string]any{"event_type": eventType, "timestamp": portfolio.FormatISO(a.now())}
@@ -919,7 +922,7 @@ func (a *App) sendAlert(ctx context.Context, eventType string, payload map[strin
 	raw, err := json.Marshal(body)
 	if err == nil {
 		var req *http.Request
-		req, err = http.NewRequestWithContext(ctx, http.MethodPost, a.settings.AlertWebhookURL, bytes.NewReader(raw))
+		req, err = http.NewRequestWithContext(ctx, http.MethodPost, a.cfg().AlertWebhookURL, bytes.NewReader(raw))
 		if err == nil {
 			req.Header.Set("Content-Type", "application/json")
 			var resp *http.Response

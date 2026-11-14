@@ -5,15 +5,20 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/signal"
 	"time"
 
+	"github.com/James-Chapman/LLMTradingBot/internal/app"
 	"github.com/James-Chapman/LLMTradingBot/internal/backtest"
 	"github.com/James-Chapman/LLMTradingBot/internal/config"
 	"github.com/James-Chapman/LLMTradingBot/internal/kraken"
+	"github.com/James-Chapman/LLMTradingBot/internal/secret"
+	"github.com/James-Chapman/LLMTradingBot/internal/storage"
 	"github.com/James-Chapman/LLMTradingBot/internal/strategy"
 )
 
@@ -27,6 +32,7 @@ type cliArgs struct {
 	source          string
 	requireProfit   bool
 	report          string
+	db              string
 }
 
 // parseArgs parses the command-line flags (same names and defaults as the Python CLI).
@@ -40,8 +46,24 @@ func parseArgs() cliArgs {
 	flag.StringVar(&a.source, "source", "kraken", "candle source (only kraken is supported)")
 	flag.BoolVar(&a.requireProfit, "require-profit", false, "fail unless the replay is profitable")
 	flag.StringVar(&a.report, "report", "", "report path (default docs/backtests/<date>_<market>_<strategy>_<hours>h.json)")
+	flag.StringVar(&a.db, "db", config.Defaults().DatabasePath, "bot database to read saved settings from (defaults are used if it does not exist)")
 	flag.Parse()
 	return a
+}
+
+// loadSettings returns the settings saved in the bot's database at dbPath,
+// or the built-in defaults when that file does not exist (it is never
+// created here).
+func loadSettings(ctx context.Context, dbPath string, box secret.Box) (config.Settings, []string, error) {
+	if _, err := os.Stat(dbPath); errors.Is(err, fs.ErrNotExist) {
+		return config.Defaults(), nil, nil
+	}
+	repo, err := storage.Open(dbPath)
+	if err != nil {
+		return config.Settings{}, nil, err
+	}
+	defer repo.Close()
+	return app.LoadSettings(ctx, repo, box, config.Bootstrap{})
 }
 
 // run executes the replay, writes the report and prints the summary.
@@ -49,9 +71,12 @@ func run(ctx context.Context, a cliArgs) error {
 	if a.source != "kraken" {
 		return fmt.Errorf("unsupported --source %q (choose kraken)", a.source)
 	}
-	settings, err := config.Load(".env")
+	settings, warnings, err := loadSettings(ctx, a.db, secret.Default())
 	if err != nil {
 		return fmt.Errorf("load settings: %w", err)
+	}
+	for _, w := range warnings {
+		fmt.Fprintln(os.Stderr, "warning: saved setting ignored:", w)
 	}
 	adapter := kraken.NewMarketAdapter(kraken.MarketAdapterOptions{RESTURL: settings.KrakenRESTURL})
 

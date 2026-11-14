@@ -26,7 +26,7 @@ The bot is designed to run safely in paper mode first. Live trading is supported
 |---|---|
 | Backend | Go 1.27, standard-library `net/http` server, background loops as goroutines |
 | Database | SQLite via `modernc.org/sqlite` (pure Go, no CGO) |
-| Settings | `.env` file in the repository root, overridden by real environment variables |
+| Settings | Edited in the dashboard's Settings dialog and stored in the SQLite database (API keys encrypted with Windows DPAPI); start-up flags `-db -host -port -log` |
 | Exchange | Official Kraken Go SDK `github.com/krakenfx/api-go/v2` (REST + WebSocket v2) |
 | LLM | LM Studio's OpenAI-compatible API (primary), optional remote OpenAI-compatible fallback |
 | Logging | `log/slog` JSON to stdout, `trading_bot.log` and `llm.log` |
@@ -45,7 +45,6 @@ The bot is designed to run safely in paper mode first. Live trading is supported
 |                            kraken, llm, news, storage, ...)
 |-- frontend/                Dashboard HTML, approvals page, service worker
 |-- docs/                    Detailed project documentation
-|-- .env.example             Configuration template
 |-- go.mod                   Go module definition
 |-- setup.bat                Windows first-time setup
 |-- launch.bat               Windows launcher
@@ -70,7 +69,7 @@ On Windows, from the project root:
 .\setup.bat
 ```
 
-`setup.bat` checks for Go, downloads the modules, builds `bin\tradingbot.exe` and `bin\tradingbot-cli.exe`, and creates `.env` from `.env.example` if it does not exist.
+`setup.bat` checks for Go, downloads the modules, and builds `bin\tradingbot.exe` and `bin\tradingbot-cli.exe`.
 
 Manually, on any platform:
 
@@ -78,17 +77,13 @@ Manually, on any platform:
 go mod download
 go build -o bin/tradingbot ./cmd/tradingbot
 go build -o bin/tradingbot-cli ./cmd/cli
-cp .env.example .env
 ```
 
-Then edit `.env` for your local settings. For a first run, keep:
+There is no configuration file. The first start uses safe defaults (paper trading, manual mode); change settings in the dashboard with **⚙ Settings** in the header. Each save is confirmed first, and the dialog shows which changes apply immediately and which need a restart.
 
-```ini
-TRADING_MODE=manual
-TRADING_ENVIRONMENT=paper
-```
+If you want LLM analysis, open LM Studio, load a model, and start its local server (Developer tab) on port 1234. Leave **LM Studio model** blank to use the first loaded model. Optionally set a **Fallback LLM** URL, model and API key for a remote endpoint that is used only while LM Studio is unreachable.
 
-If you want LLM analysis, open LM Studio, load a model, and start its local server (Developer tab) on port 1234. Leave `LMSTUDIO_MODEL` blank to use the first loaded model. Optionally set `OPENAI_BASE_URL`, `OPENAI_MODEL` and `OPENAI_API_KEY` for a remote fallback that is used only while LM Studio is unreachable. The full configuration reference is in [docs/01-configuration.md](docs/01-configuration.md).
+Upgrading from 0.7 or earlier: `.env` is no longer read; re-enter your settings in the dashboard. The full configuration reference is in [docs/01-configuration.md](docs/01-configuration.md).
 
 ## Run
 
@@ -98,7 +93,7 @@ On Windows, use the launcher from the project root:
 .\launch.bat
 ```
 
-The launcher checks for Go, creates `.env` from the template if it is missing, builds `bin\tradingbot.exe`, starts the bot in its own window, and opens the dashboard.
+The launcher checks for Go, builds `bin\tradingbot.exe`, starts the bot in its own window, and opens the dashboard.
 
 Manual startup is also supported:
 
@@ -106,10 +101,11 @@ Manual startup is also supported:
 go run ./cmd/tradingbot
 ```
 
-The server accepts `-env` (settings file, default `.env`) and `-frontend` (dashboard directory, default `frontend`). The CLI offers the same start-up with mode overrides:
+The server's only flags are `-db` (database, default `./trading_bot.db`), `-host` (default `127.0.0.1`), `-port` (default `8000`), `-log` (default `trading_bot.log`) and `-frontend` (default `frontend`). No environment variables are read. The CLI can start the bot with the same flags, or ask a running bot for its status:
 
 ```powershell
-.\bin\tradingbot-cli.exe --mode semi_automated --environment paper run
+.\bin\tradingbot-cli.exe -port 8000 run
+.\bin\tradingbot-cli.exe status
 ```
 
 After startup, open:
@@ -162,9 +158,9 @@ Testing conventions and coverage notes are in [docs/13-testing.md](docs/13-testi
 Live trading sends real orders to Kraken. Before enabling it:
 
 - Run in paper mode long enough to validate behavior.
-- Review risk settings in `.env`.
-- Add Kraken credentials only to your local `.env`.
-- Start with `TRADING_MODE=manual`, then move to `semi_automated` before considering `fully_automated`.
-- Set `TRADING_ENVIRONMENT=live`, then enable live execution one market at a time with the dashboard's per-market live toggle. In paper mode the toggle never sends real orders.
+- Review the risk settings (⚙ Settings → Risk & sizing).
+- Enter the Kraken API key and secret under ⚙ Settings → Kraken, then restart the bot. They are stored encrypted for your Windows user and never shown again.
+- Start in manual mode, then move to semi-automated before considering fully automated. Change the mode in the dashboard's **Trading settings** dialog (click the mode badge); every change asks for confirmation and is saved across restarts.
+- Switch to live in the same dialog: you must type `LIVE`, and the switch is refused until Kraken API keys are saved and loaded (restart after saving them). Then enable live execution one market at a time with the per-market live toggle (`POST /api/control/markets/{market}/live-toggle`; no dashboard control yet). In paper mode the toggle never sends real orders.
 
-Never commit `.env`, database files, API keys, or logs containing secrets.
+Never commit database files (they hold your settings), API keys, or logs containing secrets.

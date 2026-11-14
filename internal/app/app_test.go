@@ -15,6 +15,7 @@ import (
 	"github.com/James-Chapman/LLMTradingBot/internal/llm"
 	"github.com/James-Chapman/LLMTradingBot/internal/news"
 	"github.com/James-Chapman/LLMTradingBot/internal/observability"
+	"github.com/James-Chapman/LLMTradingBot/internal/secret"
 	"github.com/James-Chapman/LLMTradingBot/internal/storage"
 	"github.com/James-Chapman/LLMTradingBot/internal/strategy"
 )
@@ -59,22 +60,54 @@ func newEnv(t *testing.T, mutate func(*config.Settings), seed func(*storage.Repo
 		strategy: &apptest.Strategy{StrategyID: strategy.BasicID},
 		logs:     &bytes.Buffer{},
 	}
-	a, err := NewWithOptions(context.Background(), settings, repo, Options{
-		Market:          env.market,
-		Live:            env.live,
+	env.app = env.newApp(t, settings)
+	return env
+}
+
+// restart replaces the app with a fresh one over the same database, as if the
+// bot were restarted with the given settings.
+func (e *testEnv) restart(t *testing.T, mutate func(*config.Settings)) {
+	t.Helper()
+	settings := testSettings()
+	if mutate != nil {
+		mutate(&settings)
+	}
+	e.app = e.newApp(t, settings)
+}
+
+// newApp builds an app over the env's database and fakes.
+func (e *testEnv) newApp(t *testing.T, settings config.Settings) *App {
+	t.Helper()
+	a, err := NewWithOptions(context.Background(), settings, e.repo, Options{
+		Market:          e.market,
+		Live:            e.live,
 		LLM:             &apptest.LLM{},
 		Universe:        apptest.Universe{Markets: settings.FixedMarkets},
 		NewsAdapters:    []news.Adapter{},
-		StrategyFactory: func(config.Settings) []strategy.Strategy { return []strategy.Strategy{env.strategy} },
+		StrategyFactory: func(config.Settings) []strategy.Strategy { return []strategy.Strategy{e.strategy} },
 		Activity:        observability.NewActivityLog(200),
-		Logger:          slog.New(slog.NewJSONHandler(env.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		Logger:          slog.New(slog.NewJSONHandler(e.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		SecretBox:       secret.Reversible(),
 	})
 	if err != nil {
 		t.Fatalf("NewWithOptions: %v", err)
 	}
-	env.app = a
-	a.control.SelectStrategy(env.strategy.StrategyID)
-	return env
+	a.control.SelectStrategy(e.strategy.StrategyID)
+	return a
+}
+
+// restartFromDB restarts the app with settings loaded from the database, as
+// cmd/tradingbot does, so saved dashboard settings take effect.
+func (e *testEnv) restartFromDB(t *testing.T) {
+	t.Helper()
+	loaded, _, err := LoadSettings(context.Background(), e.repo, secret.Reversible(), config.Bootstrap{})
+	if err != nil {
+		t.Fatalf("LoadSettings: %v", err)
+	}
+	base := testSettings()
+	// Keep the test harness's network-free endpoints; everything else comes from the DB.
+	loaded.NewsSources, loaded.LMStudioBaseURL, loaded.OpenAIBaseURL = base.NewsSources, base.LMStudioBaseURL, base.OpenAIBaseURL
+	e.app = e.newApp(t, loaded)
 }
 
 // seedPrices stores n flat price ticks per market so warm-up is already satisfied.

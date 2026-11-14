@@ -167,7 +167,7 @@ After risk evaluation (`handleIdea`). A rejected decision is logged, stored in `
 2. Check if a same-direction position already exists → skip silently
 3. Skip with a warning if there is no live price
 4. Compute position size (`sizeInBase`): `decision.ProposedSize / marketPrice`, or `PositionSizingProposal * equity / marketPrice` when the risk engine proposed no amount
-5. Route the intent (`executeIntent`): `kraken.ExecutionEngine.Execute()` if `TRADING_ENVIRONMENT=live` and the market is flagged live, otherwise `paper.Engine.Execute()` (a live-flagged market in the paper environment logs a warning and trades on paper)
+5. Route the intent (`executeIntent`): `kraken.ExecutionEngine.Execute()` if the environment is `live` and the market is flagged live, otherwise `paper.Engine.Execute()` (a live-flagged market in the paper environment logs a warning and trades on paper)
 6. If paper, SHORT and filled with a position ID: `paper.RecordClosedTrade`, then `recordClosedOutcome` (risk result, order P&L, learner)
 7. If paper and filled: persist an equity snapshot immediately so a crash before the next tick does not lose the trade
 
@@ -302,9 +302,11 @@ Failed or empty fetches leave the previous cache entry in place. The `GET /api/o
 `cmd/tradingbot` runs these steps before any request handler or loop starts:
 
 ```
-1.  config.Load(envFile) + Validate()   → settings from defaults, .env and environment
-2.  observability.SetupLogging()        → JSON logs to stdout + LOG_FILE (+ llm.log)
-3.  storage.Open(DatabasePath)          → opens SQLite and creates/migrates the schema
+1.  parseFlags()                        → -db, -host, -port, -log, -frontend
+2.  observability.SetupLogging("INFO")  → JSON logs to stdout + the -log file (+ llm.log)
+3.  storage.Open(-db)                   → opens SQLite and creates/migrates the schema
+    app.LoadSettings() + Validate()     → defaults → saved dashboard settings → flags
+    observability.SetLevel(LOG_LEVEL)   → DEBUG when the DEBUG switch is on
 4.  app.New(ctx, settings, repo):
     a. learner.New()
     b. llm.NewSwitchingClientFromSettings() → LM Studio primary + remote OpenAI-compatible fallback

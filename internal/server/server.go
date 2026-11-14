@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -87,9 +88,15 @@ func (h *handler) routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/control/emergency-stop", h.emergencyStop)
 	mux.HandleFunc("POST /api/control/resume", h.resume)
 	mux.HandleFunc("POST /api/control/markets/{market...}", h.marketAction)
+	mux.HandleFunc("POST /api/control/trading-mode", h.setTradingMode)
+	mux.HandleFunc("POST /api/control/trading-environment", h.setTradingEnvironment)
 	mux.HandleFunc("POST /api/control/strategies/{strategy_id}/toggle", h.toggleStrategy)
 	mux.HandleFunc("POST /api/control/strategies/{strategy_id}/select", h.selectStrategy)
 	mux.HandleFunc("POST /api/control/strategies/reload", h.reloadStrategies)
+
+	// Settings
+	mux.HandleFunc("GET /api/settings", h.getSettings)
+	mux.HandleFunc("POST /api/settings", h.updateSettings)
 
 	// Misc
 	mux.HandleFunc("GET /api/learning", h.learning)
@@ -256,6 +263,65 @@ func (h *handler) emergencyStop(w http.ResponseWriter, r *http.Request) {
 // resume clears the emergency stop.
 func (h *handler) resume(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, h.app.Resume())
+}
+
+// Request body limits for the endpoints that accept JSON.
+const (
+	maxTradingBody  = 1 << 10  // trading mode / environment
+	maxSettingsBody = 64 << 10 // dashboard settings
+)
+
+// decodeBody decodes a JSON request body of at most limit bytes into dst,
+// writing a 400 and returning false when it is missing or malformed.
+func decodeBody(w http.ResponseWriter, r *http.Request, limit int64, dst any) bool {
+	if err := json.NewDecoder(io.LimitReader(r.Body, limit)).Decode(dst); err != nil {
+		writeDetail(w, http.StatusBadRequest, "Request body must be JSON")
+		return false
+	}
+	return true
+}
+
+// setTradingMode changes the trading mode: {"mode": "manual|semi_automated|fully_automated"}.
+func (h *handler) setTradingMode(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Mode string `json:"mode"`
+	}
+	if !decodeBody(w, r, maxTradingBody, &body) {
+		return
+	}
+	result, err := h.app.SetTradingMode(body.Mode)
+	h.writeResult(w, r, result, err)
+}
+
+// setTradingEnvironment switches paper/live: {"environment": "paper|live",
+// "confirmation": "LIVE"}. The confirmation is only required for live.
+func (h *handler) setTradingEnvironment(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Environment  string `json:"environment"`
+		Confirmation string `json:"confirmation"`
+	}
+	if !decodeBody(w, r, maxTradingBody, &body) {
+		return
+	}
+	result, err := h.app.SetTradingEnvironment(body.Environment, body.Confirmation)
+	h.writeResult(w, r, result, err)
+}
+
+// getSettings lists every dashboard setting. Secret values are never sent.
+func (h *handler) getSettings(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, h.app.SettingsView())
+}
+
+// updateSettings saves changed settings: {"changes": {"KEY": "value", ...}}.
+func (h *handler) updateSettings(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Changes map[string]string `json:"changes"`
+	}
+	if !decodeBody(w, r, maxSettingsBody, &body) {
+		return
+	}
+	result, err := h.app.UpdateSettings(r.Context(), body.Changes)
+	h.writeResult(w, r, result, err)
 }
 
 // marketAction handles /api/control/markets/{market}/toggle and /live-toggle.

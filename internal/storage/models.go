@@ -301,6 +301,10 @@ type ControlState struct {
 	DisabledStrategies []string `json:"disabled_strategies"`
 	LiveMarkets        []string `json:"live_markets"`
 	SelectedStrategy   string   `json:"selected_strategy"`
+	// TradingMode and TradingEnvironment are the values chosen in the web
+	// interface; empty means never chosen, so the default applies.
+	TradingMode        string `json:"trading_mode"`
+	TradingEnvironment string `json:"trading_environment"`
 }
 
 // LLMBriefing is a stored LLM market briefing.

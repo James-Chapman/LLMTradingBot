@@ -27,7 +27,7 @@ cd C:\dev\LLMTradingBot
 .\setup.bat
 ```
 
-`setup.bat` checks that Go is on `PATH`, runs `go mod download`, builds `bin\tradingbot.exe` (from `./cmd/tradingbot`) and `bin\tradingbot-cli.exe` (from `./cmd/cli`), and creates `.env` from `.env.example` if it does not exist yet. An existing `.env` is left untouched.
+`setup.bat` checks that Go is on `PATH`, runs `go mod download`, builds `bin\tradingbot.exe` (from `./cmd/tradingbot`) and `bin\tradingbot-cli.exe` (from `./cmd/cli`), There is no configuration file to create: settings live in the database and are edited in the dashboard.
 
 The equivalent manual steps on any platform:
 
@@ -35,38 +35,25 @@ The equivalent manual steps on any platform:
 go mod download
 go build -o bin/tradingbot ./cmd/tradingbot
 go build -o bin/tradingbot-cli ./cmd/cli
-cp .env.example .env
 ```
 
-### 3. Edit `.env`
+### 3. Settings
 
-`.env` lives in the repository root. Real environment variables override values in `.env`. The template's defaults are safe (paper trading, manual mode). Minimum viable configuration for paper trading:
+The first start uses safe built-in defaults: paper trading, manual mode, €500 starting capital, BTC/EUR and ETH/EUR, LM Studio at `http://localhost:1234/v1`. After starting the bot, open **⚙ Settings** in the dashboard to change anything (markets, risk limits, LLM endpoints, Kraken keys, news feeds). Use the PAPER/mode badges for the trading mode. Full reference: `docs/01-configuration.md`.
 
-```ini
-TRADING_MODE=semi_automated
-TRADING_ENVIRONMENT=paper
-STARTING_CAPITAL=500.0
-FIXED_MARKETS=["BTC/EUR","ETH/EUR"]
-
-LMSTUDIO_BASE_URL=http://localhost:1234/v1
-LMSTUDIO_MODEL=
-
-DATABASE_PATH=./trading_bot.db
-```
-
-List-valued settings such as `FIXED_MARKETS` are JSON arrays; a plain comma-separated list is also accepted. Full configuration reference: `docs/01-configuration.md`.
+Upgrading from 0.7 or earlier: `.env` is no longer read. Re-enter your settings in the dashboard.
 
 ### 4. Configure an LLM backend
 
-The primary backend is LM Studio's OpenAI-compatible server. In LM Studio, open the Developer tab, start the server on port 1234 and load a model. Leave `LMSTUDIO_MODEL` blank to use the first model LM Studio reports as loaded, or set it to a model ID from `GET /v1/models`.
+The primary backend is LM Studio's OpenAI-compatible server. In LM Studio, open the Developer tab, start the server on port 1234 and load a model. Leave **LM Studio model** (Settings → LLM) blank to use the first model LM Studio reports as loaded, or set it to a model ID from `GET /v1/models`.
 
-Optionally, set `OPENAI_BASE_URL`, `OPENAI_MODEL` and `OPENAI_API_KEY` to a remote OpenAI-compatible endpoint. It is used only while LM Studio is unreachable; the bot switches back to LM Studio when it returns.
+Optionally, set the **Fallback LLM** URL, model and API key (Settings → LLM) to a remote OpenAI-compatible endpoint. It is used only while LM Studio is unreachable; the bot switches back to LM Studio when it returns.
 
 The bot starts without an LLM backend; LLM features are disabled until one is reachable.
 
 ### 5. Start the LLM server
 
-Start LM Studio's server before the bot and confirm the base URL matches `LMSTUDIO_BASE_URL`. If it starts later, the bot picks it up on the next news cycle (every 5 minutes).
+Start LM Studio's server before the bot and confirm the base URL matches **LM Studio URL** (`LMSTUDIO_BASE_URL`). If it starts later, the bot picks it up on the next news cycle (every 5 minutes).
 
 ---
 
@@ -78,7 +65,7 @@ On Windows, the preferred path is to run the repository launcher from `C:\dev\LL
 .\launch.bat
 ```
 
-The launcher checks for Go, copies `.env.example` to `.env` if `.env` is missing, builds `bin\tradingbot.exe`, starts it in its own console window, waits three seconds and opens the dashboard in a browser.
+The launcher checks for Go, builds `bin\tradingbot.exe`, starts it in its own console window, waits three seconds and opens the dashboard in a browser.
 
 From the project root, you can also run the server directly:
 
@@ -96,27 +83,30 @@ Flags:
 
 | Flag | Default | Purpose |
 |------|---------|---------|
-| `-env` | `.env` | Path to the settings file |
+| `-db` | `./trading_bot.db` | SQLite database (trades, control state and every dashboard setting) |
+| `-host` | `127.0.0.1` | Bind address (`0.0.0.0` for LAN access) |
+| `-port` | `8000` | HTTP port (1–65535) |
+| `-log` | `trading_bot.log` | Log file; `llm.log` is written beside it |
 | `-frontend` | `frontend` | Directory holding `index.html`, `approvals.html`, `sw.js` and `static/` |
 
-Both defaults are relative to the working directory, so start the bot from the repository root (`launch.bat` does this).
+The defaults are relative to the working directory, so start the bot from the repository root (`launch.bat` does this). `-h` prints the flags. No environment variables are read.
 
 The operator CLI can also start the bot. It looks for `tradingbot.exe` next to itself or on `PATH`:
 
 ```powershell
 .\bin\tradingbot-cli.exe run
-.\bin\tradingbot-cli.exe --mode semi_automated --environment paper run
+.\bin\tradingbot-cli.exe -db data\bot.db -port 9000 run
 ```
 
-`--mode` and `--environment` override `TRADING_MODE` and `TRADING_ENVIRONMENT` for that run. The CLI's other commands are `status` (prints the effective configuration) and `approve ID` / `reject ID`, which call the running bot's approval API.
+The CLI takes `-host`, `-port`, `-log` and `-db`; `run` passes them through to `tradingbot`. The other commands talk to the running bot at `-host`/`-port`: `status` prints its version, mode, environment, equity and cash (from `/api/dashboard`), and `approve ID` / `reject ID` call the approval API. If the bot is not running they print *Cannot reach bot at …* and exit 1. The trading mode and environment are changed in the dashboard only.
 
 Stop the bot with Ctrl+C. It shuts down gracefully: HTTP requests get up to 10 seconds to finish, and the background loops and any in-flight briefing are waited for.
 
 **What happens on startup:**
 
-1. Settings are loaded from `.env` and the environment, and validated.
-2. Logging is set up (stdout, `LOG_FILE`, and `llm.log`).
-3. The database is opened (SQLite file created if absent; schema migrations applied).
+1. Logging is set up at INFO (stdout, the `-log` file, and `llm.log`).
+2. The database is opened (SQLite file created if absent; schema migrations applied).
+3. Settings are loaded: built-in defaults, then the values saved from the dashboard, then the start-up flags. A saved value that no longer parses (or a secret that cannot be decrypted) is skipped with a `Saved setting ignored` warning. The log level then switches to `LOG_LEVEL`.
 4. Pending approvals, risk rejections, equity history and the latest cash balance are restored.
 5. Open positions and the daily risk counters are restored from the database.
 6. The news cache is seeded from the database (and marked as already briefed).
@@ -152,7 +142,7 @@ See `docs/13-testing.md` for the coverage map and test-writing rules.
 
 ## Trading Modes
 
-Set via `TRADING_MODE` in `.env` (or the CLI's `--mode` override). The mode is read-only on the dashboard.
+Change the mode in the dashboard: click the mode badge in the header to open **Trading settings**, pick a mode and confirm. The choice is saved and survives restarts. A fresh database starts in manual mode.
 
 | Mode | Behaviour |
 |------|-----------|
@@ -180,7 +170,7 @@ Start in `manual` mode to observe signal quality before enabling execution.
 
 ### Log Files
 
-The bot writes structured JSON logs (Go `log/slog`) to stdout and to `trading_bot.log` (configurable via `LOG_FILE`). Records from the LLM client and analyser are also written to `llm.log` in the same directory as `LOG_FILE`, so LLM traffic can be followed on its own. Useful for forensic analysis after unexpected behaviour.
+The bot writes structured JSON logs (Go `log/slog`) to stdout and to `trading_bot.log` (start-up flag `-log`). Records from the LLM client and analyser are also written to `llm.log` in the same directory as that file, so LLM traffic can be followed on its own. Useful for forensic analysis after unexpected behaviour.
 
 ```powershell
 # Tail the log files
@@ -194,10 +184,10 @@ Log level is configurable via `LOG_LEVEL` (`DEBUG`, `INFO`, `WARNING`, `ERROR`; 
 
 ## Managing Markets
 
-Markets are defined in `FIXED_MARKETS` in `.env`. To add a new market:
+Markets are the **Fixed markets** setting (`FIXED_MARKETS`). To add a new market:
 
-1. Add the symbol to `FIXED_MARKETS` (e.g., `FIXED_MARKETS=["BTC/EUR","ETH/EUR","SOL/EUR"]`).
-2. Restart the bot.
+1. Open **⚙ Settings → Markets**, add the symbol on its own line (e.g. `SOL/EUR`) and save.
+2. Restart the bot (the dashboard shows a restart banner until you do).
 3. On startup, `ValidateSymbols()` checks Kraken recognises the symbol. Invalid symbols are dropped with a warning.
 
 To temporarily disable a market without restarting: use the **Disable** button on the dashboard Markets panel. Re-enable without restart using the **Enable** button. The toggle is persisted and survives restarts.
@@ -314,19 +304,16 @@ curl -X POST http://127.0.0.1:8000/api/control/resume
 
 **Warning:** Live trading sends real orders to Kraken with real funds. Ensure thorough paper trading validation before switching.
 
-1. Set Kraken API credentials in `.env`:
+1. Open **⚙ Settings → Kraken**, enter the API key and secret, save, and restart the bot. The keys are encrypted with Windows DPAPI for your Windows user and are never shown again (the dialog only says whether they are set).
 
-```ini
-KRAKEN_API_KEY=your_key_here
-KRAKEN_API_SECRET=your_secret_here
-TRADING_ENVIRONMENT=live
-```
+2. In the dashboard, open **Trading settings** (click the PAPER badge), choose **Live — real money**, type `LIVE` and click **Switch to live**. The switch is refused if the API keys are missing, or were saved but the bot has not been restarted since.
+3. Start in **Manual** mode to observe signals without execution.
+4. Promote to **Semi-automated** for human-gated execution.
+5. Promote to **Fully automated** only after extended validation.
 
-2. Start with `TRADING_MODE=manual` to observe signals without execution.
-3. Promote to `semi_automated` for human-gated execution.
-4. Promote to `fully_automated` only after extended validation.
+To go back, choose **Paper** in the same dialog and confirm. The choice is saved, so a restart keeps the last environment chosen in the dashboard.
 
-The risk engine still runs before live execution. With `TRADING_ENVIRONMENT=live`, per-market live toggles route that market to the Kraken `ExecutionEngine` (`internal/kraken/execution.go`), which submits Kraken `AddOrder` requests through the official Go SDK and records the returned transaction ID in the trade ledger. The engine refuses orders when the API key or secret is missing. Markets without the live flag continue to use paper execution, so you can promote one market at a time. In the paper environment the live toggles are ignored for execution (orders stay on paper and a warning is logged). With `TRADING_ENVIRONMENT=live`, cash and equity on the dashboard come from Kraken balances and pending live orders are reconciled every two ticks.
+The risk engine still runs before live execution. In the live environment, per-market live toggles route that market to the Kraken `ExecutionEngine` (`internal/kraken/execution.go`), which submits Kraken `AddOrder` requests through the official Go SDK and records the returned transaction ID in the trade ledger. The engine refuses orders when the API key or secret is missing. Markets without the live flag continue to use paper execution, so you can promote one market at a time. Per-market live toggles have no dashboard control yet; set them with `POST /api/control/markets/{market}/live-toggle`. In the paper environment the live toggles are ignored for execution (orders stay on paper and a warning is logged). In the live environment, cash and equity on the dashboard come from Kraken balances and pending live orders are reconciled every two ticks.
 
 Live orders are submitted as Kraken spot market orders unless the `ExecutionIntent` carries a limit price. Live fills and balances remain exchange-owned; local paper positions are not mutated by live orders.
 
@@ -341,7 +328,7 @@ The strategy loop runs every 30 seconds (the `Intervals.Strategy` default in `in
 ### LLM response time
 
 If LLM calls are too slow, either:
-- Increase `LMSTUDIO_TIMEOUT` (default 60 s) or `OPENAI_TIMEOUT` (default 30 s) in `.env`.
+- Increase `LMSTUDIO_TIMEOUT` (default 60 s) or `OPENAI_TIMEOUT` (default 30 s) in Settings → LLM (restart needed).
 - Load a smaller/faster model in LM Studio.
 - Lower `LLM_ONLY_MAX_CONCURRENCY` if parallel per-market calls overload the local server.
 - Disable LLM features by clearing `LMSTUDIO_BASE_URL` and `OPENAI_BASE_URL`.
@@ -350,7 +337,7 @@ After a timeout or transport failure, the LLM client opens a circuit breaker bef
 
 ### Stop-loss sensitivity
 
-`STOP_LOSS_PCT` is a fraction of the entry value (code default `0.05`; `.env.example` sets `0.07`). Reduce it to `0.03` for tighter stop-losses (more frequent closures, smaller losses). Increase it to `0.08` for wider stops (less frequent, larger losses).
+`STOP_LOSS_PCT` is a fraction of the entry value (default `0.05`) and applies as soon as it is saved. Reduce it to `0.03` for tighter stop-losses (more frequent closures, smaller losses). Increase it to `0.08` for wider stops (less frequent, larger losses).
 
 Stop-losses are measured against the entry price and only close positions that are losing by at least this percentage. Retracements from a peak are handled separately by `TRAILING_STOP_PCT`.
 
@@ -416,15 +403,23 @@ For strategies that use the LLM, the indicator warm-up is not used. Instead the 
 
 ### "Both LLM backends unavailable — LLM features disabled"
 
-Neither LM Studio nor the remote fallback answered the startup probe. Check that LM Studio's server is running with a model loaded and that `LMSTUDIO_BASE_URL` is correct. If no backend is configured at all, the log says "No LLM configured — set LMSTUDIO_BASE_URL or OPENAI_BASE_URL in .env". The bot continues without LLM confidence adjustment — signals use the base strategy confidence only — and re-probes LM Studio on every news cycle.
+Neither LM Studio nor the remote fallback answered the startup probe. Check that LM Studio's server is running with a model loaded and that `LMSTUDIO_BASE_URL` is correct. If no backend is configured at all, the log says "No LLM configured — set the LM Studio or fallback LLM URL under Settings → LLM". The bot continues without LLM confidence adjustment — signals use the base strategy confidence only — and re-probes LM Studio on every news cycle.
 
 ### `'go' is not recognized` / "Go was not found on PATH"
 
 Go is not installed or not on `PATH`. Install Go 1.27 or newer from https://go.dev/dl/, open a new terminal, and run `setup.bat` again.
 
+### `'tlocal' is not recognized` (or `'EM'`, `'M'`) when running a `.bat` script
+
+The script has Unix (LF) line endings, and `cmd.exe` misparses LF-only batch files, cutting the start off lines such as `setlocal` and `REM`. The repo's `.gitattributes` (`*.bat text eol=crlf`) makes git check the scripts out with CRLF; if a copy was saved with LF by an editor, run `git checkout -- launch.bat setup.bat run_tests.bat` to restore CRLF. `TestWindowsScriptsUseCRLF` (`cmd/tradingbot/scripts_test.go`) fails if any script loses its CRLF endings.
+
+### `launch.bat` reports "build failed" while the bot is running
+
+Windows locks a running executable, so `go build -o bin	radingbot.exe` cannot overwrite it. Close the "Kraken Bot" window (or stop `tradingbot.exe`) and run `launch.bat` again.
+
 ### "Daily loss limit reached"
 
-The bot has lost more than `MAX_DAILY_LOSS_PERCENT` (default 5%) of equity in the current UTC day. All new trades are blocked until midnight UTC when the limit resets. The daily counters are persisted, so a restart does not reset them. The limit can be raised in `.env` if appropriate.
+The bot has lost more than `MAX_DAILY_LOSS_PERCENT` (default 5%) of equity in the current UTC day. All new trades are blocked until midnight UTC when the limit resets. The daily counters are persisted, so a restart does not reset them. The limit can be raised in Settings → Risk & sizing if appropriate; it applies immediately.
 
 ### "Position already open for X - one position per pair"
 

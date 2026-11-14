@@ -7,7 +7,7 @@ This is a trading bot software project to trade crypto currencies
 - Language: Go 1.27 (module github.com/James-Chapman/LLMTradingBot); entry points in cmd/, packages in internal/.
 - Web framework: net/http ServeMux (Go 1.22+ method/wildcard patterns), background loops as goroutines with context cancellation.
 - Database: SQLite via database/sql + modernc.org/sqlite (pure Go, no CGO; single connection, WAL).
-- Settings: internal/config — .env file in the repo root, overridden by environment variables.
+- Settings: internal/config — managed in the dashboard (Settings dialog) and stored in the SQLite `settings` table; secrets DPAPI-encrypted (internal/secret). Start-up flags -db -host -port -log. No .env, no environment variables.
 - Exchange API: official Kraken Go SDK github.com/krakenfx/api-go/v2 (REST + WebSocket v2; order placement only in live mode with API keys).
 - LLM: LM Studio (local, OpenAI-compatible REST at localhost:1234/v1) as primary; optional remote OpenAI-compatible endpoint as fallback.
 - HTTP client: net/http — LLM endpoints, news feeds, alerts.

@@ -62,8 +62,28 @@ The suite intentionally checks stable behaviour rather than internal implementat
 - Backtest replay: deterministic 48-hour replay behaviour plus drawdown, trade stats, and candle resampling metrics.
 - Learner: no adjustment before enough samples, confidence boost after wins, confidence reduction after losses, rolling win rate, P&L percentiles, and concurrent use.
 - Storage: schema creation, migration of legacy (Python-created) databases, retention trimming, the trade ledger, and time handling.
-- App and server: startup restore, strategy-tick gates and trading modes (including the guard that keeps live-toggled markets on paper while `TRADING_ENVIRONMENT=paper`), background-loop error handling, every HTTP endpoint's status codes and JSON shapes, CORS, and the frontend pages.
-- CLI: argument parsing, status output and approve/reject calls.
+- App and server: startup restore, strategy-tick gates and trading modes (including the guard that keeps live-toggled markets on paper in the paper environment), background-loop error handling, every HTTP endpoint's status codes and JSON shapes, CORS, and the frontend pages.
+- Trading settings from the web interface: persistence across restarts (saved choice beats the defaults), the typed `LIVE` confirmation and API-key check for going live, the HTTP endpoints, and the dashboard's confirm/typed-confirm wiring (`internal/app/trading_settings_test.go`, `internal/server/trading_settings_test.go`, `internal/server/frontend_trading_test.go`, plus storage and control tests).
+- Windows scripts: every `.bat` file in the repo root uses CRLF line endings and `.gitattributes` keeps them that way (`cmd/tradingbot/scripts_test.go`).
+- Dashboard-managed settings (0.8.0):
+  - Registry: every key listed once, secret and live flags, text parse/read-back per kind, refused values leave the setting unchanged, `EffectiveLogLevel` (`internal/config/settings_test.go`).
+  - Secrets: seal/open round trip and the `sealed:` prefix, plus DPAPI on Windows (`internal/secret`).
+  - Storage: settings save/load and upsert (`internal/storage/settings_test.go`).
+  - Risk: `SetSettings` keeps equity and today's loss (`internal/risk/settings_test.go`).
+  - App (`internal/app/settings_test.go`):
+    - `.env` and environment variables are ignored; a bad stored value falls back with a warning.
+    - Updates are all-or-nothing; secrets are sealed, never shown in the view, and can be cleared.
+    - A live change affects the next tick; `restart_required` is reported.
+    - Saved Kraken keys allow live only after a restart.
+  - Server: `GET`/`POST /api/settings`, the 400 cases, and secrets never appearing in `GET` (`internal/server/settings_test.go`).
+  - Frontend: the dialog markup contract (`internal/server/frontend_settings_test.go`).
+  - Logging: `SetLevel` (`internal/observability/logging_test.go`).
+- Start-up flags and scripts (`cmd/tradingbot/flags_test.go`):
+  - Flag defaults and parsing.
+  - `-env` and out-of-range ports are refused.
+  - No `.bat` mentions `.env`, and `.env.example` is gone.
+- CLI: argument parsing, `status` from the running bot's `/api/dashboard`, removed `--config`/`--mode`/`--environment` flags exit 2, start-up flags passed through by `run`, and approve/reject calls.
+- Backtest: defaults without a database, saved settings with one (`cmd/backtest/settings_test.go`).
 
 ## BDD Style
 

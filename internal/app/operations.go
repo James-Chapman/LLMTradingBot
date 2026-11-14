@@ -33,7 +33,7 @@ func statusError(status int, detail string) error {
 }
 
 // Settings returns the settings the app was built with.
-func (a *App) Settings() config.Settings { return a.settings }
+func (a *App) Settings() config.Settings { return a.cfg() }
 
 // CurrencySymbol returns the display symbol of the base currency.
 func (a *App) CurrencySymbol() string { return a.currencySymbol }
@@ -203,9 +203,9 @@ func (a *App) Dashboard() DashboardView {
 	}
 
 	return DashboardView{
-		Mode:                 a.settings.TradingMode,
-		Environment:          a.settings.TradingEnvironment,
-		BaseCurrency:         a.settings.BaseCurrency,
+		Mode:                 a.TradingMode(),
+		Environment:          a.TradingEnvironment(),
+		BaseCurrency:         a.cfg().BaseCurrency,
 		CurrencySymbol:       a.currencySymbol,
 		Equity:               fmt.Sprintf("%.2f", equity),
 		Cash:                 fmt.Sprintf("%.2f", cash),
@@ -230,17 +230,17 @@ func (a *App) Dashboard() DashboardView {
 // the dashboard failed.
 func (a *App) FallbackDashboard() map[string]any {
 	return map[string]any{
-		"mode":            a.settings.TradingMode,
-		"environment":     a.settings.TradingEnvironment,
-		"base_currency":   a.settings.BaseCurrency,
+		"mode":            a.TradingMode(),
+		"environment":     a.TradingEnvironment(),
+		"base_currency":   a.cfg().BaseCurrency,
 		"currency_symbol": a.currencySymbol,
-		"equity":          fmt.Sprintf("%.2f", a.settings.StartingCapital),
+		"equity":          fmt.Sprintf("%.2f", a.cfg().StartingCapital),
 		"markets":         []any{},
 		"signals":         []any{},
 		"positions":       []any{},
 		"approvals":       []any{},
 		"equity_history": []portfolio.EquityPoint{{
-			Timestamp: portfolio.FormatISO(a.now()), Equity: a.settings.StartingCapital,
+			Timestamp: portfolio.FormatISO(a.now()), Equity: a.cfg().StartingCapital,
 		}},
 		"risk_rejections": []any{},
 		"activity":        nonNilActivity(a.activity.Recent(activityShown)),
@@ -305,7 +305,7 @@ func (a *App) SelectStrategy(strategyID string) (string, error) {
 
 // ReloadStrategies rebuilds the strategy instances from settings.
 func (a *App) ReloadStrategies() []string {
-	fresh := a.strategyFactory(a.settings)
+	fresh := a.strategyFactory(a.cfg())
 	ids := make([]string, 0, len(fresh))
 	for _, s := range fresh {
 		ids = append(ids, s.ID())
@@ -457,7 +457,7 @@ func (a *App) ClosePosition(ctx context.Context, positionID string) (map[string]
 // ResetPositions closes and logs every open paper position, then clears
 // them from memory and the database. Refused in live mode.
 func (a *App) ResetPositions(ctx context.Context) (int, error) {
-	if a.settings.TradingEnvironment == string(domain.EnvLive) {
+	if a.TradingEnvironment() == string(domain.EnvLive) {
 		return 0, statusError(http.StatusForbidden, "Position reset is not allowed in live mode")
 	}
 	prices := a.pricesCopy()

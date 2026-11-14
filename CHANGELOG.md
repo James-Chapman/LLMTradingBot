@@ -7,6 +7,66 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.8.0] — 2026-11-14
+
+### Removed
+- **`.env` and environment variables.** The bot no longer reads a `.env` file (root or `backend/`) or any environment variable, and `.env.example` is deleted. Existing `.env` files are ignored, and nothing is imported from them: the first start of 0.8.0 uses built-in defaults. Re-enter your settings, including the Kraken API keys, in the dashboard.
+- `tradingbot -env`, and the CLI's `--config`, `--mode` and `--environment` flags (they now exit with a usage error). The trading mode and environment are changed in the dashboard only.
+- `setup.bat` and `launch.bat` no longer create `.env`.
+
+### Added
+- **Settings dialog.** A **⚙ Settings** button in the dashboard header opens a dialog with every setting, grouped (Risk & sizing, Signals, Markets, Kraken, LLM, News & alerts, Advanced).
+  - Save lists every change in a confirmation first, so a stray click changes nothing.
+  - Lists are edited one entry per line.
+  - Closing with unsaved changes asks before discarding them.
+- **Settings stored in the database.** Values live in a new SQLite `settings` table; a key never saved uses the built-in default.
+  - A saved value that no longer parses is skipped with a `Saved setting ignored` warning, so the bot still starts.
+- **Encrypted, write-only secrets.** Kraken, LM Studio and fallback-LLM API keys are encrypted with Windows DPAPI for the current Windows user and stored as `sealed:…`.
+  - The API and dashboard only report whether a secret is set; the value is never returned.
+  - Secrets can be replaced or cleared.
+- **Apply live where possible.** Risk, sizing, signal-threshold, momentum, LLM-only concurrency and alert-webhook settings take effect on save.
+  - The risk engine keeps its equity and today's loss counters.
+  - Strategies are rebuilt.
+  - Other settings are used after a restart. Until then the dashboard shows a "Restart the bot to apply" banner and marks each pending field.
+- `GET /api/settings` and `POST /api/settings` (`{"changes": {...}}`). Every value is validated before anything is written, and a bad value saves nothing (400, naming the key).
+- **Start-up flags** `tradingbot -db -host -port -log` (defaults `./trading_bot.db`, `127.0.0.1`, `8000`, `trading_bot.log`) for the settings needed before the database opens.
+- The backtest takes `-db` and uses the settings saved there, or the defaults if the file does not exist.
+- The `DEBUG` setting now does something: it forces DEBUG-level logging.
+
+### Changed
+- `tradingbot-cli status` now asks the running bot (`/api/dashboard`) and prints its version, mode, environment, equity and cash. `run` passes `-db -host -port -log` through to the bot.
+- Going live checks the Kraken keys the bot is using. Keys saved but not yet loaded give "Kraken API keys were saved but are not in use yet: restart the bot, then switch to live".
+- The mode panel's "set `TRADING_MODE` in `.env`" hint is replaced by a **Change trading mode** button.
+
+---
+
+## [0.7.0] — 2026-11-14
+
+### Added
+- **Change trading mode and paper/live from the dashboard.** The PAPER/LIVE and mode badges in the header open a Trading settings dialog. Every change needs a confirmation: mode changes and switching back to paper show a confirm dialog, and switching to live requires typing `LIVE`.
+- `POST /api/control/trading-mode` and `POST /api/control/trading-environment`. Going live is refused server-side without `"confirmation": "LIVE"` or without Kraken API keys.
+- `/api/control` and the dashboard's `control` object now include `trading_mode` and `trading_environment`.
+
+### Changed
+- Trading mode and environment are saved in `control_state` (new `trading_mode` / `trading_environment` columns, added automatically to existing databases). A choice made in the dashboard wins over `.env` on every restart; `TRADING_MODE` / `TRADING_ENVIRONMENT` (and the CLI's `--mode` / `--environment`) are now starting values for a fresh database. The bot logs a warning at start-up when a saved choice overrides a different `.env` value.
+- Control state now loads before the startup equity restore, so a saved LIVE environment picks the Kraken balance source at boot.
+
+### Fixed
+- Docs no longer describe a dashboard per-market live toggle (there is none yet; it is API-only) or say the live toggle ignores the environment.
+
+---
+
+## [0.6.2] — 2026-11-14
+
+### Fixed
+- **Windows scripts use CRLF line endings.** `launch.bat`, `setup.bat` and `run_tests.bat` were written with LF endings in 0.6.0, which `cmd.exe` misparses (`setlocal` ran as `tlocal`, some `REM` lines ran as commands). They are now CRLF, and a new `.gitattributes` (`*.bat text eol=crlf`) keeps them CRLF on checkout on every OS.
+
+### Added
+- `TestWindowsScriptsUseCRLF` (`cmd/tradingbot/scripts_test.go`) guards the script line endings and the `.gitattributes` rule.
+- Troubleshooting entries in docs/12-operations.md for LF-damaged scripts and for rebuilding while the bot is running.
+
+---
+
 ## [0.6.1] — 2026-11-11
 
 ### Fixed

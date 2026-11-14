@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"github.com/James-Chapman/LLMTradingBot/internal/app"
 	"github.com/James-Chapman/LLMTradingBot/internal/config"
 	"github.com/James-Chapman/LLMTradingBot/internal/observability"
+	"github.com/James-Chapman/LLMTradingBot/internal/secret"
 	"github.com/James-Chapman/LLMTradingBot/internal/server"
 	"github.com/James-Chapman/LLMTradingBot/internal/storage"
 )
@@ -27,39 +29,70 @@ const shutdownTimeout = 10 * time.Second
 
 // main runs the bot and exits non-zero on a startup or serve failure.
 func main() {
-	frontendDir := flag.String("frontend", "frontend", "directory holding index.html, approvals.html, sw.js and static/")
-	envFile := flag.String("env", ".env", "path to the .env settings file")
-	flag.Parse()
-
-	if err := run(*envFile, *frontendDir); err != nil {
+	boot, frontendDir, err := parseFlags(os.Args[1:], os.Stderr)
+	if errors.Is(err, flag.ErrHelp) {
+		return
+	}
+	if err != nil {
+		os.Exit(2)
+	}
+	if err := run(boot, frontendDir); err != nil {
 		fmt.Fprintln(os.Stderr, "tradingbot:", err)
 		os.Exit(1)
 	}
 }
 
-// run wires settings, logging, storage, the app and the HTTP server, and
-// blocks until Ctrl+C/SIGTERM triggers a graceful shutdown.
-func run(envFile, frontendDir string) error {
-	settings, err := config.Load(envFile)
-	if err != nil {
-		return fmt.Errorf("load settings: %w", err)
+// parseFlags reads the start-up flags: the only settings needed before the
+// database opens. Everything else is managed in the dashboard. Usage and
+// errors are written to out.
+func parseFlags(args []string, out io.Writer) (config.Bootstrap, string, error) {
+	defaults := config.Defaults()
+	fs := flag.NewFlagSet("tradingbot", flag.ContinueOnError)
+	fs.SetOutput(out)
+	db := fs.String("db", defaults.DatabasePath, "SQLite database file (holds trades and every dashboard setting)")
+	host := fs.String("host", defaults.Host, "address the dashboard listens on")
+	port := fs.Int("port", defaults.Port, "port the dashboard listens on")
+	logFile := fs.String("log", defaults.LogFile, "log file (llm.log is written beside it)")
+	frontendDir := fs.String("frontend", "frontend", "directory holding index.html, approvals.html, sw.js and static/")
+	if err := fs.Parse(args); err != nil {
+		return config.Bootstrap{}, "", err
 	}
-	if err := settings.Validate(); err != nil {
-		return fmt.Errorf("invalid settings: %w", err)
+	if *port < 1 || *port > 65535 {
+		err := fmt.Errorf("-port must be between 1 and 65535, got %d", *port)
+		fmt.Fprintln(out, err)
+		return config.Bootstrap{}, "", err
 	}
+	return config.Bootstrap{DatabasePath: *db, Host: *host, Port: *port, LogFile: *logFile}, *frontendDir, nil
+}
 
-	closeLogs, err := observability.SetupLogging(settings.LogLevel, settings.LogFile)
+// run wires logging, storage, the saved settings, the app and the HTTP
+// server, and blocks until Ctrl+C/SIGTERM triggers a graceful shutdown.
+func run(boot config.Bootstrap, frontendDir string) error {
+	// Log at INFO until the saved log level is known.
+	closeLogs, err := observability.SetupLogging("INFO", boot.LogFile)
 	if err != nil {
 		return fmt.Errorf("set up logging: %w", err)
 	}
 	defer closeLogs()
 	logger := observability.Logger("main")
 
-	repo, err := storage.Open(settings.DatabasePath)
+	repo, err := storage.Open(boot.DatabasePath)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer repo.Close()
+
+	settings, warnings, err := app.LoadSettings(context.Background(), repo, secret.Default(), boot)
+	if err != nil {
+		return fmt.Errorf("load settings: %w", err)
+	}
+	for _, w := range warnings {
+		logger.Warn("Saved setting ignored", "detail", w)
+	}
+	if err := settings.Validate(); err != nil {
+		return fmt.Errorf("invalid settings: %w", err)
+	}
+	observability.SetLevel(settings.EffectiveLogLevel())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -85,7 +118,7 @@ func run(envFile, frontendDir string) error {
 	go func() {
 		logger.Info("Starting Kraken Trading Bot",
 			"host", settings.Host, "port", settings.Port,
-			"mode", settings.TradingMode, "environment", settings.TradingEnvironment, "version", app.Version)
+			"mode", bot.TradingMode(), "environment", bot.TradingEnvironment(), "version", app.Version)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serveErr <- err
 		}

@@ -12,7 +12,7 @@ The risk engine is the single universal enforcement point for all portfolio-leve
 1. **Universal gate** — risk logic lives in one place. No mode-specific bypass.
 2. **Fail closed** — any check that cannot be evaluated (missing data) defaults to safe behaviour.
 3. **Context-aware** — the engine receives live portfolio state (open positions, cash, price, 24-hour volume) so checks are based on reality, not stale approximations.
-4. **Configurable** — all thresholds come from `config.Settings` and can be adjusted via `.env` without code changes.
+4. **Configurable** — all thresholds come from `config.Settings` and can be changed in the dashboard's Settings dialog without code changes or a restart (`Engine.SetSettings` swaps them in while keeping equity and today's loss counters).
 5. **Concurrency-safe** — every method takes the engine's `sync.Mutex`, so the strategy loop, HTTP handlers, and equity ticker can call it concurrently.
 
 ---

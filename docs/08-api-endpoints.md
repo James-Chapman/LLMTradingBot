@@ -148,7 +148,9 @@ The response carries an `ETag` header holding the dashboard version counter, whi
         "disabled_markets":    [],
         "disabled_strategies": [],
         "selected_strategy":   "llm_only_strategy",
-        "live_markets":        []
+        "live_markets":        [],
+        "trading_mode":        "manual",
+        "trading_environment": "paper"
     },
     "strategies": [
         {"id": "basic_strategy",         "label": "Basic Strategy (Just market indicators, no LLM)", "enabled": false, "selected": false},
@@ -330,9 +332,48 @@ When a market is disabled:
 
 ---
 
+### `POST /api/control/trading-mode`
+
+Changes the trading mode. The choice is saved in `control_state` and survives restarts (default `manual`). The dashboard asks for confirmation before calling it.
+
+**Request body:**
+
+```json
+{"mode": "semi_automated"}
+```
+
+`mode` must be `manual`, `semi_automated` or `fully_automated`.
+
+**Response:** `{"trading_mode": "semi_automated"}`
+
+**Errors:** `400` for a malformed body or an unknown mode; nothing changes.
+
+---
+
+### `POST /api/control/trading-environment`
+
+Switches between paper and live (real money). The choice is saved in `control_state` and survives restarts (default `paper`).
+
+**Request body:**
+
+```json
+{"environment": "live", "confirmation": "LIVE"}
+```
+
+- Switching to `live` requires `"confirmation": "LIVE"` (the text the dashboard makes you type) **and** Kraken API keys in use. Keys saved in Settings but not yet loaded are refused with *Kraken API keys were saved but are not in use yet: restart the bot, then switch to live*; no keys gives *Kraken API keys are not set: add them under Settings → Kraken first*.
+- Switching to `paper` needs no confirmation field; the dashboard still shows a confirm dialog.
+
+**Response:** `{"trading_environment": "live"}`
+
+**Errors:** `400` for a malformed body, an unknown environment, a missing or wrong confirmation, or missing Kraken API keys. The `detail` field explains which; nothing changes.
+
+Going live only affects markets toggled live (see below); all others keep trading on paper.
+
+---
+
 ### `POST /api/control/markets/{market}/live-toggle`
 
-Toggles whether orders for a market route to Kraken live execution instead of the paper engine. The live engine still refuses orders when the Kraken API keys are not set (see [09-ingestion-adapters.md](09-ingestion-adapters.md)). The toggle is not gated by `TRADING_ENVIRONMENT`. The state persists in the control state (`live_markets`).
+Toggles whether orders for a market route to Kraken live execution instead of the paper engine. The live engine still refuses orders when the Kraken API keys are not set (see [09-ingestion-adapters.md](09-ingestion-adapters.md)). The flag only sends real orders while the trading environment is `live`; in the paper environment the order executes on paper and a warning is logged. The state persists in the control state (`live_markets`). There is no dashboard control for this toggle yet.
 
 **Response:**
 
@@ -371,6 +412,81 @@ Rebuilds the strategy instances from the current settings.
 ```json
 {"status": "reloaded", "strategies": ["basic_strategy", "basic_and_llm_strategy", "llm_only_strategy"]}
 ```
+
+---
+
+## Settings
+
+Dashboard-managed settings (everything except the start-up flags and the trading mode / environment). See [01-configuration.md](01-configuration.md).
+
+### `GET /api/settings`
+
+Lists every setting in display order. Secret values are never sent.
+
+**Response:**
+
+```json
+{
+  "fields": [
+    {
+      "key": "MIN_SIGNAL_CONFIDENCE",
+      "label": "Minimum signal confidence",
+      "group": "Signals",
+      "help": "Fully automated mode only trades signals at or above this (0–1).",
+      "kind": "float",
+      "live": true,
+      "secret": false,
+      "value": "0.65",
+      "is_set": true,
+      "restart_pending": false
+    },
+    {
+      "key": "KRAKEN_API_KEY",
+      "label": "Kraken API key",
+      "group": "Kraken",
+      "help": "Needed for live trading. Stored encrypted.",
+      "kind": "string",
+      "live": false,
+      "secret": true,
+      "value": "",
+      "is_set": true,
+      "restart_pending": true
+    }
+  ],
+  "restart_required": ["KRAKEN_API_KEY"]
+}
+```
+
+| Field | Description |
+|---|---|
+| `kind` | `string`, `int`, `float`, `bool` or `list`. Lists are JSON-array text (`["BTC/EUR","ETH/EUR"]`) |
+| `live` | `true` when a change applies immediately; otherwise after a restart |
+| `value` | Saved value as text. Always `""` for secrets |
+| `is_set` | Whether a value is saved (the only thing reported for secrets) |
+| `restart_pending` | Saved value differs from the one the running bot uses |
+| `restart_required` | Every key with `restart_pending` |
+
+### `POST /api/settings`
+
+Saves changed settings. The dashboard lists the changes in a confirm dialog before calling it.
+
+**Request body** (64 KB limit):
+
+```json
+{"changes": {"MIN_SIGNAL_CONFIDENCE": "0.7", "FIXED_MARKETS": "[\"BTC/EUR\",\"SOL/EUR\"]", "KRAKEN_API_KEY": "…"}}
+```
+
+Values are text in the same form `GET` returns. An empty value clears a secret.
+
+**Response:**
+
+```json
+{"applied_live": ["MIN_SIGNAL_CONFIDENCE"], "restart_required": ["FIXED_MARKETS", "KRAKEN_API_KEY"]}
+```
+
+`applied_live` lists the changed keys already in use; `restart_required` lists every key waiting for a restart.
+
+**Errors:** `400` for malformed JSON, a missing or empty `changes` map, an unknown key (including start-up-only keys such as `PORT`), or an invalid value. The `detail` names the key, e.g. `MIN_SIGNAL_CONFIDENCE: "high" is not a number`. Every value is validated first, so a refused request saves nothing.
 
 ---
 
@@ -667,7 +783,7 @@ Closes a named open paper position at the current market price. In addition to f
 
 ### `POST /api/positions/reset`
 
-Closes and clears all open paper positions from both the in-memory state and the database. **Paper mode only.** Returns `403` (`"Position reset is not allowed in live mode"`) when `TRADING_ENVIRONMENT=live`.
+Closes and clears all open paper positions from both the in-memory state and the database. **Paper mode only.** Returns `403` (`"Position reset is not allowed in live mode"`) when the trading environment is `live`.
 
 Before clearing, `paper.ClosePositionsForOperatorReset()` writes a complete audit trail for every open position so no trade disappears from history:
 

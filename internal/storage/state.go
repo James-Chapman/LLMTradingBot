@@ -193,16 +193,20 @@ func (r *Repository) SaveControlState(ctx context.Context, s ControlState) error
 		selected = DefaultSelectedStrategy
 	}
 	_, err = r.db.ExecContext(ctx, `
-		INSERT INTO control_state (id, emergency_stop, disabled_markets, disabled_strategies, live_markets, selected_strategy, updated_at)
-		VALUES (1, ?, ?, ?, ?, ?, ?)
+		INSERT INTO control_state (id, emergency_stop, disabled_markets, disabled_strategies, live_markets, selected_strategy,
+			trading_mode, trading_environment, updated_at)
+		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			emergency_stop = excluded.emergency_stop,
 			disabled_markets = excluded.disabled_markets,
 			disabled_strategies = excluded.disabled_strategies,
 			live_markets = excluded.live_markets,
 			selected_strategy = excluded.selected_strategy,
+			trading_mode = excluded.trading_mode,
+			trading_environment = excluded.trading_environment,
 			updated_at = excluded.updated_at`,
-		boolInt(s.EmergencyStop), disabledMarkets, disabledStrategies, liveMarkets, selected, formatDBTime(time.Now()))
+		boolInt(s.EmergencyStop), disabledMarkets, disabledStrategies, liveMarkets, selected,
+		nullIfEmpty(s.TradingMode), nullIfEmpty(s.TradingEnvironment), formatDBTime(time.Now()))
 	if err != nil {
 		return fmt.Errorf("save control state: %w", err)
 	}
@@ -212,10 +216,11 @@ func (r *Repository) SaveControlState(ctx context.Context, s ControlState) error
 // LoadControlState returns the persisted control state, or nil if never saved.
 func (r *Repository) LoadControlState(ctx context.Context) (*ControlState, error) {
 	var stop sql.NullBool
-	var disabledMarkets, disabledStrategies, liveMarkets, selected sql.NullString
+	var disabledMarkets, disabledStrategies, liveMarkets, selected, mode, environment sql.NullString
 	err := r.db.QueryRowContext(ctx, `
-		SELECT emergency_stop, disabled_markets, disabled_strategies, live_markets, selected_strategy
-		FROM control_state WHERE id = 1`).Scan(&stop, &disabledMarkets, &disabledStrategies, &liveMarkets, &selected)
+		SELECT emergency_stop, disabled_markets, disabled_strategies, live_markets, selected_strategy,
+			trading_mode, trading_environment
+		FROM control_state WHERE id = 1`).Scan(&stop, &disabledMarkets, &disabledStrategies, &liveMarkets, &selected, &mode, &environment)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -223,7 +228,12 @@ func (r *Repository) LoadControlState(ctx context.Context) (*ControlState, error
 		return nil, fmt.Errorf("load control state: %w", err)
 	}
 
-	state := ControlState{EmergencyStop: stop.Bool, SelectedStrategy: selected.String}
+	state := ControlState{
+		EmergencyStop:      stop.Bool,
+		SelectedStrategy:   selected.String,
+		TradingMode:        mode.String,
+		TradingEnvironment: environment.String,
+	}
 	if state.SelectedStrategy == "" {
 		state.SelectedStrategy = defaultUnknownStrategyLabel
 	}

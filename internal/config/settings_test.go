@@ -1,86 +1,139 @@
 package config
 
 import (
-	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 )
 
-// mapLookup adapts a map to the lookup signature used by FromLookup.
-func mapLookup(m map[string]string) func(string) (string, bool) {
-	return func(k string) (string, bool) {
-		v, ok := m[k]
-		return v, ok
-	}
-}
-
-// TestSettings covers defaults, parsing, validation and .env precedence.
+// TestSettings covers the built-in defaults and validation.
 func TestSettings(t *testing.T) {
-	t.Run("GIVEN no overrides WHEN settings load THEN safe paper/manual defaults apply", func(t *testing.T) {
-		s, err := FromLookup(mapLookup(nil))
-		if err != nil {
-			t.Fatal(err)
-		}
+	t.Run("GIVEN no saved settings WHEN defaults are used THEN safe paper/manual defaults apply", func(t *testing.T) {
+		s := Defaults()
 		if s.TradingEnvironment != "paper" || s.TradingMode != "manual" {
 			t.Fatalf("expected paper/manual defaults, got %s/%s", s.TradingEnvironment, s.TradingMode)
 		}
-		if s.LMStudioBaseURL == "" {
-			t.Fatal("expected a default LM Studio URL")
+		if s.LMStudioBaseURL == "" || s.Port == 0 || s.DatabasePath == "" {
+			t.Fatalf("expected usable defaults, got %+v", s)
 		}
 	})
 
-	t.Run("GIVEN JSON list values WHEN settings load THEN lists are parsed", func(t *testing.T) {
-		s, err := FromLookup(mapLookup(map[string]string{"FIXED_MARKETS": `["SOL/EUR","ADA/EUR","DOT/EUR"]`}))
-		if err != nil {
-			t.Fatal(err)
+	t.Run("GIVEN an invalid trading mode WHEN validated THEN an error is returned", func(t *testing.T) {
+		s := Defaults()
+		s.TradingMode = "yolo"
+		if err := s.Validate(); err == nil {
+			t.Fatal("expected a validation error")
 		}
-		if len(s.FixedMarkets) != 3 || s.FixedMarkets[0] != "SOL/EUR" {
-			t.Fatalf("unexpected markets %v", s.FixedMarkets)
+	})
+}
+
+// TestSettingsFields covers the registry of dashboard-managed settings.
+func TestSettingsFields(t *testing.T) {
+	t.Run("GIVEN the registry WHEN listed THEN every key is unique and has a label, group and kind", func(t *testing.T) {
+		seen := map[string]bool{}
+		for _, f := range Fields() {
+			if seen[f.Key] {
+				t.Errorf("duplicate key %s", f.Key)
+			}
+			seen[f.Key] = true
+			if f.Label == "" || f.Group == "" || f.Kind == "" {
+				t.Errorf("%s: missing label, group or kind: %+v", f.Key, f)
+			}
+		}
+		if len(seen) < 30 {
+			t.Fatalf("expected the full settings list, got %d fields", len(seen))
 		}
 	})
 
-	t.Run("GIVEN an invalid trading mode WHEN settings load THEN an error is returned", func(t *testing.T) {
-		if _, err := FromLookup(mapLookup(map[string]string{"TRADING_MODE": "yolo"})); err == nil {
-			t.Fatal("expected validation error")
+	t.Run("GIVEN start-up flags and trading-dialog settings WHEN the registry is listed THEN they are not dashboard fields", func(t *testing.T) {
+		for _, key := range []string{"HOST", "PORT", "DATABASE_PATH", "LOG_FILE", "TRADING_MODE", "TRADING_ENVIRONMENT"} {
+			if _, ok := FieldByKey(key); ok {
+				t.Errorf("%s must not be a dashboard setting", key)
+			}
 		}
 	})
 
-	t.Run("GIVEN a non-numeric float WHEN settings load THEN an error is returned", func(t *testing.T) {
-		if _, err := FromLookup(mapLookup(map[string]string{"STOP_LOSS_PCT": "lots"})); err == nil {
-			t.Fatal("expected parse error")
+	t.Run("GIVEN API keys WHEN the registry is listed THEN they are marked secret and need a restart", func(t *testing.T) {
+		for _, key := range []string{"KRAKEN_API_KEY", "KRAKEN_API_SECRET", "LMSTUDIO_API_KEY", "OPENAI_API_KEY"} {
+			f, ok := FieldByKey(key)
+			if !ok || !f.Secret || f.Live {
+				t.Errorf("%s: expected a secret, restart-required field, got %+v (found %v)", key, f, ok)
+			}
 		}
 	})
 
-	t.Run("GIVEN a legacy SQLAlchemy DATABASE_URL WHEN settings load THEN it becomes a file path", func(t *testing.T) {
-		s, _ := FromLookup(mapLookup(map[string]string{"DATABASE_URL": "sqlite:///./legacy.db"}))
-		if s.DatabasePath != "./legacy.db" {
-			t.Fatalf("got %q", s.DatabasePath)
+	t.Run("GIVEN risk and signal thresholds WHEN the registry is listed THEN they apply live; connections need a restart", func(t *testing.T) {
+		for _, key := range []string{"MIN_SIGNAL_CONFIDENCE", "MAX_DAILY_LOSS_PERCENT", "STOP_LOSS_PCT", "LLM_VETO_THRESHOLD", "ALERT_WEBHOOK_URL"} {
+			if f, ok := FieldByKey(key); !ok || !f.Live {
+				t.Errorf("%s should apply live", key)
+			}
+		}
+		for _, key := range []string{"FIXED_MARKETS", "LMSTUDIO_BASE_URL", "KRAKEN_REST_URL", "NEWS_SOURCES", "BASE_CURRENCY"} {
+			if f, ok := FieldByKey(key); !ok || f.Live {
+				t.Errorf("%s should need a restart", key)
+			}
 		}
 	})
 
-	t.Run("GIVEN a .env file and an env var for the same key WHEN loading THEN the env var wins", func(t *testing.T) {
-		dir := t.TempDir()
-		path := filepath.Join(dir, ".env")
-		content := "# comment\nPORT=9001\nBASE_CURRENCY=\"GBP\"\n"
-		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-			t.Fatal(err)
+	t.Run("GIVEN valid text for each kind WHEN applied THEN the setting changes and reads back the same", func(t *testing.T) {
+		cases := map[string]string{
+			"MIN_SIGNAL_CONFIDENCE":   "0.8",
+			"MOMENTUM_LOOKBACK_TICKS": "12",
+			"DEBUG":                   "true",
+			"FIXED_MARKETS":           `["BTC/EUR","SOL/EUR"]`,
+			"LMSTUDIO_MODEL":          "qwen3-8b",
 		}
-		t.Setenv("PORT", "9002")
-		s, err := Load(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if s.Port != 9002 {
-			t.Fatalf("env var should override file, got %d", s.Port)
-		}
-		if s.BaseCurrency != "GBP" {
-			t.Fatalf("file value should apply with quotes stripped, got %q", s.BaseCurrency)
+		for key, raw := range cases {
+			f, _ := FieldByKey(key)
+			s := Defaults()
+			if err := f.Apply(&s, raw); err != nil {
+				t.Fatalf("%s: %v", key, err)
+			}
+			if got := f.Value(s); got != raw {
+				t.Errorf("%s: read back %q, want %q", key, got, raw)
+			}
 		}
 	})
 
-	t.Run("GIVEN a missing .env file WHEN loading THEN defaults are used without error", func(t *testing.T) {
-		if _, err := Load(filepath.Join(t.TempDir(), "absent.env")); err != nil {
-			t.Fatal(err)
+	t.Run("GIVEN invalid text WHEN applied THEN it is refused with the key named and the setting unchanged", func(t *testing.T) {
+		cases := map[string]string{
+			"MIN_SIGNAL_CONFIDENCE":   "high",
+			"MOMENTUM_LOOKBACK_TICKS": "1.5",
+			"DEBUG":                   "maybe",
+			"FIXED_MARKETS":           "BTC/EUR",
+			"MAX_DAILY_LOSS_PERCENT":  "-1",
+			"LMSTUDIO_BASE_URL":       "localhost:1234",
+			"LOG_LEVEL":               "LOUD",
+		}
+		for key, raw := range cases {
+			f, _ := FieldByKey(key)
+			s := Defaults()
+			before := f.Value(s)
+			err := f.Apply(&s, raw)
+			if err == nil || !strings.Contains(err.Error(), key) {
+				t.Errorf("%s=%q: expected an error naming the key, got %v", key, raw, err)
+			}
+			if f.Value(s) != before {
+				t.Errorf("%s: a refused value must not change the setting", key)
+			}
+		}
+	})
+}
+
+// TestEffectiveLogLevel covers combining LOG_LEVEL with the DEBUG switch.
+func TestEffectiveLogLevel(t *testing.T) {
+	t.Run("GIVEN DEBUG off WHEN the log level is resolved THEN LOG_LEVEL is used", func(t *testing.T) {
+		s := Defaults()
+		s.LogLevel = "WARNING"
+		if got := s.EffectiveLogLevel(); got != "WARNING" {
+			t.Fatalf("got %q", got)
+		}
+	})
+
+	t.Run("GIVEN DEBUG on WHEN the log level is resolved THEN debug logging wins", func(t *testing.T) {
+		s := Defaults()
+		s.LogLevel, s.Debug = "ERROR", true
+		if got := s.EffectiveLogLevel(); got != "DEBUG" {
+			t.Fatalf("got %q", got)
 		}
 	})
 }
