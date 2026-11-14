@@ -39,8 +39,9 @@ type PersistedState struct {
 	DisabledStrategies []string
 	LiveMarkets        []string
 	SelectedStrategy   string
-	TradingMode        string // "" when never chosen in the web interface
-	TradingEnvironment string // "" when never chosen in the web interface
+	TradingMode        string     // "" when never chosen in the web interface
+	TradingEnvironment string     // "" when never chosen in the web interface
+	StopSince          *time.Time // when the active emergency stop was pressed; nil when not stopped
 }
 
 // Repository loads and saves the single control-state row (implemented by the
@@ -115,6 +116,16 @@ func (s *State) LoadFromDB() error {
 		return nil
 	}
 	s.emergencyStop = stored.EmergencyStop
+	s.stopTimestamp = nil
+	if s.emergencyStop {
+		// A stop saved before its timestamp was recorded has none; use the
+		// load time so the dashboard never shows a stop with no "since".
+		since := s.now().UTC()
+		if stored.StopSince != nil {
+			since = stored.StopSince.UTC()
+		}
+		s.stopTimestamp = &since
+	}
 	s.disabledMarkets = toSet(stored.DisabledMarkets)
 	s.disabledStrategies = toSet(stored.DisabledStrategies)
 	s.liveMarkets = toSet(stored.LiveMarkets)
@@ -123,8 +134,8 @@ func (s *State) LoadFromDB() error {
 		selected = DefaultSelectedStrategy
 	}
 	s.selectedStrategyID = CanonicalStrategyID(selected)
-	s.tradingMode = stored.TradingMode
-	s.tradingEnvironment = stored.TradingEnvironment
+	s.tradingMode = restoredSetting("trading mode", stored.TradingMode, validModes, string(domain.ModeManual))
+	s.tradingEnvironment = restoredSetting("trading environment", stored.TradingEnvironment, validEnvironments, string(domain.EnvPaper))
 	if s.tradingMode != "" || s.tradingEnvironment != "" {
 		logger.Info("Control state restored — trading settings from the web interface",
 			"mode", s.tradingMode, "environment", s.tradingEnvironment)
@@ -299,10 +310,32 @@ func (s *State) persistLocked() {
 		SelectedStrategy:   s.selectedStrategyID,
 		TradingMode:        s.tradingMode,
 		TradingEnvironment: s.tradingEnvironment,
+		StopSince:          copyTime(s.stopTimestamp),
 	})
 	if err != nil {
 		logger.Warn("Could not persist control state", "error", err.Error())
 	}
+}
+
+// restoredSetting returns a trading setting read from the database. "" (never
+// chosen) is kept so the configured default is seeded later; any other value
+// outside valid falls back to the safe fallback with a warning.
+func restoredSetting(name, stored string, valid map[string]bool, fallback string) string {
+	if stored == "" || valid[stored] {
+		return stored
+	}
+	logger.Warn("Ignoring invalid stored "+name+" - using the safe default",
+		"stored", stored, "default", fallback)
+	return fallback
+}
+
+// copyTime returns an independent copy of an optional time.
+func copyTime(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	c := *t
+	return &c
 }
 
 // toSet converts a list into a membership set.

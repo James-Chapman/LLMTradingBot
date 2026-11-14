@@ -8,6 +8,8 @@ REM window and opens the dashboard in a browser.
 REM ==================================================
 
 set ROOT=%~dp0
+REM The folder without its trailing backslash, for start /D.
+set ROOT_DIR=%ROOT:~0,-1%
 set BIN_DIR=%ROOT%bin
 set BIN=%BIN_DIR%\tradingbot.exe
 set URL=http://127.0.0.1:8000
@@ -32,7 +34,9 @@ popd
 
 echo.
 echo Starting Kraken Trading Bot...
-start "Kraken Bot" cmd /k "cd /d ""%ROOT%"" && ""%BIN%"""
+REM /D sets the working folder; cmd /k strips the outer quotes of ""%BIN%"",
+REM so a path with spaces stays quoted and the window stays open on exit.
+start "Kraken Bot" /D "%ROOT_DIR%" cmd /k ""%BIN%""
 
 echo Waiting for server to start...
 timeout /t 3 /nobreak > nul

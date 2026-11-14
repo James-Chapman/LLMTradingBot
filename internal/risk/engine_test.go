@@ -1,6 +1,8 @@
 package risk
 
 import (
+	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -51,6 +53,45 @@ func newTestEngine(mutate func(*config.Settings)) *Engine {
 	}
 	now, _ := fixedClock(time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC))
 	return NewEngine(s, now)
+}
+
+// TestRiskEngineNonPositiveEquity covers an account whose equity is zero, as
+// a live snapshot of an empty account reports.
+func TestRiskEngineNonPositiveEquity(t *testing.T) {
+	t.Run("GIVEN equity 0 WHEN a new long is evaluated THEN it is rejected for the equity and the decision has no NaN", func(t *testing.T) {
+		engine := newTestEngine(func(s *config.Settings) { s.TargetTradeAmount = 50 })
+		engine.UpdateEquity(0)
+
+		decision := engine.EvaluateTrade(makeIdea("BTC/EUR", domain.Long, 0.20), standardOptions(500, 100))
+
+		if decision.Approved || !strings.Contains(strings.ToLower(decision.Reason), "equity") {
+			t.Fatalf("expected an equity rejection, got approved=%v reason=%q", decision.Approved, decision.Reason)
+		}
+		assertFiniteDecision(t, decision)
+	})
+
+	t.Run("GIVEN equity 0 and an open long WHEN a closing short is evaluated THEN the decision has no NaN or Inf", func(t *testing.T) {
+		engine := newTestEngine(func(s *config.Settings) { s.TargetTradeAmount = 50 })
+		engine.UpdateEquity(0)
+
+		decision := engine.EvaluateTrade(makeIdea("BTC/EUR", domain.Short, 0.20),
+			standardOptions(0, 100, makePosition("BTC/EUR", 1)))
+
+		assertFiniteDecision(t, decision)
+		if _, err := json.Marshal(decision); err != nil {
+			t.Fatalf("decision cannot be encoded for the dashboard: %v", err)
+		}
+	})
+}
+
+// assertFiniteDecision fails when a decision's sizing is NaN or infinite.
+func assertFiniteDecision(t *testing.T, decision domain.RiskDecision) {
+	t.Helper()
+	for name, v := range map[string]*float64{"adjusted_sizing": decision.AdjustedSizing, "proposed_size": decision.ProposedSize} {
+		if v != nil && (math.IsNaN(*v) || math.IsInf(*v, 0)) {
+			t.Fatalf("%s is %v", name, *v)
+		}
+	}
 }
 
 // TestRiskEngineEvaluateTrade covers approval and rejection rules for trade ideas.
@@ -138,6 +179,31 @@ func TestRiskEngineEvaluateTrade(t *testing.T) {
 
 		if decision.Approved || !strings.Contains(strings.ToLower(decision.Reason), "daily loss") {
 			t.Fatalf("expected daily loss rejection, got %+v", decision)
+		}
+	})
+
+	t.Run("GIVEN daily losses at the limit WHEN a short would close an open long THEN the exit is approved", func(t *testing.T) {
+		// The loss limits stop new exposure; an exit reduces it, and refusing
+		// one would leave a losing position open until its stop.
+		engine := newTestEngine(nil)
+		engine.RecordTradeResult(-25.0)
+
+		decision := engine.EvaluateTrade(makeIdea("BTC/EUR", domain.Short, 0.20), standardOptions(500, 100, makePosition("BTC/EUR", 1)))
+
+		if !decision.Approved {
+			t.Fatalf("expected the closing short to be approved, got %q", decision.Reason)
+		}
+	})
+
+	t.Run("GIVEN an open long bought at a higher price WHEN a short closes it with no cash THEN it is approved", func(t *testing.T) {
+		// The price fell, so the signal's currency size buys more units than
+		// the long holds; the exit still sells holdings and needs no cash.
+		engine := newTestEngine(nil)
+
+		decision := engine.EvaluateTrade(makeIdea("BTC/EUR", domain.Short, 0.20), standardOptions(0, 50, makePosition("BTC/EUR", 1)))
+
+		if !decision.Approved {
+			t.Fatalf("expected the closing short to be approved, got %q", decision.Reason)
 		}
 	})
 

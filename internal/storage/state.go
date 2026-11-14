@@ -53,13 +53,14 @@ func (r *Repository) GetRecentActivity(limit int) ([]observability.ActivityEntry
 }
 
 // TrimOldActivity keeps only the newest keep activity rows by deleting every
-// row whose id is <= the id of the first row beyond keep (as Python did).
-// keep <= 0 uses DefaultActivityKeep.
+// row whose id is <= the id of the first row beyond keep. Rows are ranked by
+// id (insertion order), not timestamp, so a clock that steps backwards cannot
+// make the trim delete newer rows. keep <= 0 uses DefaultActivityKeep.
 func (r *Repository) TrimOldActivity(ctx context.Context, keep int) error {
 	keep = orDefault(keep, DefaultActivityKeep)
 	var cutoffID int64
 	err := r.db.QueryRowContext(ctx,
-		"SELECT id FROM activity_log ORDER BY timestamp DESC, id DESC LIMIT 1 OFFSET ?", keep).Scan(&cutoffID)
+		"SELECT id FROM activity_log ORDER BY id DESC LIMIT 1 OFFSET ?", keep).Scan(&cutoffID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil // fewer than keep rows
 	}
@@ -192,10 +193,15 @@ func (r *Repository) SaveControlState(ctx context.Context, s ControlState) error
 	if selected == "" {
 		selected = DefaultSelectedStrategy
 	}
+	// The stop timestamp is only meaningful while the stop is active.
+	var stopSince any
+	if s.EmergencyStop && s.EmergencyStopSince != nil {
+		stopSince = formatDBTime(*s.EmergencyStopSince)
+	}
 	_, err = r.db.ExecContext(ctx, `
 		INSERT INTO control_state (id, emergency_stop, disabled_markets, disabled_strategies, live_markets, selected_strategy,
-			trading_mode, trading_environment, updated_at)
-		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
+			trading_mode, trading_environment, updated_at, emergency_stop_since)
+		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			emergency_stop = excluded.emergency_stop,
 			disabled_markets = excluded.disabled_markets,
@@ -204,9 +210,10 @@ func (r *Repository) SaveControlState(ctx context.Context, s ControlState) error
 			selected_strategy = excluded.selected_strategy,
 			trading_mode = excluded.trading_mode,
 			trading_environment = excluded.trading_environment,
-			updated_at = excluded.updated_at`,
+			updated_at = excluded.updated_at,
+			emergency_stop_since = excluded.emergency_stop_since`,
 		boolInt(s.EmergencyStop), disabledMarkets, disabledStrategies, liveMarkets, selected,
-		nullIfEmpty(s.TradingMode), nullIfEmpty(s.TradingEnvironment), formatDBTime(time.Now()))
+		nullIfEmpty(s.TradingMode), nullIfEmpty(s.TradingEnvironment), formatDBTime(time.Now()), stopSince)
 	if err != nil {
 		return fmt.Errorf("save control state: %w", err)
 	}
@@ -217,10 +224,11 @@ func (r *Repository) SaveControlState(ctx context.Context, s ControlState) error
 func (r *Repository) LoadControlState(ctx context.Context) (*ControlState, error) {
 	var stop sql.NullBool
 	var disabledMarkets, disabledStrategies, liveMarkets, selected, mode, environment sql.NullString
+	var stopSince nullTime
 	err := r.db.QueryRowContext(ctx, `
 		SELECT emergency_stop, disabled_markets, disabled_strategies, live_markets, selected_strategy,
-			trading_mode, trading_environment
-		FROM control_state WHERE id = 1`).Scan(&stop, &disabledMarkets, &disabledStrategies, &liveMarkets, &selected, &mode, &environment)
+			trading_mode, trading_environment, emergency_stop_since
+		FROM control_state WHERE id = 1`).Scan(&stop, &disabledMarkets, &disabledStrategies, &liveMarkets, &selected, &mode, &environment, &stopSince)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -233,6 +241,10 @@ func (r *Repository) LoadControlState(ctx context.Context) (*ControlState, error
 		SelectedStrategy:   selected.String,
 		TradingMode:        mode.String,
 		TradingEnvironment: environment.String,
+	}
+	if stopSince.Valid && state.EmergencyStop {
+		since := stopSince.Time.UTC()
+		state.EmergencyStopSince = &since
 	}
 	if state.SelectedStrategy == "" {
 		state.SelectedStrategy = defaultUnknownStrategyLabel

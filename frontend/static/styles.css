@@ -1423,3 +1423,37 @@ body.layout-ledger-glass {
     cursor: not-allowed;
     transform: none;
 }
+
+/* Shown when the bot stops answering: the page below is old data. */
+.offline-banner {
+    max-width: 900px;
+    margin: 14px auto;
+    padding: 14px 24px;
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1.5;
+    text-align: center;
+    color: #fff;
+    background: rgba(248, 81, 73, .85);
+    border: 1px solid var(--red);
+    border-radius: 8px;
+}
+
+/* Dims the dashboard while its data is stale. */
+.is-stale {
+    opacity: .55;
+    filter: grayscale(.6);
+}
+
+/* Per-market live switch (live environment only). */
+.toggle-live {
+    color: var(--red);
+    background: rgba(248, 81, 73, .12);
+    border-color: rgba(248, 81, 73, .45);
+}
+
+.market-live-badge {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 6px;
+}

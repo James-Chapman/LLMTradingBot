@@ -160,6 +160,32 @@ func TestPaperExecute(t *testing.T) {
 		}
 	})
 
+	t.Run("GIVEN an open long WHEN a short of a different size closes it THEN the whole long is sold and cash matches the recorded P&L", func(t *testing.T) {
+		// A closing signal is sized in currency at the current price, so its
+		// base size rarely equals the size of the long it closes.
+		for name, shortSize := range map[string]float64{"smaller": 0.8, "larger": 1.5} {
+			engine := newEngine(500)
+			_, openedID := engine.Execute(intent("BTC/EUR", domain.Long, 1), 100, ExecuteOptions{})
+
+			closeOrder, closedID := engine.Execute(intent("BTC/EUR", domain.Short, shortSize), 110, ExecuteOptions{})
+
+			if closeOrder.Status != "filled" || closedID != openedID || len(engine.OpenPositions()) != 0 {
+				t.Fatalf("%s: expected the long to be closed, got %+v / %q", name, closeOrder, closedID)
+			}
+			if !near(closeOrder.Size, 1) {
+				t.Errorf("%s: close order size %v, want the long's size 1", name, closeOrder.Size)
+			}
+			pnl, ok := engine.RealisedPnL(openedID)
+			if !ok {
+				t.Fatalf("%s: no realised P&L for the closed long", name)
+			}
+			// With nothing left open, the change in cash is the realised P&L.
+			if !near(engine.Cash()-500, pnl) {
+				t.Errorf("%s: cash changed by %v but recorded P&L is %v", name, engine.Cash()-500, pnl)
+			}
+		}
+	})
+
 	t.Run("GIVEN an open short WHEN another short executes THEN it is rejected", func(t *testing.T) {
 		engine := newEngine(1000)
 		engine.Execute(intent("BTC/EUR", domain.Short, 1), 100, ExecuteOptions{})

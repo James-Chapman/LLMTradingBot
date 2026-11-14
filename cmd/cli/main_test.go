@@ -2,13 +2,19 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/James-Chapman/LLMTradingBot/internal/app"
+	"github.com/James-Chapman/LLMTradingBot/internal/secret"
+	"github.com/James-Chapman/LLMTradingBot/internal/storage"
 )
 
 // addrFlags returns the -host/-port/-log flags pointing the CLI at srv.
@@ -98,6 +104,83 @@ func TestCLI(t *testing.T) {
 		want := []string{"-db", "data/bot.db", "-host", "0.0.0.0", "-port", "9000", "-log", "logs/bot.log"}
 		if !slices.Equal(args, want) {
 			t.Fatalf("got %v, want %v", args, want)
+		}
+	})
+}
+
+// TestCLIArguments covers unknown commands, flags after the command and the access token.
+func TestCLIArguments(t *testing.T) {
+	var gotPath, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotAuth = r.URL.Path, r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"version":"0.9.3","mode":"manual","environment":"paper","currency_symbol":"€","equity":"1.00","cash":"1.00"}`))
+	}))
+	defer srv.Close()
+	flags := addrFlags(t, srv)
+	noDB := []string{"-db", filepath.Join(t.TempDir(), "missing.db")}
+
+	t.Run("GIVEN an unknown or missing command WHEN run THEN usage is shown with exit code 2", func(t *testing.T) {
+		for _, args := range [][]string{{"stauts"}, {}} {
+			var out, errOut bytes.Buffer
+			if code := runWith(append(slices.Clone(noDB), args...), &out, &errOut, secret.Reversible()); code != 2 || !strings.Contains(errOut.String(), "Usage") {
+				t.Errorf("%v: expected usage and exit 2, got %d %s", args, code, errOut.String())
+			}
+		}
+	})
+
+	t.Run("GIVEN flags after the command WHEN run THEN they are used", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		args := append(append([]string{"status"}, flags...), noDB...)
+
+		code := runWith(args, &out, &errOut, secret.Reversible())
+
+		if code != 0 || gotPath != "/api/dashboard" {
+			t.Fatalf("expected the status call to reach the test bot, got %d %s %s", code, gotPath, errOut.String())
+		}
+	})
+
+	t.Run("GIVEN flags between the command and its ID WHEN approve runs THEN both are used", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		args := append(append([]string{"approve"}, flags...), append(noDB, "abc")...)
+
+		code := runWith(args, &out, &errOut, secret.Reversible())
+
+		if code != 0 || gotPath != "/api/approvals/abc/approve" {
+			t.Fatalf("unexpected approve (%d) %s: %s", code, gotPath, errOut.String())
+		}
+	})
+
+	t.Run("GIVEN an access token stored in the database WHEN status runs THEN it is sent as a bearer token", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "bot.db")
+		repo, err := storage.Open(dbPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		token, _, err := app.LoadAccessToken(context.Background(), repo, secret.Reversible())
+		_ = repo.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out, errOut bytes.Buffer
+
+		code := runWith(append(slices.Clone(flags), "-db", dbPath, "status"), &out, &errOut, secret.Reversible())
+
+		if code != 0 || gotAuth != "Bearer "+token.Token() {
+			t.Fatalf("expected the stored token as a bearer token, got %d %q", code, gotAuth)
+		}
+	})
+
+	t.Run("GIVEN no database file WHEN status runs THEN no token is sent and no database is created", func(t *testing.T) {
+		missing := filepath.Join(t.TempDir(), "none.db")
+		var out, errOut bytes.Buffer
+
+		code := runWith(append(slices.Clone(flags), "-db", missing, "status"), &out, &errOut, secret.Reversible())
+
+		if code != 0 || gotAuth != "" {
+			t.Fatalf("expected no Authorization header, got %d %q", code, gotAuth)
+		}
+		if _, err := os.Stat(missing); !os.IsNotExist(err) {
+			t.Fatal("the CLI must not create a database")
 		}
 	})
 }

@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Approvals — Kraken Bot</title>
-    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
     <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
@@ -32,10 +31,52 @@
 </main>
 
 <script>
+// Sends the browser to the login form when the bot answers 401 (it listens beyond
+// this computer and the session is missing or the access token was changed).
+const plainFetch = window.fetch.bind(window);
+window.fetch = async (...args) => {
+    const response = await plainFetch(...args);
+    if (response.status === 401) window.location.assign('/login');
+    return response;
+};
+
+// Escapes a server or LLM string for safe use inside innerHTML (text and quoted attributes).
+function esc(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+// Parses an API timestamp. Storage timestamps are naive UTC ("2026-11-14T10:00:00"),
+// so a 'Z' is appended when the string carries no zone or offset.
+function parseUtc(value) {
+    const text = String(value ?? '');
+    const hasZone = /(Z|[+-]\d{2}:?\d{2})$/i.test(text);
+    return new Date(hasZone ? text : text + 'Z');
+}
+
+// Replaces the list with an error so a failed load never leaves "Loading…" on screen.
+function showLoadError(message) {
+    document.getElementById('count-badge').textContent = 'Error';
+    document.getElementById('container').innerHTML = `
+        <div style="text-align:center;padding:80px 0;color:var(--red);">
+            <div style="font-size:15px;font-weight:600;margin-bottom:8px;">Could not load approvals</div>
+            <div style="font-size:13px;color:var(--muted);">${esc(message)} — retrying every few seconds.</div>
+        </div>`;
+}
+
+// Fetches the pending approvals and renders one card per trade.
 async function load() {
     try {
         const r = await fetch('/api/approvals');
-        if (!r.ok) return;
+        if (!r.ok) {
+            const body = await r.json().catch(() => ({}));
+            showLoadError(body.detail || `HTTP ${r.status}`);
+            return;
+        }
         const approvals = await r.json();
 
         document.getElementById('count-badge').textContent =
@@ -48,7 +89,7 @@ async function load() {
                 <div style="text-align:center;padding:80px 0;color:var(--muted);">
                     <div style="font-size:40px;margin-bottom:16px;">✓</div>
                     <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:8px;">No pending approvals</div>
-                    <div style="font-size:13px;">Set <code style="background:var(--subtle);padding:2px 6px;border-radius:4px;">TRADING_MODE=semi_automated</code> to generate trade proposals.</div>
+                    <div style="font-size:13px;">Choose the <b>semi-automated</b> mode in the dashboard's Trading settings dialog to generate trade proposals.</div>
                 </div>`;
             return;
         }
@@ -58,18 +99,18 @@ async function load() {
             const col    = long ? 'var(--green)' : 'var(--red)';
             const bg     = long ? 'rgba(63,185,80,.06)' : 'rgba(248,81,73,.06)';
             const pct    = Math.round(a.confidence * 100);
-            const expiry = new Date(a.expires_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+            const expiry = parseUtc(a.expires_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
             const riskCol = a.risk_approved ? 'var(--green)' : 'var(--red)';
             return `
-            <div class="card approval-card" id="card-${a.id}">
+            <div class="card approval-card" data-card-id="${esc(a.id)}">
                 <!-- Title row -->
                 <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:16px;">
                     <div style="display:flex;align-items:center;gap:10px;">
-                        <span style="font-size:20px;font-weight:700;">${a.market}</span>
-                        <span class="pill ${long ? 'pill-green' : 'pill-red'}">${long ? '▲' : '▼'} ${a.direction.toUpperCase()}</span>
+                        <span style="font-size:20px;font-weight:700;">${esc(a.market)}</span>
+                        <span class="pill ${long ? 'pill-green' : 'pill-red'}">${long ? '▲' : '▼'} ${esc(a.direction.toUpperCase())}</span>
                     </div>
                     <div style="text-align:right;font-size:12px;color:var(--muted);">
-                        <div>${a.strategy_id}</div>
+                        <div>${esc(a.strategy_id)}</div>
                         <div>Expires ${expiry}</div>
                     </div>
                 </div>
@@ -87,41 +128,72 @@ async function load() {
                 <div class="approval-details">
                     <div>
                         <div class="label" style="margin-bottom:6px;">Thesis</div>
-                        <div style="font-size:13px;line-height:1.5;">${a.thesis}</div>
+                        <div style="font-size:13px;line-height:1.5;">${esc(a.thesis)}</div>
                     </div>
                     <div>
                         <div class="label" style="margin-bottom:6px;">Entry</div>
-                        <div style="font-size:13px;line-height:1.5;">${a.entry_plan}</div>
+                        <div style="font-size:13px;line-height:1.5;">${esc(a.entry_plan)}</div>
                     </div>
                     <div>
                         <div class="label" style="margin-bottom:6px;">Exit</div>
-                        <div style="font-size:13px;line-height:1.5;">${a.exit_plan}</div>
+                        <div style="font-size:13px;line-height:1.5;">${esc(a.exit_plan)}</div>
                     </div>
                 </div>
 
                 <!-- Risk + actions -->
                 <div style="display:flex;align-items:center;justify-content:space-between;padding-top:16px;border-top:1px solid var(--subtle);">
                     <div style="font-size:12px;color:${riskCol};">
-                        Risk: ${a.risk_reason}
+                        Risk: ${esc(a.risk_reason)}
                     </div>
                     <div class="approval-actions">
-                        <button class="btn btn-approve" onclick="decide('${a.id}','approve')">✓ Approve</button>
-                        <button class="btn btn-reject"  onclick="decide('${a.id}','reject')">✗ Reject</button>
+                        <button class="btn btn-approve" data-approval-id="${esc(a.id)}" data-approval-action="approve">✓ Approve</button>
+                        <button class="btn btn-reject"  data-approval-id="${esc(a.id)}" data-approval-action="reject">✗ Reject</button>
                     </div>
                 </div>
             </div>`;
         }).join('');
-    } catch(e) { console.error(e); }
+    } catch(e) {
+        console.error(e);
+        showLoadError(`The server could not be reached (${e.message})`);
+    }
 }
 
+// Approves or rejects one trade and tells the operator when no real order was executed.
 async function decide(id, action) {
-    const card = document.getElementById(`card-${id}`);
+    const card = [...document.querySelectorAll('[data-card-id]')].find(c => c.dataset.cardId === id);
+    const restoreCard = () => { if (card) { card.style.opacity = '1'; card.style.pointerEvents = ''; } };
     if (card) { card.style.opacity = '0.4'; card.style.pointerEvents = 'none'; }
     try {
-        await fetch(`/api/approvals/${id}/${action}`, { method: 'POST' });
+        const r = await fetch(`/api/approvals/${encodeURIComponent(id)}/${action}`, { method: 'POST' });
+        const d = await r.json().catch(() => ({}));
+        if (action === 'approve' && r.status === 503) {
+            // No live price (or the emergency stop): nothing was sent and the approval stays queued.
+            restoreCard();
+            alert(`Trade NOT executed - the approval is still pending: ${d.detail || 'try again shortly'}`);
+        } else if (action === 'approve' && r.status === 409) {
+            // The risk checks refused it at approval time (the detail says whether it was removed).
+            restoreCard();
+            alert(`Trade NOT executed: ${d.detail || 'refused by the risk check'}`);
+        } else if (!r.ok) {
+            restoreCard();
+            alert(`Could not ${action} the trade: ${d.detail || `HTTP ${r.status}`}`);
+        } else if (action === 'approve' && d.order_status === 'rejected') {
+            alert(`Trade approved but the ${d.environment || 'paper'} order was REJECTED (e.g. insufficient funds).`);
+        }
         setTimeout(load, 400);
-    } catch(e) { console.error(e); if (card) { card.style.opacity = '1'; card.style.pointerEvents = ''; } }
+    } catch(e) {
+        console.error(e);
+        restoreCard();
+        alert(`Could not ${action} the trade — the server could not be reached (${e.message}).`);
+    }
 }
+
+// Approve / Reject buttons carry the approval ID in data attributes, never in inline script,
+// so a server value can't break out of an onclick handler.
+document.addEventListener('click', e => {
+    const button = e.target.closest('[data-approval-action]');
+    if (button) decide(button.dataset.approvalId, button.dataset.approvalAction);
+});
 
 load();
 setInterval(load, 3000);

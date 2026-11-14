@@ -215,10 +215,13 @@ func ParseRSS(data []byte, sourceName string, maxItems int, now time.Time) ([]do
 **Parse logic:**
 1. Download feed XML with a 15-second timeout; non-2xx responses are errors.
 2. Stream `<item>` elements with a non-strict decoder that understands HTML entities (such as `&nbsp;`) and ISO-8859-1 feeds.
-3. For each item, extract: `title`, `link`, `description` (used as `Content`), `pubDate`. Items without a title are skipped.
-4. Generate a stable article ID: `StableID(title, url)` = `sha256(title + url)[:16]` hex, consistent across restarts so duplicates are never created.
-5. Parse `pubDate` (RFC 822/1123, or RFC 3339) and normalise it to UTC; unparseable dates fall back to the current time.
-6. Consider up to `maxItems` items (default 20).
+3. For each item, extract: `title`, `link`, `description` (used as `Content`), `pubDate`.
+4. Clean `title` and `description` with `news.CleanText()` (`internal/news/sanitise.go`). Feed text is untrusted and ends up in LLM prompts, so it is reduced to plain single-line text: `<script>`/`<style>` elements and all other HTML tags are removed, entities are decoded (two passes, because feeds often escape their HTML), and every run of whitespace or control characters, including newlines and Unicode line separators, becomes one space. The title is capped at 200 runes (`MaxTitleRunes`) and the description at 300 runes (`MaxDescriptionRunes`), cut on rune boundaries. Items whose cleaned title is empty are skipped.
+5. Keep the `link` only when it is an absolute `http`/`https` URL; `javascript:`, `ftp:` or relative links leave the item without a URL.
+6. Generate a stable article ID: `StableID(title, url)` = `sha256(title + url)[:16]` hex of the cleaned title and kept link, consistent across restarts so duplicates are never created.
+7. Parse `pubDate` (RFC 822/1123, or RFC 3339) and normalise it to UTC. A trailing US zone abbreviation (`EST`, `EDT`, `CST`, `CDT`, `MST`, `MDT`, `PST`, `PDT`) is replaced by its numeric offset first, because Go's parser would read it as UTC: `Mon, 02 Jan 2006 15:04:05 EST` is 20:04:05 UTC.
+8. Items whose date cannot be parsed: `ParseRSS()` gives them `now`. `RSSAdapter.FetchNews()` instead gives them the time the adapter first saw them and keeps that time on later fetches (the adapter remembers it for as long as the item stays in the feed), so an undated item does not jump to the top of the newest-first order on every fetch. The adapter's clock is `RSSAdapter.Now` (nil: the current UTC time), injectable for tests.
+9. Consider up to `maxItems` items (default 20).
 
 **`NewsItem` structure (`internal/domain`):**
 
@@ -239,6 +242,8 @@ type NewsItem struct {
 
 `FearGreedAdapter` reads the latest Alternative.me Crypto Fear & Greed index (`https://api.alternative.me/fng/?limit=1`). It returns one news item only when the reading has changed since the last call. The item's title is `Crypto Fear & Greed Index: <label> (<value>/100)`, its content explains what the reading's zone means for sentiment, and it links to the Alternative.me index page. Its ID is derived from the title and the UTC date, so there is one ID per reading per day.
 
+Because the news cache is merged across cycles (see below), a reading stays cached after the cycle that produced it, until 60 newer articles push it out. A later identical reading has the same ID, so it is neither duplicated in the cache nor counted as new. When the value changes, the new reading is a new article; the older reading also stays in the cache until it ages out.
+
 ---
 
 ### News Deduplication
@@ -247,28 +252,30 @@ type NewsItem struct {
 
 1. **Database level:** `repo.UpsertNewsItem()` stores an item only when no row with the same ID exists, so re-fetching the same article never creates duplicate rows.
 
-2. **Briefing level:** `briefedNewsIDs` is a set on the `App` tracking which article IDs have already been seen. Only articles in the cache that are not in the set count as new and trigger a briefing. After each cycle the set is replaced with the current cache's IDs, so it stays bounded.
+2. **Briefing level:** `briefedNewsIDs` is a set on the `App` of article IDs that have already been briefed. Only articles in the merged cache that are not in the set count as new and trigger a briefing; they are added to the set at that moment. The set always contains every cached ID and survives failed cycles. It is bounded: above 1,000 IDs (`briefedNewsIDsMax`) it is rebuilt from the cache alone. That is safe because an article that has dropped out of the cache is older than all 60 cached articles, so it cannot re-enter the cache and count as new.
 
-On restart, `briefedNewsIDs` starts empty. The first news fetch therefore treats every cached article as new and triggers a full briefing, so the LLM has an updated market view immediately after startup.
+On restart, the cache is seeded from the 60 newest articles in the database and all of them are marked as briefed, so the first news cycle only briefs articles that are genuinely new since the restart.
 
 ---
 
 ### News Cache Structure
 
-After each fetch cycle, all items are sorted newest first and the in-memory `latestNews` cache is rebuilt from the 60 most recent:
+Each cycle's items are converted to cache entries by `newsEntry()` (`internal/app/news_cycle.go`) and **merged** into the previous in-memory `latestNews` cache by `mergeNews()`: entries are de-duplicated by ID, sorted newest first by publish time, and the 60 newest are kept. An article that is already cached keeps its cached entry, so a later fetch cannot move its publish time (this also keeps the first-seen time of undated items). Articles from a feed that failed this cycle stay cached.
 
 ```go
-latest = append(latest, storage.NewsEntry{
+storage.NewsEntry{
 	ID:          item.ID,
 	Source:      item.Source,
 	Title:       item.Title,
 	URL:         url, // nil when the item has no link
-	Summary:     strings.TrimSpace(summary), // first 200 characters of Content
+	Summary:     strings.TrimSpace(summary), // first 200 runes of the cleaned Content
 	PublishedAt: portfolio.FormatISO(item.PublishedAt),
-})
+}
 ```
 
-`Summary` is truncated to 200 characters (runes) from the raw `Content` field. This is what is included in LLM prompts and returned by `GET /api/news`.
+`Summary` is truncated to 200 runes of the `Content` field, which for RSS items is already cleaned plain text (see `ParseRSS()`). This is what is included in LLM prompts and returned by `GET /api/news`.
+
+If **every** adapter returns an error in a cycle, nothing is merged: the previous cache is kept unchanged (an empty cache would pause LLM strategies with "waiting for news"), nothing is briefed, LM Studio is still re-probed, and `newsCycle()` returns an error that the news loop shows as "News fetch failed" in the activity feed. A cycle where only some adapters fail proceeds normally with the others.
 
 The full `Content` is stored in the database but not retained in the in-memory cache, which avoids memory bloat from large HTML bodies.
 
@@ -276,17 +283,20 @@ The full `Content` is stored in the database but not retained in the in-memory c
 
 ### News → LLM Briefing Trigger
 
-The news cycle starts `marketBriefingTask()` in its own goroutine when new articles are detected. This keeps the briefing non-blocking relative to the news polling cycle. The goroutine is tracked by a `sync.WaitGroup` so shutdown waits for it.
+The news cycle starts `marketBriefingTask()` in a background goroutine when new articles are detected, through `startBriefing()` (`internal/app/news_cycle.go`). This keeps the briefing non-blocking relative to the news polling cycle. The goroutine is tracked by a `sync.WaitGroup` so shutdown waits for it.
+
+At most **one briefing runs at a time** (`briefingGate`). If new articles arrive while a briefing is still running (for example behind a slow LLM), no second briefing starts: the articles are queued, newest first and capped at 60, and briefed together in one follow-up run as soon as the current briefing finishes. However many triggers arrive meanwhile, there is only one follow-up.
 
 ```
 newsCycle:
     ├── fetch each adapter (RSS sources + FearGreedAdapter)
+    ├── if every adapter failed: keep the cache, re-probe the LLM, return an error
     ├── normalise timestamps to UTC, sort newest first
     ├── upsert to DB
-    ├── rebuild latestNews cache (60 newest)
-    ├── fresh = cached articles not in briefedNewsIDs; briefedNewsIDs = cached IDs
+    ├── merge into the latestNews cache (dedupe by ID, 60 newest)
+    ├── fresh = cached articles not in briefedNewsIDs; add them to briefedNewsIDs
     ├── if fresh is non-empty:
-    │       go marketBriefingTask(fresh)
+    │       startBriefing(fresh)   (queued for the follow-up if one is running)
     │           └── collect prices + indicators for all active markets
     │           └── call analyser.BriefMarket(articles, marketData)
     │           └── cache and persist the result as the latest briefing

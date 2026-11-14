@@ -40,7 +40,7 @@ The bot is designed to run safely in paper mode first. Live trading is supported
 |-- cmd/
 |   |-- tradingbot/          Server entry point (dashboard, API, background loops)
 |   |-- cli/                 Operator CLI: status, approve, reject, run
-|   `-- backtest/            Historical replay against Kraken OHLC data
+|   `-- backtest/            Historical backtesting on Kraken trade history (docs/14-backtesting.md)
 |-- internal/                Application packages (app, server, strategy, risk, paper,
 |                            kraken, llm, news, storage, ...)
 |-- frontend/                Dashboard HTML, approvals page, service worker

@@ -27,7 +27,7 @@ func (a *App) Run(ctx context.Context) {
 }
 ```
 
-The LLM backend is probed once in `app.New` (`probeLLM`) before the loops start. Loop timings live in `app.Intervals`; zero values select the defaults shown below, and tests inject shorter intervals through `app.Options`. Each iteration runs inside `App.guarded`, which converts a panic into an error, logs it at ERROR level with the stack trace, and lets the loop continue.
+The LLM backend is probed once in `app.New` (`probeLLM`) before the loops start. Loop timings live in `app.Intervals`; zero values select the defaults shown below, and tests inject shorter intervals through `app.Options`. Each iteration runs inside `App.guarded`, which converts a panic into an error, logs it at ERROR level with the stack trace, and lets the loop continue. This covers every loop, including each start-up attempt of the strategy loop, each OHLC cycle and each equity tick. On shutdown `cmd/tradingbot` waits at most 30 seconds for the loops to finish, and a second Ctrl+C quits at once.
 
 ---
 
@@ -38,37 +38,52 @@ The LLM backend is probed once in `app.New` (`probeLLM`) before the loops start.
 
 On first entry, `bootStrategyLoop` resolves the market universe, validates the symbols against Kraken's tradable pairs, restores up to 60 price ticks per market from SQLite, logs "Bot started", sends a `bot_started` alert, and starts the Kraken ticker stream with `market.Start(active, a.cacheMarketSnapshot)`.
 
+If markets are configured but none can be validated (Kraken unreachable at start-up, for example), the boot is retried: after 5 seconds, doubling up to 5 minutes (`Intervals.BootRetry`), until at least one market validates or the context is cancelled. The activity feed shows "No markets could be validated - waiting for Kraken" while it waits. An empty configured universe is not retried.
+
 ### Full Execution Sequence Per Tick (`strategyTick`)
 
 ```
-1.  Emergency stop check           → skip tick (wait a full 30s) if active
-2.  Market filter                  → only process enabled markets; skip if none
-3.  Kraken ticker snapshot         → WebSocket cache first, REST GetTickersBatch for missing markets
-4.  Update price history           → append to per-market slice (max 200 ticks), increment tick counter
-5.  Build market data              → indicators (5-min candles) + 15-min higher-timeframe indicators + briefing sentiment
-6.  Update mark prices             → paper.UpdateMarkPrices / UpdateTrailingPrices
-7.  Persist price ticks            → repo.SavePriceTick() per symbol
-8.  Record portfolio value         → recordEquitySnapshot (cash + marked value of open positions)
-9.  Trim old rows                  → every 10 ticks (~5 min): price ticks, equity snapshots, activity
-10. Stop checks                    → close positions at stop-loss or trailing stop
-11. Warm-up guard                  → indicator-only: wait for 35 ticks; LLM strategies: wait for price ticks and news
-12. Reconcile live orders          → every 2 ticks (~60s), live environment only
-13. Strategy evaluation            → selected strategy only (LLM analysis/veto happens inside the strategy)
-14. Learner adjustment             → learner.AdjustConfidence() per idea
-15. Risk evaluation + persistence  → risk.EvaluateTrade(), repo.SaveTradeIdea() with full signal context
-16. Mode routing                   → manual / semi_automated / fully_automated
-17. Dashboard state update         → merge into latestSignals (max 12), bump dashboard version
+1.  Emergency stop check           → tend the live book without stops (see below), then skip the tick
+2.  Market filter                  → only process enabled markets; if none, tend the live book and skip
+3.  Kraken ticker snapshot         → fresh WebSocket snapshots, REST GetTickersBatch for missing or stale ones;
+                                     if no market has a price, tend the live book and skip
+4.  Live-book prices               → also price markets holding a live position that are disabled or out of the universe
+5.  Update price history           → append to per-market slice (max 200 ticks), increment tick counter
+6.  Build market data              → indicators (5-min candles) + 15-min higher-timeframe indicators + briefing sentiment
+7.  Update mark prices             → paper.UpdateMarkPrices / UpdateTrailingPrices
+8.  Reconcile live orders          → every tick while the environment is live or the live book is not empty
+9.  Stop checks                    → paper stops (enabled-market prices), then live stops (all live-book prices)
+10. Persist price ticks            → repo.SavePriceTick() per symbol
+11. Record portfolio value         → recordEquitySnapshot (cash + marked value of open positions)
+12. Trim old rows                  → every 10 ticks (~5 min): price ticks, equity snapshots, activity
+13. Warm-up guard                  → indicator-only: wait for 35 ticks; LLM strategies: wait for price ticks and news
+14. Strategy evaluation            → selected strategy only (LLM analysis/veto happens inside the strategy)
+15. Learner adjustment             → learner.AdjustConfidence() per idea
+16. Risk evaluation + persistence  → risk.EvaluateTrade(), repo.SaveTradeIdea() with full signal context
+17. Mode routing                   → manual / semi_automated / fully_automated
+18. Dashboard state update         → merge into latestSignals (max 12), bump dashboard version
 ```
 
 A gated tick (emergency stop, no markets, no prices, warm-up) waits a full interval; an evaluated tick subtracts its own run time so the cadence stays at 30 seconds.
 
+Live fills are reconciled (step 8) before the stops, so a just-filled live entry is protected in the same tick. Stop checks (step 9) run before the database writes of steps 10–12. A failed write ends the tick with an error, so running the stops first means a database problem cannot leave a position unprotected. The equity snapshot of step 11 then saves the cash from any stop close in the same tick.
+
+**Tending the live book on a skipped tick.** Live positions are real Kraken holdings and are protected even when no strategy runs:
+
+- *All markets disabled or no prices* (`tendLiveBook`): the live-book markets are priced, pending orders reconcile and live stops run.
+- *Emergency stop* (`tendLiveBookDuringStop`): the live-book markets are priced (so a manual close has a price), pending orders reconcile and trailing highs follow the price, but **no automatic sell is sent**. The activity feed warns "Emergency stop: N live position(s) have no automatic stop" at most once every 10 minutes.
+
+**Stale prices.** A streamed snapshot older than two strategy intervals (60 s by default) is not used; the market is fetched over REST instead. If REST has no price either, the market is skipped for this tick — no strategy, stop or mark uses the stale price — and the activity feed warns "Price for X is stale … - stops and strategies skip it" at most once every 10 minutes per market.
+
+The emergency stop is checked again for every idea in step 16 (`handleIdea`). A slow evaluation (the LLM over many markets can take minutes) may still be running when the operator presses the stop; its signals are then logged as "not acted on (emergency stop active)" and are neither traded nor queued for approval. Risk rejections are still recorded.
+
 > **Note:** `recordEquitySnapshot(ctx, prices)` runs during every strategy tick immediately after fresh market prices arrive. In paper mode it builds the snapshot from the paper engine (`portfolio.BuildEquitySnapshot`); in live mode it reads Kraken balances through `kraken.ExecutionEngine.GetAccountSnapshot()`, keeping the last-known live values if Kraken is unavailable. It updates `currentEquity`, `currentCash`, and the risk engine (`risk.UpdateEquity`), appends the point to `equityHistory`, and persists `total_equity`, `cash`, and `positions_value` to SQLite. The Equity Graph therefore records the same account source used by the dashboard header.
 
-`kraken.MarketAdapter.Start(symbols, callback)` runs the WebSocket v2 ticker subscription in a background goroutine. Every streamed update is stored by `cacheMarketSnapshot` into `latestSnapshots` and `currentPrices`. The 30-second strategy tick consumes these cached snapshots and only calls `GetTickersBatch()` for symbols that have not produced a stream update yet. If the stream itself fails, the adapter switches to REST ticker polling, so the cache keeps filling either way.
+`kraken.MarketAdapter.Start(symbols, callback)` runs the WebSocket v2 ticker subscription in a background goroutine. Every streamed update is stored by `cacheMarketSnapshot` into `latestSnapshots` and `currentPrices`. The 30-second strategy tick consumes these cached snapshots and only calls `GetTickersBatch()` for symbols that have not produced a stream update yet or whose last update is stale (see above). If the stream itself fails, the adapter switches to REST ticker polling, so the cache keeps filling either way.
 
 ### Warm-Up Period
 
-The indicator-only strategy will not generate signals until `strategy.LookbackTicks = 34` historical samples plus the latest tick have been collected. This prevents MACD and other indicators from running on insufficient data. The first signal can fire after approximately 17.5 minutes on a cold start (35 ticks × 30 seconds).
+The indicator-only strategy will not generate signals until `strategy.LookbackTicks = 34` historical samples plus the latest tick have been collected. This prevents MACD and other indicators from running on insufficient data. The first signal can fire after approximately 17.5 minutes on a cold start (35 ticks × 30 seconds). The count is the longest price history among the markets that are enabled and priced in this tick, so a disabled or unpriced first market cannot hold the warm-up back.
 
 LLM-backed strategies use a data-driven check instead: each declares `RequiredPriceTicks()`, and the tick waits ("LLM data warmup waiting for … price ticks and news") until at least one market has that many ticks and the news cache is non-empty. `app.TradeWarmupTicks` is `0`; there is no fixed post-start delay.
 
@@ -76,7 +91,7 @@ On restart, up to 60 price ticks per market are restored from the database, so w
 
 ### Stop-Loss and Trailing-Stop Check
 
-Before strategy evaluation every tick (`checkStops`):
+Every tick, as soon as mark prices are updated and before any database write (`checkStops`):
 
 ```go
 for _, pos := range a.paper.OpenPositions() {
@@ -193,8 +208,8 @@ RSS adapters are built from `NEWS_SOURCES` by `news.BuildRSSAdapters`; there are
 1.  Fetch from all adapters       → sequentially; each adapter logs its own failures
 2.  Normalise all PublishedAt values to UTC, then sort descending
 3.  Upsert each item to DB        → repo.UpsertNewsItem() (INSERT OR IGNORE)
-4.  Rebuild latestNews cache      → 60 most recent articles across all sources (no time cutoff), 200-char summaries
-5.  Compute fresh articles        → cached IDs not in briefedNewsIDs; briefedNewsIDs is replaced by the cached IDs
+4.  Merge into latestNews cache   → this cycle's articles are merged into the previous cache (dedupe by ID), newest 60 kept, 200-char summaries
+5.  Compute fresh articles        → cached IDs not in briefedNewsIDs; fresh IDs are added to briefedNewsIDs
 6.  If fresh articles exist       → go a.marketBriefingTask(ctx, fresh) (tracked by a WaitGroup)
 7.  Log "News fetched" to activity feed
 8.  llmClient.RecheckPrimary(ctx) → re-probe LM Studio; switch backends if its availability changed
@@ -216,7 +231,7 @@ The briefing only runs when at least one active market has a current price (i.e.
 
 ### ID Tracking
 
-`briefedNewsIDs` is a `map[string]bool` seeded at start-up with the IDs of the 60 most recent news items in the database. This prevents re-briefing on articles that were already processed before the restart. Only genuinely new articles fetched after the bot starts trigger a new briefing. The set is replaced on every cycle so it stays bounded to the cache size.
+`briefedNewsIDs` is a `map[string]bool` seeded at start-up with the IDs of the 60 most recent news items in the database. This prevents re-briefing on articles that were already processed before the restart. Only genuinely new articles fetched after the bot starts trigger a new briefing. The set always contains every cached ID and is only added to, so a feed that fails for a cycle does not make its articles count as new when it recovers; above 1,000 IDs it is rebuilt from the cache. If every feed fails, the previous cache is kept and the cycle reports an error. At most one market briefing runs at a time: articles that arrive while one is running are queued and briefed together in a single follow-up. See `docs/09-ingestion-adapters.md`.
 
 The latest briefing is also restored from the `llm_briefings` table at start-up (via `LLMAnalyser.LoadFromDB()`), so signal analysis has LLM market context available immediately — it does not have to wait for the next news cycle.
 
@@ -289,7 +304,7 @@ Failed or empty fetches leave the previous cache entry in place. The `GET /api/o
 4.  Compute account snapshot    → paper engine in paper mode, Kraken balances in live mode
 5.  Update currentEquity/currentCash → shared state read by strategy sizing and risk
 6.  Update risk engine          → risk.UpdateEquity(equity)
-7.  Append and persist snapshot → equityHistory + repo.SaveEquitySnapshot(...)
+7.  Append and persist snapshot → equityHistory + repo.SaveEquitySnapshotFor(environment, ...) — paper and live rows are kept apart
 8.  Repeat
 ```
 
@@ -317,7 +332,7 @@ Failed or empty fetches leave the previous cache entry in place. The `GET /api/o
     f. Wire repo into services          → activity.SetStore, control.SetRepo, analyser.SetStore
     g. Reload pending approvals         → approvals.LoadPendingFromRepository()
     h. Restore risk rejections          → last 50, newest first
-    i. Load equity history              → last 1,440 points; restore paper cash from GetLatestCash()
+    i. Load equity history              → last 1,440 points; for the current environment; restore paper cash from GetLatestCashFor("paper") only
                                           (header equity/cash restored from history in paper mode only)
     j. Restore open positions           → paper.RestoreFromDB()
     k. Restore daily risk counters      → repo.LoadRiskState() → risk.RestoreState()

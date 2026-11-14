@@ -6,6 +6,8 @@ REM verbose GIVEN/WHEN/THEN output.
 REM ==================================================
 
 pushd "%~dp0"
+REM Exit code returned to the caller; set to 1 on any failure.
+set "TEST_EXIT_CODE=0"
 
 echo.
 echo ==================================================
@@ -29,6 +31,7 @@ goto done
 :failed
 echo.
 echo !!! TESTS FAILED — review the output above. !!!
+set "TEST_EXIT_CODE=1"
 
 :done
 popd
@@ -36,3 +39,4 @@ echo.
 echo ==================================================
 echo Done.
 echo ==================================================
+exit /b %TEST_EXIT_CODE%

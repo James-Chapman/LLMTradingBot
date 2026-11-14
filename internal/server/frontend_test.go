@@ -214,7 +214,7 @@ func TestFrontendLayout(t *testing.T) {
 				"Unrealised P&amp;L", "Strategy", "Source", "Status", "Pos ID", "Signal", "Action"},
 			"closed": {"Date Time Closed", "Date Time Opened", "Duration", "Market", "Direction", "Size",
 				"Price", "Value", "P&amp;L", "Strategy", "Source", "Status", "Pos ID", "Open Signal", "Close Signal"},
-			"ledger": {"Date Time", "Market", "Strategy", "Action", "Direction", "Size", "Price",
+			"ledger": {"Date Time", "Market", "Action", "Direction", "Size", "Price",
 				"Value", "P&amp;L", "Strategy", "Source", "Status", "Pos ID", "Signal"},
 			"rejected-trades": {"Date Time", "Market", "Direction", "Size", "Price", "Value", "Strategy",
 				"Source", "Status", "Reason", "Confidence", "Signal"},
@@ -247,8 +247,9 @@ func TestFrontendLayout(t *testing.T) {
 			`id="approvals-queue"`, `id="ledger-body"`, `id="pnl-day-body"`, `id="pnl-market-body"`, `id="closed-body"`,
 			`id="candle-grid"`, `id="news-grid"`, "activateStop()", "resumeBot()", "toggleMarket(", "selectStrategy(",
 			"resetPositions()", "showSignal(")
-		mustContain(t, "approvals", approvals, `id="count-badge"`, `id="container"`, "decide('${a.id}','approve')",
-			"decide('${a.id}','reject')", "setInterval(load, 3000)")
+		mustContain(t, "approvals", approvals, `id="count-badge"`, `id="container"`, `data-approval-action="approve"`,
+			`data-approval-action="reject"`, "decide(button.dataset.approvalId, button.dataset.approvalAction)",
+			"setInterval(load, 3000)")
 	})
 
 	t.Run("GIVEN execution rejections WHEN markup is inspected THEN the Rejected Trades register is wired", func(t *testing.T) {

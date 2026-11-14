@@ -8,6 +8,7 @@ import (
 	"github.com/James-Chapman/LLMTradingBot/internal/domain"
 	"github.com/James-Chapman/LLMTradingBot/internal/kraken"
 	"github.com/James-Chapman/LLMTradingBot/internal/learner"
+	"github.com/James-Chapman/LLMTradingBot/internal/livebook"
 	"github.com/James-Chapman/LLMTradingBot/internal/llm"
 	"github.com/James-Chapman/LLMTradingBot/internal/paper"
 	"github.com/James-Chapman/LLMTradingBot/internal/storage"
@@ -60,6 +61,7 @@ func (s controlStore) LoadControlState() (control.PersistedState, bool, error) {
 	}
 	return control.PersistedState{
 		EmergencyStop:      st.EmergencyStop,
+		StopSince:          st.EmergencyStopSince,
 		DisabledMarkets:    st.DisabledMarkets,
 		DisabledStrategies: st.DisabledStrategies,
 		LiveMarkets:        st.LiveMarkets,
@@ -73,6 +75,7 @@ func (s controlStore) LoadControlState() (control.PersistedState, bool, error) {
 func (s controlStore) SaveControlState(state control.PersistedState) error {
 	return s.repo.SaveControlState(context.Background(), storage.ControlState{
 		EmergencyStop:      state.EmergencyStop,
+		EmergencyStopSince: state.StopSince,
 		DisabledMarkets:    state.DisabledMarkets,
 		DisabledStrategies: state.DisabledStrategies,
 		LiveMarkets:        state.LiveMarkets,
@@ -104,6 +107,8 @@ func (s paperStore) GetOpenPositions() ([]paper.OpenPositionRow, error) {
 			SignalConfidence: r.SignalConfidence,
 			TradeIdeaID:      derefString(r.TradeIdeaID),
 			OpenedAt:         r.OpenedAt,
+			EntryFee:         r.EntryFee,
+			ShortProceeds:    r.ShortProceeds,
 		})
 	}
 	return out, nil
@@ -143,6 +148,8 @@ func (s paperStore) UpsertOpenPosition(row paper.OpenPositionRow) error {
 		StrategyID:       row.StrategyID,
 		SignalConfidence: row.SignalConfidence,
 		TradeIdeaID:      row.TradeIdeaID,
+		EntryFee:         row.EntryFee,
+		ShortProceeds:    row.ShortProceeds,
 	})
 }
 
@@ -178,9 +185,15 @@ func (s paperStore) UpdateOrderPnL(orderID string, pnl float64) error {
 // krakenStore adapts the repository to kraken.OrderRepository.
 type krakenStore struct{ repo *storage.Repository }
 
-// SaveOrder stores an accepted live order in the trade ledger.
-func (s krakenStore) SaveOrder(order domain.OrderRecord, approvalID string, fee float64, environment, tradeIdeaID string) error {
-	return saveOrder(s.repo, order, approvalID, fee, environment, tradeIdeaID)
+// SaveOrder stores an accepted live order, with its client order id, in the trade ledger.
+func (s krakenStore) SaveOrder(order domain.OrderRecord, meta kraken.OrderMeta) error {
+	return s.repo.SaveOrder(context.Background(), order, storage.SaveOrderOptions{
+		ApprovalID:    meta.ApprovalID,
+		Fee:           meta.Fee,
+		Environment:   meta.Environment,
+		TradeIdeaID:   meta.TradeIdeaID,
+		ClientOrderID: meta.ClientOrderID,
+	})
 }
 
 // SaveRejectedTrade stores a live order refused by Kraken or locally.
@@ -205,14 +218,61 @@ func (s krakenStore) GetPendingLiveOrders() ([]kraken.PendingLiveOrder, error) {
 	}
 	out := make([]kraken.PendingLiveOrder, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, kraken.PendingLiveOrder{ID: r.ID, ExchangeOrderID: r.ExchangeOrderID, Price: r.Price})
+		out = append(out, kraken.PendingLiveOrder{
+			ID: r.ID, ExchangeOrderID: r.ExchangeOrderID, ClientOrderID: r.ClientOrderID,
+			PositionID: r.PositionID, Direction: domain.Direction(r.Direction),
+			Size: r.Size, Price: r.Price, Timestamp: r.Timestamp,
+		})
 	}
 	return out, nil
 }
 
-// UpdateOrderStatusAndFill sets a live order's status, fill price and fee.
-func (s krakenStore) UpdateOrderStatusAndFill(orderID, status string, fillPrice, fee float64) error {
-	return s.repo.UpdateOrderStatusAndFill(context.Background(), orderID, status, fillPrice, fee)
+// UpdateOrderExecution records a reconciled live order's status and execution.
+func (s krakenStore) UpdateOrderExecution(u kraken.OrderUpdate) error {
+	return s.repo.UpdateOrderExecution(context.Background(), storage.OrderExecution{
+		OrderID: u.OrderID, ExchangeOrderID: u.ExchangeOrderID, Status: u.Status,
+		ExecutedSize: u.ExecutedSize, AvgPrice: u.AvgPrice, Fee: u.Fee,
+	})
+}
+
+// liveBookStore adapts the repository to livebook.Store.
+type liveBookStore struct{ repo *storage.Repository }
+
+// SaveLivePosition persists one live position.
+func (s liveBookStore) SaveLivePosition(p livebook.Position) error {
+	return s.repo.SaveLivePosition(context.Background(), storage.LivePosition{
+		PositionID: p.ID, Market: p.Market, Status: string(p.Status),
+		RequestedSize: p.RequestedSize, Size: p.Size, AvgPrice: p.AvgPrice, EntryFee: p.EntryFee,
+		EntryOrderID: p.EntryOrderID, ExitOrderID: p.ExitOrderID, ExitReason: p.ExitReason,
+		ExitTradeIdeaID: p.ExitTradeIdeaID, StrategyID: p.StrategyID, TradeIdeaID: p.TradeIdeaID,
+		SignalConfidence: p.Confidence, OpenedAt: p.OpenedAt,
+		TrailingHigh: p.TrailingHigh, ExitRequestedAt: p.ExitRequestedAt,
+	})
+}
+
+// DeleteLivePosition removes one live position.
+func (s liveBookStore) DeleteLivePosition(id string) error {
+	return s.repo.DeleteLivePosition(context.Background(), id)
+}
+
+// LoadLivePositions returns every persisted live position.
+func (s liveBookStore) LoadLivePositions() ([]livebook.Position, error) {
+	rows, err := s.repo.GetLivePositions(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	out := make([]livebook.Position, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, livebook.Position{
+			ID: r.PositionID, Market: r.Market, Status: livebook.Status(r.Status),
+			RequestedSize: r.RequestedSize, Size: r.Size, AvgPrice: r.AvgPrice, EntryFee: r.EntryFee,
+			EntryOrderID: r.EntryOrderID, ExitOrderID: r.ExitOrderID, ExitReason: r.ExitReason,
+			ExitTradeIdeaID: r.ExitTradeIdeaID, StrategyID: r.StrategyID, TradeIdeaID: r.TradeIdeaID,
+			Confidence: r.SignalConfidence, OpenedAt: r.OpenedAt,
+			TrailingHigh: r.TrailingHigh, ExitRequestedAt: r.ExitRequestedAt,
+		})
+	}
+	return out, nil
 }
 
 // saveOrder is the shared paper/live order persistence call.
@@ -294,11 +354,16 @@ func (p paperEquity) GetTotalEquity(prices map[string]float64) float64 {
 	return p.engine.TotalEquity(prices)
 }
 
-// learnerOutcomes converts stored signal outcomes (newest first) for the learner.
+// learnerOutcomes converts stored signal outcomes (newest first) for the
+// learner; each carries its notional (entry price × |size|) so the learner
+// scores percentage returns.
 func learnerOutcomes(rows []storage.SignalOutcome) []learner.Outcome {
 	out := make([]learner.Outcome, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, learner.Outcome{StrategyID: r.StrategyID, Market: r.Market, Direction: r.Direction, Pnl: r.PnL})
+		out = append(out, learner.Outcome{
+			StrategyID: r.StrategyID, Market: r.Market, Direction: r.Direction, Pnl: r.PnL,
+			Notional: r.EntryPrice * abs(r.Size),
+		})
 	}
 	return out
 }

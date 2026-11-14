@@ -282,6 +282,46 @@ func TestOpenAICompatClientChat(t *testing.T) {
 		}
 	})
 
+	t.Run("GIVEN the caller cancels during a request WHEN chat is called THEN it fails without opening the circuit", func(t *testing.T) {
+		release := make(chan struct{})
+		slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+		}))
+		t.Cleanup(slow.Close)
+		t.Cleanup(func() { close(release) })
+		client := newTestClient(slow.URL, "", testModel, newFakeClock().Now)
+		callerCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		defer cancel()
+
+		_, err := client.Chat(callerCtx, msgs, true)
+
+		if err == nil {
+			t.Fatal("expected an error when the caller's context ends")
+		}
+		if client.CircuitState() != StateClosed || !client.CanAttempt() {
+			t.Errorf("circuit = %s, want closed: a caller cancellation is not a backend failure", client.CircuitState())
+		}
+	})
+
+	t.Run("GIVEN an already cancelled caller context WHEN chat is called THEN the circuit stays closed", func(t *testing.T) {
+		srv := newFakeOpenAIServer(t, `{"sentiment": 0.1}`)
+		client := newTestClient(srv.URL+"/v1", "", testModel, newFakeClock().Now)
+		callerCtx, cancel := context.WithCancel(ctx)
+		cancel()
+
+		_, err := client.Chat(callerCtx, msgs, true)
+
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("err = %v, want context.Canceled", err)
+		}
+		if client.CircuitState() != StateClosed {
+			t.Errorf("circuit = %s, want closed", client.CircuitState())
+		}
+	})
+
 	t.Run("GIVEN an open circuit WHEN chat is called THEN no request is sent", func(t *testing.T) {
 		srv := newFakeOpenAIServer(t, "{}")
 		client := newTestClient(srv.URL+"/v1", "", testModel, newFakeClock().Now)

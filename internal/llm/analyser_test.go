@@ -349,6 +349,16 @@ func TestAnalyseSignal(t *testing.T) {
 		}
 	})
 
+	t.Run("GIVEN a reply without confidence_scale WHEN parsed THEN a neutral analysis is returned without using the LLM", func(t *testing.T) {
+		client := newFakeLLMClient(map[string]any{"sentiment": -0.9, "reasoning": "strongly bearish, avoid"})
+
+		result := NewAnalyser(client, "€").AnalyseSignal(ctx, signalRequest())
+
+		if result.LLMUsed || result.ConfidenceScale != 1.0 {
+			t.Errorf("result = %+v, want neutral with LLMUsed=false", result)
+		}
+	})
+
 	t.Run("GIVEN an unparseable sentiment WHEN parsed THEN a neutral analysis is returned", func(t *testing.T) {
 		client := newFakeLLMClient(map[string]any{"sentiment": "bullish"})
 

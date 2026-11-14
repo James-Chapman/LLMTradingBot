@@ -69,6 +69,80 @@ func TestLoadsModelJSON(t *testing.T) {
 			t.Fatal("expected an error for a non-object JSON value")
 		}
 	})
+
+	t.Run("GIVEN JSON inside a think block before the answer WHEN parsed THEN the answer after the block is used", func(t *testing.T) {
+		content := "<think>Maybe {\"action\":\"long\",\"confidence\":0.9}? No…</think>\n{\"action\":\"hold\",\"confidence\":0.1}"
+
+		result, err := LoadsModelJSON(content)
+
+		if err != nil {
+			t.Fatalf("expected the answer to parse, got error %v", err)
+		}
+		if result["action"] != "hold" {
+			t.Errorf("action = %v, want hold (the reasoning must be ignored)", result["action"])
+		}
+	})
+
+	t.Run("GIVEN an unclosed think block WHEN parsed THEN there is no answer and an error is returned", func(t *testing.T) {
+		_, err := LoadsModelJSON("<think>I could say {\"action\":\"long\"} but I am still thinking")
+
+		if err == nil {
+			t.Fatal("expected an error when the reply is only unfinished reasoning")
+		}
+	})
+
+	t.Run("GIVEN reasoning ending in a bare closing think tag WHEN parsed THEN only the answer after it is used", func(t *testing.T) {
+		result, err := LoadsModelJSON("Perhaps {\"action\":\"short\"}.\n</think>\n{\"action\":\"hold\"}")
+
+		if err != nil || result["action"] != "hold" {
+			t.Fatalf("result = %v err = %v, want the hold answer", result, err)
+		}
+	})
+
+	t.Run("GIVEN a nested reply missing a comma after an inner object WHEN parsed THEN the whole repaired object is returned", func(t *testing.T) {
+		content := "{\n" +
+			"  \"market_outlooks\": {\n" +
+			"    \"BTC/EUR\": {\"bias\": \"bullish\", \"score\": 0.3}\n" +
+			"  }\n" +
+			"  \"overall_sentiment\": 0.2,\n" +
+			"  \"key_insight\": \"Momentum\"\n" +
+			"}"
+
+		result, err := LoadsModelJSON(content)
+
+		if err != nil {
+			t.Fatalf("expected repaired JSON, got error %v", err)
+		}
+		if _, ok := result["market_outlooks"]; !ok || result["overall_sentiment"] != 0.2 {
+			t.Errorf("result = %v, want the outer briefing object", result)
+		}
+	})
+
+	t.Run("GIVEN prose around a nested reply missing a comma WHEN parsed THEN the repaired outer object is preferred over an inner one", func(t *testing.T) {
+		content := "Here is the briefing:\n{\n" +
+			"  \"market_outlooks\": {\n" +
+			"    \"BTC/EUR\": {\"bias\": \"bullish\", \"score\": 0.3}\n" +
+			"  }\n" +
+			"  \"overall_sentiment\": 0.2\n" +
+			"}\nHope this helps."
+
+		result, err := LoadsModelJSON(content)
+
+		if err != nil {
+			t.Fatalf("expected extracted JSON, got error %v", err)
+		}
+		if _, ok := result["market_outlooks"]; !ok || result["overall_sentiment"] != 0.2 {
+			t.Errorf("result = %v, want the outer briefing object", result)
+		}
+	})
+
+	t.Run("GIVEN JSON followed by prose WHEN parsed THEN the object is extracted", func(t *testing.T) {
+		result, err := LoadsModelJSON("{\"action\": \"long\", \"confidence\": 0.7}\nThe trend looks strong.")
+
+		if err != nil || result["action"] != "long" {
+			t.Fatalf("result = %v err = %v, want the long object", result, err)
+		}
+	})
 }
 
 // TestMessagesToPrompt covers rendering chat messages as a transcript.

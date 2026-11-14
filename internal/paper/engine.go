@@ -8,7 +8,6 @@ package paper
 import (
 	"fmt"
 	"math"
-	"sort"
 	"sync"
 	"time"
 
@@ -46,6 +45,8 @@ type OpenPositionRow struct {
 	SignalConfidence *float64
 	TradeIdeaID      string
 	OpenedAt         time.Time // zero when unknown; ignored on upsert
+	EntryFee         float64   // fee paid at open; 0 for rows saved before it was recorded
+	ShortProceeds    *float64  // locked sale value of a paper short; nil for longs and older rows
 }
 
 // RejectedTrade is an execution-rejected order for the rejected-trades register.
@@ -126,29 +127,65 @@ type CloseOptions struct {
 
 // Engine simulates spot fills against live prices. It is safe for concurrent use.
 type Engine struct {
-	mu        sync.Mutex
-	repo      Repository
-	now       func() time.Time
-	cash      float64
-	positions map[string]domain.PositionRecord
-	openOrder []string // open position ids in insertion order
-	meta      map[string]*PositionMeta
-	orders    []domain.OrderRecord
-	fills     []domain.FillRecord
+	mu           sync.Mutex
+	repo         Repository
+	now          func() time.Time
+	newID        func() string
+	feeRate      float64
+	slippageRate float64
+	cash         float64
+	positions    map[string]domain.PositionRecord
+	openOrder    []string // open position ids in insertion order
+	meta         map[string]*PositionMeta
+	orders       []domain.OrderRecord
+	fills        []domain.FillRecord
+}
+
+// Costs overrides the fee and slippage applied to every fill.
+type Costs struct {
+	FeeRate      float64 // fraction of the fill value charged as fee
+	SlippageRate float64 // one-way fraction the fill price moves against the trader
+}
+
+// Options injects what a deterministic simulation (the backtest) needs. The
+// zero value keeps the live paper-trading behaviour.
+type Options struct {
+	// Costs nil uses TakerFeeRate and SlippageRate. A backtest that decides
+	// its own fill prices passes a zero SlippageRate and its fee rate.
+	Costs *Costs
+	// NewID nil uses random UUIDs for order and position ids.
+	NewID func() string
 }
 
 // NewEngine creates a paper engine with the given cash. repo may be nil
 // (no persistence) and a nil clock defaults to the current UTC time.
 func NewEngine(startingCapital float64, repo Repository, now func() time.Time) *Engine {
+	return NewEngineWithOptions(startingCapital, repo, now, Options{})
+}
+
+// NewEngineWithOptions creates a paper engine like NewEngine with injected
+// costs and id source; zero options behave exactly like NewEngine.
+func NewEngineWithOptions(startingCapital float64, repo Repository, now func() time.Time, opts Options) *Engine {
 	if now == nil {
 		now = domain.NowUTC
 	}
+	newID := opts.NewID
+	if newID == nil {
+		newID = domain.NewID
+	}
+	costs := Costs{FeeRate: TakerFeeRate, SlippageRate: SlippageRate}
+	if opts.Costs != nil {
+		costs = *opts.Costs
+	}
 	return &Engine{
-		repo:      repo,
-		now:       now,
-		cash:      startingCapital,
-		positions: map[string]domain.PositionRecord{},
-		meta:      map[string]*PositionMeta{},
+		repo:         repo,
+		now:          now,
+		newID:        newID,
+		feeRate:      costs.FeeRate,
+		slippageRate: costs.SlippageRate,
+		cash:         startingCapital,
+		positions:    map[string]domain.PositionRecord{},
+		meta:         map[string]*PositionMeta{},
 	}
 }
 
@@ -182,12 +219,14 @@ func (e *Engine) RestoreFromDB() error {
 		// Watermarks stay nil: UpdateTrailingPrices seeds them from the first
 		// live price rather than the stale entry price.
 		e.meta[row.PositionID] = &PositionMeta{
-			StrategyID:  row.StrategyID,
-			Direction:   row.Direction,
-			Confidence:  copyFloat(row.SignalConfidence),
-			OpenedAt:    openedAt,
-			Market:      row.Market,
-			TradeIdeaID: row.TradeIdeaID,
+			StrategyID:    row.StrategyID,
+			Direction:     directionOrFromSize(row.Direction, row.Size),
+			Confidence:    copyFloat(row.SignalConfidence),
+			OpenedAt:      openedAt,
+			Market:        row.Market,
+			TradeIdeaID:   row.TradeIdeaID,
+			EntryFee:      row.EntryFee,
+			ShortProceeds: restoredShortProceeds(row),
 		}
 	}
 	if len(rows) > 0 {
@@ -206,11 +245,20 @@ func (e *Engine) Execute(intent domain.ExecutionIntent, marketPrice float64, opt
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	fillPrice := applySlippage(intent.Direction, marketPrice)
+	// A short closes the oldest long on its market in full, so the fill is for
+	// the long's size. The signal's own size comes from a currency amount at
+	// today's price and rarely matches what was bought.
+	if intent.Direction == domain.Short {
+		if long, found := e.oldestLongLocked(intent.Market); found {
+			intent.Size = long.Size
+		}
+	}
+
+	fillPrice := applySlippage(intent.Direction, marketPrice, e.slippageRate)
 	fillValue := intent.Size * fillPrice
-	fee := fillValue * TakerFeeRate
+	fee := fillValue * e.feeRate
 	order := domain.OrderRecord{
-		ID:        domain.NewID(),
+		ID:        e.newID(),
 		Market:    intent.Market,
 		Direction: intent.Direction,
 		Size:      intent.Size,
@@ -234,7 +282,7 @@ func (e *Engine) Execute(intent domain.ExecutionIntent, marketPrice float64, opt
 			}))
 		}
 		logger.Warn("Paper order rejected", "market", intent.Market,
-			"required", fillValue+fee, "available_cash", e.cash, "reason", reason)
+			"required", fillValue+fee, "available_cash", e.availableCashLocked(), "reason", reason)
 		return order, ""
 	}
 
@@ -266,6 +314,8 @@ func (e *Engine) Execute(intent domain.ExecutionIntent, marketPrice float64, opt
 				SignalConfidence: copyFloat(meta.Confidence),
 				TradeIdeaID:      meta.TradeIdeaID, // opening signal survives restarts
 				OpenedAt:         meta.OpenedAt,
+				EntryFee:         meta.EntryFee,
+				ShortProceeds:    copyFloat(meta.ShortProceeds),
 			}))
 		} else {
 			// The short closed an existing long.
@@ -300,28 +350,25 @@ func (e *Engine) ClosePosition(positionID string, marketPrice float64, opts Clos
 	if pos.Size > 0 {
 		exitDirection = domain.Short
 	}
-	fillPrice := applySlippage(exitDirection, marketPrice)
+	fillPrice := applySlippage(exitDirection, marketPrice, e.slippageRate)
 	fillSize := math.Abs(pos.Size)
 	fillValue := fillSize * fillPrice
-	fee := fillValue * TakerFeeRate
+	fee := fillValue * e.feeRate
 
 	meta := e.metaLocked(positionID)
+	// The P&L sign follows the direction, so never leave it unknown.
+	meta.Direction = directionOrFromSize(meta.Direction, pos.Size)
 	if exitDirection == domain.Short {
 		// Closing a long: receive the sale proceeds.
 		e.cash += fillValue - fee
 	} else {
-		// Closing a short: release the locked proceeds and settle P&L. Restored
-		// shorts have no recorded proceeds, so fall back to entry price × size.
-		proceeds := pos.AvgPrice * fillSize
-		if meta.ShortProceeds != nil {
-			proceeds = *meta.ShortProceeds
-		}
-		e.cash += proceeds - fillValue - fee
+		// Closing a short: release the reserved proceeds and settle P&L.
+		e.cash += shortProceeds(pos, meta) - fillValue - fee
 	}
 
 	now := e.now().UTC()
 	order := domain.OrderRecord{
-		ID: domain.NewID(), Market: pos.Market, Direction: exitDirection,
+		ID: e.newID(), Market: pos.Market, Direction: exitDirection,
 		Size: fillSize, Price: fillPrice, Status: "filled",
 		Timestamp: now, PositionID: positionID,
 	}
@@ -482,12 +529,14 @@ func (e *Engine) StopLossTriggered(positionID string, marketPrice, stopLossPct f
 }
 
 // TotalEquity returns cash plus position value at the given prices (entry
-// price when a market has no price).
+// price when a market has no price). Positions are summed in the order they
+// were opened, so the float total is the same on every call.
 func (e *Engine) TotalEquity(prices map[string]float64) float64 {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	positionsValue := 0.0
-	for _, pos := range e.positions {
+	for _, id := range e.openOrder {
+		pos := e.positions[id]
 		price, ok := prices[pos.Market]
 		if !ok {
 			price = pos.AvgPrice
@@ -507,6 +556,26 @@ func (e *Engine) Cash() float64 {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.cash
+}
+
+// AvailableCash returns the cash free for new orders: cash less the sale
+// proceeds of open paper shorts, which are reserved as margin.
+func (e *Engine) AvailableCash() float64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.availableCashLocked()
+}
+
+// availableCashLocked returns cash less the margin reserved by open paper
+// shorts, summed in opening order; the caller holds e.mu.
+func (e *Engine) availableCashLocked() float64 {
+	reserved := 0.0
+	for _, id := range e.openOrder {
+		if pos := e.positions[id]; pos.Size < 0 {
+			reserved += shortProceeds(pos, e.meta[id])
+		}
+	}
+	return e.cash - reserved
 }
 
 // SetCash overrides the paper cash (used to restore it from the DB at startup).
@@ -600,7 +669,9 @@ func (e *Engine) rejectionReasonLocked(intent domain.ExecutionIntent, fillValue,
 			hasShort = true
 		}
 	}
-	affordable := e.cash >= fillValue+fee
+	// A paper short's proceeds are reserved as margin, so they cannot fund
+	// new orders.
+	affordable := e.availableCashLocked() >= fillValue+fee
 
 	if intent.Direction == domain.Long {
 		// Hard limit: one position per pair.
@@ -647,15 +718,8 @@ func (e *Engine) applyFillLocked(intent domain.ExecutionIntent, fillPrice, fee f
 	}
 
 	// Short: close the oldest long on this market (FIFO) if there is one.
-	var longs []domain.PositionRecord
-	for _, id := range e.openOrder {
-		if pos := e.positions[id]; pos.Market == intent.Market && pos.Size > 0 {
-			longs = append(longs, pos)
-		}
-	}
-	sort.SliceStable(longs, func(i, j int) bool { return longs[i].Timestamp.Before(longs[j].Timestamp) })
-	if len(longs) > 0 {
-		oldest := longs[0]
+	// Execute has already sized the fill to that long.
+	if oldest, found := e.oldestLongLocked(intent.Market); found {
 		e.cash += fillValue - fee // receive sale proceeds minus fee
 		meta := e.metaLocked(oldest.PositionID)
 		markClosed(meta, oldest.AvgPrice, oldest.Size, fillPrice, fee)
@@ -665,7 +729,8 @@ func (e *Engine) applyFillLocked(intent domain.ExecutionIntent, fillPrice, fee f
 	}
 
 	// No long to close: open a paper short. Only the fee leaves cash; the sale
-	// proceeds are locked as margin so free cash cannot increase.
+	// proceeds are reserved as margin (see availableCashLocked), so the short
+	// cannot fund other orders and its close settles against them.
 	e.cash -= fee
 	id := e.openPositionLocked(intent.Market, -intent.Size, fillPrice, now)
 	e.meta[id] = &PositionMeta{
@@ -676,9 +741,25 @@ func (e *Engine) applyFillLocked(intent domain.ExecutionIntent, fillPrice, fee f
 	return id
 }
 
+// oldestLongLocked returns the earliest-opened long on a market, if any.
+func (e *Engine) oldestLongLocked(market string) (domain.PositionRecord, bool) {
+	var oldest domain.PositionRecord
+	found := false
+	for _, id := range e.openOrder {
+		pos := e.positions[id]
+		if pos.Market != market || pos.Size <= 0 {
+			continue
+		}
+		if !found || pos.Timestamp.Before(oldest.Timestamp) {
+			oldest, found = pos, true
+		}
+	}
+	return oldest, found
+}
+
 // openPositionLocked adds a new position and returns its id.
 func (e *Engine) openPositionLocked(market string, size, price float64, now time.Time) string {
-	id := domain.NewID()
+	id := e.newID()
 	e.positions[id] = domain.PositionRecord{
 		PositionID: id, Market: market, Size: size, AvgPrice: price, Timestamp: now,
 	}
@@ -723,8 +804,42 @@ func markClosed(meta *PositionMeta, avgPrice, size, exitPrice, exitFee float64) 
 	meta.ExitFeeAtClose = exitFee
 }
 
-// realisedPnL computes P&L from close metadata. As in the Python engine, any
-// direction other than "long" is treated as a short.
+// directionOrFromSize returns the stored direction, or derives it from the
+// sign of the position size when the stored value is empty (a nullable column).
+func directionOrFromSize(direction string, size float64) string {
+	if direction != "" {
+		return direction
+	}
+	if size < 0 {
+		return "short"
+	}
+	return "long"
+}
+
+// shortProceeds returns the sale value reserved by an open paper short: the
+// recorded proceeds, or entry price × size for a row saved without them.
+func shortProceeds(pos domain.PositionRecord, meta *PositionMeta) float64 {
+	if meta != nil && meta.ShortProceeds != nil {
+		return *meta.ShortProceeds
+	}
+	return pos.AvgPrice * math.Abs(pos.Size)
+}
+
+// restoredShortProceeds returns a restored short's reserved proceeds (stored
+// value, else size × average price); nil for longs.
+func restoredShortProceeds(row OpenPositionRow) *float64 {
+	if row.Size >= 0 {
+		return nil
+	}
+	if row.ShortProceeds != nil {
+		return copyFloat(row.ShortProceeds)
+	}
+	return domain.Float(row.AvgPrice * math.Abs(row.Size))
+}
+
+// realisedPnL computes P&L from close metadata. The direction is always set
+// by the time a position closes (see directionOrFromSize); anything other
+// than "long" is a short.
 func realisedPnL(meta *PositionMeta) float64 {
 	signedSize := -meta.SizeAtClose
 	if meta.Direction == "long" {
@@ -733,12 +848,13 @@ func realisedPnL(meta *PositionMeta) float64 {
 	return signedSize*(meta.ExitPriceAtClose-meta.AvgPriceAtClose) - meta.EntryFee - meta.ExitFeeAtClose
 }
 
-// applySlippage moves the price against the trader by SlippageRate.
-func applySlippage(direction domain.Direction, price float64) float64 {
+// applySlippage moves the price against the trader by rate (SlippageRate
+// unless the engine was given other costs).
+func applySlippage(direction domain.Direction, price, rate float64) float64 {
 	if direction == domain.Long {
-		return price * (1 + SlippageRate)
+		return price * (1 + rate)
 	}
-	return price * (1 - SlippageRate)
+	return price * (1 - rate)
 }
 
 // copyFloat returns an independent copy of an optional float.

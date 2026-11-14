@@ -73,7 +73,7 @@ Output of `risk.Engine.EvaluateTrade()`.
 | `TradeIdeaID` (`trade_idea_id`) | string | ID of the evaluated `TradeIdea` |
 | `Approved` (`approved`) | bool | Whether the trade passed all risk checks |
 | `Reason` (`reason`) | string | Human-readable explanation of the decision |
-| `AdjustedSizing` (`adjusted_sizing`) | *float64 | Optional sizing override (not currently used) |
+| `AdjustedSizing` (`adjusted_sizing`) | *float64 | Approved size as a fraction of equity when risk changed the size; a fallback for sizing when `ProposedSize` is absent. Nil when equity is not positive. |
 | `ProposedSize` (`proposed_size_eur`) | *float64 | Exact quote-currency amount the risk engine approved |
 | `Timestamp` (`timestamp`) | time.Time | UTC evaluation time |
 
@@ -198,7 +198,7 @@ Processed sentiment signal extracted from a `NewsItem`. `news.DefaultSignal()` r
 
 The schema is defined as raw `CREATE TABLE IF NOT EXISTS` statements that reproduce the DDL SQLAlchemy generated for the Python version, so an existing `trading_bot.db` opens and keeps working. The database is a single SQLite file (`DATABASE_PATH`, default `./trading_bot.db`) opened through `modernc.org/sqlite` with `busy_timeout(5000)`, `journal_mode(WAL)` and `foreign_keys` off (SQLAlchemy never enabled it). Migrations are applied automatically at start-up by `storage.Open()`.
 
-`*storage.Repository` is the single gateway for all reads and writes. Its methods take a `context.Context` first, for example `SaveTradeIdea(ctx, idea, signalContext)`, `SaveOrder(ctx, order, SaveOrderOptions{...})`, and `GetLatestCash(ctx)`.
+`*storage.Repository` is the single gateway for all reads and writes. Its methods take a `context.Context` first, for example `SaveTradeIdea(ctx, idea, signalContext)`, `SaveOrder(ctx, order, SaveOrderOptions{...})`, and `GetLatestCashFor(ctx, "paper")`.
 
 ---
 
@@ -272,6 +272,10 @@ One row per currently open trade. Rows are created on opening fills and deleted 
 | `unrealized_pnl` | FLOAT | Mark-to-market. Not regularly updated in DB; use in-memory value |
 | `opened_at` | DATETIME | Position creation time |
 | `updated_at` | DATETIME | Last update time (set on upsert) |
+| `entry_fee` | FLOAT nullable | Fee paid when the position opened, so the realised P&L of a restored position still includes it. NULL (rows from before this column) reads as 0. |
+| `short_proceeds` | FLOAT nullable | Sale value of a paper short, reserved as margin and settled against on close. NULL for longs; for an older short row the paper engine uses `size × avg_price`. |
+
+A NULL or empty `direction` is derived from the sign of `size` when the position is restored (and again at close), so the P&L sign of a restored long is never flipped.
 
 ---
 
@@ -302,17 +306,20 @@ Written when a position is fully closed. This is the learning dataset used by `l
 
 ### Table: `equity_snapshots`
 
-Time series of total portfolio equity. Written every strategy tick (~30 seconds) and by the equity ticker loop (every 10 seconds); trimmed to 17,280 rows (~48 hours at 10 seconds, `storage.MaxEquityRows`).
+Time series of total portfolio equity, one series per trading environment. Written every strategy tick (~30 seconds) and by the equity ticker loop (every 10 seconds) for the current environment, and after every paper fill as a `paper` row; trimmed to the newest 17,280 rows (~48 hours at 10 seconds, `storage.MaxEquityRows`) of each environment, so a long live session never pushes out the paper history.
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | INTEGER PK (auto) | |
 | `total_equity` | FLOAT | Cash + positions at mark price |
-| `cash` | FLOAT | Liquid cash only |
+| `cash` | FLOAT | Cash (for paper: the engine's full cash, including the margin reserved by open shorts) |
 | `positions_value` | FLOAT | Mark-to-market positions value |
 | `timestamp` | DATETIME | Snapshot time |
+| `environment` | VARCHAR, default `'paper'` | `"paper"` (paper engine values) or `"live"` (Kraken balances). Rows written before the column existed are paper rows. |
 
-On restart, `Repository.GetLatestCash()` is called to restore the paper engine's cash (`paper.Engine.SetCash`) from the most recent snapshot. This prevents cash from being reset to `STARTING_CAPITAL` after a restart.
+Repository methods take the environment: `SaveEquitySnapshotFor`, `GetEquityHistoryFor` and `GetLatestCashFor` (the older `SaveEquitySnapshot`, `GetEquityHistory`, `GetLatestCash` and `GetLatestEquity` are the paper versions).
+
+On restart, `GetLatestCashFor(ctx, "paper")` restores the paper engine's cash (`paper.Engine.SetCash`) from the most recent **paper** snapshot, whatever the current environment, so a live Kraken balance never becomes paper cash and cash is not reset to `STARTING_CAPITAL`. The dashboard's equity chart, equity and cash come from the current environment's rows; when the environment is switched, the next snapshot reloads the chart from the new environment's rows.
 
 ---
 
@@ -395,7 +402,7 @@ The optional columns are supplied through `storage.SignalContext` (`MomentumPct`
 
 ### Table: `activity_log`
 
-Persisted copy of the activity log. Every bot event written via `ActivityLog.Info/Warn/Error/Success()` is appended here. Trimmed to keep the 2,000 most recent rows (every 10 strategy ticks).
+Persisted copy of the activity log. Every bot event written via `ActivityLog.Info/Warn/Error/Success()` is appended here. Trimmed to keep the 2,000 most recent rows (every 10 strategy ticks). "Most recent" is by `id` (insertion order), not `timestamp`, so a system clock that steps backwards cannot make the trim delete newer rows.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -443,6 +450,9 @@ Single-row table (always `id = 1`) storing operator toggles. Written on every to
 | `trading_mode` | VARCHAR | Mode chosen in the web interface; NULL until first changed there (then the default, `manual`) |
 | `trading_environment` | VARCHAR | `paper` / `live` chosen in the web interface; NULL until first changed there (then the default, `paper`) |
 | `updated_at` | DATETIME | Last modification time |
+| `emergency_stop_since` | DATETIME nullable | When the active emergency stop was pressed (NULL when not stopped) |
+
+On restore, an active stop keeps its `emergency_stop_since`; a stop saved before this column existed gets the load time, so the dashboard never shows a stop with no "since". A stored `trading_mode` or `trading_environment` that is not a valid value falls back to `manual` / `paper` with a logged warning (NULL still means "never chosen", so the configured default applies).
 
 ---
 
@@ -509,8 +519,9 @@ One row per hourly reflection. Loaded at start-up by `LLMAnalyser.LoadFromDB()` 
    - `order_records`: `position_id`, `pnl`, `trade_idea_id`
    - `trade_ideas`: `momentum_pct`, `indicators`, `llm_*`, `news_context`, `risk_*`
    - `signal_outcomes`: `trade_idea_id`, `position_id`, `closing_trade_idea_id`
-   - `open_positions`: `trade_idea_id`
-   - `control_state`: `live_markets`, `selected_strategy`, `trading_mode`, `trading_environment`
+   - `open_positions`: `trade_idea_id`, `entry_fee`, `short_proceeds`
+   - `equity_snapshots`: `environment` (`DEFAULT 'paper'`, so existing rows become paper rows)
+   - `control_state`: `live_markets`, `selected_strategy`, `trading_mode`, `trading_environment`, `emergency_stop_since`
 
 4. **Indexes** — every index is created with `CREATE INDEX IF NOT EXISTS`, skipping any whose columns are missing on a legacy table.
 

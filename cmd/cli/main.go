@@ -1,14 +1,16 @@
 // Command cli is the operator command line for the trading bot (the Go port
 // of cli.py): show the running bot's status, approve or reject pending
 // trades, or start the bot. Settings are managed in the dashboard; the CLI
-// only needs to know where the bot listens.
+// only needs to know where the bot listens. When the bot's database holds an
+// access token (the bot listens on a non-loopback address) the CLI sends it.
 //
-// Usage:
+// Usage (flags may come before or after the command):
 //
-//	cli [-host H] [-port P] [-log FILE] [-db FILE] status|approve ID|reject ID|run
+//	cli [-host H] [-port P] [-log FILE] [-db FILE] [-token T] status|approve ID|reject ID|run
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -16,20 +18,28 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/James-Chapman/LLMTradingBot/internal/app"
 	"github.com/James-Chapman/LLMTradingBot/internal/config"
 	"github.com/James-Chapman/LLMTradingBot/internal/observability"
+	"github.com/James-Chapman/LLMTradingBot/internal/secret"
+	"github.com/James-Chapman/LLMTradingBot/internal/storage"
 )
 
 // apiTimeout bounds each call to the running bot.
 const apiTimeout = 5 * time.Second
+
+// commands are the CLI's commands.
+var commands = []string{"status", "approve", "reject", "run"}
 
 // main runs the CLI and exits with its status code.
 func main() {
@@ -39,16 +49,22 @@ func main() {
 // run parses args, executes the command and returns the process exit code
 // (0 ok, 1 failure, 2 usage error).
 func run(args []string, stdout, stderr io.Writer) int {
+	return runWith(args, stdout, stderr, secret.Default())
+}
+
+// runWith is run with the box that opens the access token stored in the database.
+func runWith(args []string, stdout, stderr io.Writer, box secret.Box) int {
 	defaults := config.Defaults()
 	fs := flag.NewFlagSet("cli", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	host := fs.String("host", defaults.Host, "address the bot listens on")
 	port := fs.Int("port", defaults.Port, "port the bot listens on")
 	logFile := fs.String("log", defaults.LogFile, "log file")
-	db := fs.String("db", defaults.DatabasePath, "database file (only used by run)")
+	db := fs.String("db", defaults.DatabasePath, "the bot's database file (its access token is read from it)")
+	token := fs.String("token", "", "access token (default: the one stored in -db, if any)")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Kraken Trading Bot CLI")
-		fmt.Fprintln(stderr, "\nUsage: cli [flags] <command> [args]")
+		fmt.Fprintln(stderr, "\nUsage: cli [flags] <command> [args] [flags]")
 		fmt.Fprintln(stderr, "\nCommands:")
 		fmt.Fprintln(stderr, "  status          Show the running bot's status")
 		fmt.Fprintln(stderr, "  approve ID      Approve pending trade")
@@ -57,7 +73,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "\nFlags:")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil {
+	positional, err := parseInterspersed(fs, args)
+	if err != nil {
+		return 2
+	}
+	command := ""
+	if len(positional) > 0 {
+		command = positional[0]
+	}
+	if !slices.Contains(commands, command) {
+		if command != "" {
+			fmt.Fprintf(stderr, "unknown command %q\n", command)
+		}
+		fs.Usage()
 		return 2
 	}
 
@@ -68,26 +96,60 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	defer closeLogs()
 	logger := observability.Logger("cli")
+	logger.Info("CLI started", "command", command)
+	api := apiClient{addr: net.JoinHostPort(*host, strconv.Itoa(*port)), token: *token}
 
-	command := fs.Arg(0)
-	logger.Info("CLI started", "command", command, "cli_args", args)
-	addr := net.JoinHostPort(*host, strconv.Itoa(*port))
-
-	switch command {
-	case "status":
-		return showStatus(stdout, stderr, addr)
-	case "approve", "reject":
-		if fs.NArg() < 2 {
-			fmt.Fprintf(stderr, "usage: cli %s TRADE_ID\n", command)
-			return 2
-		}
-		return decide(stdout, stderr, addr, command, fs.Arg(1))
-	case "run":
-		return runBot(stdout, stderr, addr, botArgs(*db, *host, *port, *logFile))
-	default:
-		fs.Usage()
-		return 0
+	if command == "run" {
+		return runBot(stdout, stderr, api.addr, botArgs(*db, *host, *port, *logFile))
 	}
+	if api.token == "" {
+		api.token = storedToken(*db, box, stderr)
+	}
+	if command == "status" {
+		return showStatus(stdout, stderr, api)
+	}
+	if len(positional) < 2 {
+		fmt.Fprintf(stderr, "usage: cli %s TRADE_ID\n", command)
+		return 2
+	}
+	return decide(stdout, stderr, api, command, positional[1])
+}
+
+// parseInterspersed parses flags placed anywhere among the arguments and
+// returns the positional ones (command, trade ID) in order.
+func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positional []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		rest := fs.Args()
+		if len(rest) == 0 {
+			return positional, nil
+		}
+		positional = append(positional, rest[0])
+		args = rest[1:]
+	}
+}
+
+// storedToken reads the bot's access token from the database at dbPath. It
+// returns "" when the file does not exist (it is never created) or holds no
+// token; a token that cannot be read is reported on stderr.
+func storedToken(dbPath string, box secret.Box, stderr io.Writer) string {
+	if _, err := os.Stat(dbPath); err != nil {
+		return ""
+	}
+	repo, err := storage.Open(dbPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "cannot read the access token from %s: %v\n", dbPath, err)
+		return ""
+	}
+	defer repo.Close()
+	token, err := app.StoredAccessToken(context.Background(), repo, box)
+	if err != nil {
+		fmt.Fprintf(stderr, "cannot read the access token from %s: %v\n", dbPath, err)
+	}
+	return token
 }
 
 // botArgs builds the tradingbot start-up flags that `cli run` passes through.
@@ -106,8 +168,8 @@ type dashboardStatus struct {
 }
 
 // showStatus prints the running bot's version, mode, environment and equity.
-func showStatus(stdout, stderr io.Writer, addr string) int {
-	body, code := apiCall(stderr, http.MethodGet, addr, "/api/dashboard")
+func showStatus(stdout, stderr io.Writer, api apiClient) int {
+	body, code := api.call(stderr, http.MethodGet, "/api/dashboard")
 	if code != 0 {
 		return code
 	}
@@ -126,8 +188,8 @@ func showStatus(stdout, stderr io.Writer, addr string) int {
 }
 
 // decide approves or rejects a pending trade through the running bot's API.
-func decide(stdout, stderr io.Writer, addr, action, tradeID string) int {
-	body, code := apiCall(stderr, http.MethodPost, addr, fmt.Sprintf("/api/approvals/%s/%s", tradeID, action))
+func decide(stdout, stderr io.Writer, api apiClient, action, tradeID string) int {
+	body, code := api.call(stderr, http.MethodPost, fmt.Sprintf("/api/approvals/%s/%s", url.PathEscape(tradeID), action))
 	if code != 0 {
 		return code
 	}
@@ -143,24 +205,38 @@ func decide(stdout, stderr io.Writer, addr, action, tradeID string) int {
 	return 0
 }
 
-// apiCall sends a request to the running bot and returns the response body,
+// apiClient calls the running bot's API.
+type apiClient struct {
+	addr  string // host:port
+	token string // sent as a bearer token when set
+}
+
+// call sends a request to the running bot and returns the response body,
 // or an exit code of 1 after printing the failure.
-func apiCall(stderr io.Writer, method, addr, path string) ([]byte, int) {
-	url := "http://" + addr + path
-	req, err := http.NewRequest(method, url, strings.NewReader(""))
+func (c apiClient) call(stderr io.Writer, method, path string) ([]byte, int) {
+	target := "http://" + c.addr + path
+	req, err := http.NewRequest(method, target, strings.NewReader(""))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return nil, 1
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
 	resp, err := (&http.Client{Timeout: apiTimeout}).Do(req)
 	if err != nil {
-		fmt.Fprintf(stderr, "Cannot reach bot at %s: %v\n", url, err)
+		fmt.Fprintf(stderr, "Cannot reach bot at %s: %v\n", target, err)
 		fmt.Fprintln(stderr, "Is the bot running? Start it with:  go run ./cmd/tradingbot")
 		return nil, 1
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusUnauthorized {
+		fmt.Fprintf(stderr, "API error 401: %s\n", body)
+		fmt.Fprintln(stderr, "The bot needs its access token: pass -db with the bot's database or -token.")
+		return nil, 1
+	}
 	if resp.StatusCode >= 400 {
 		fmt.Fprintf(stderr, "API error %d: %s\n", resp.StatusCode, body)
 		return nil, 1

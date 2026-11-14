@@ -1,6 +1,7 @@
 // Package universe resolves the set of tradable markets: the configured fixed
-// markets plus a dynamic list of Ethereum-ecosystem coins from CoinGecko that
-// are tradable as EUR pairs on Kraken.
+// markets plus a dynamic list of Ethereum-ecosystem coins from CoinGecko,
+// quoted in the base currency. Which of them Kraken really lists is decided
+// later, by the market adapter's symbol validation at start-up.
 package universe
 
 import (
@@ -22,17 +23,14 @@ var logger = observability.Logger("universe_resolver")
 // DefaultBaseURL is the CoinGecko API origin.
 const DefaultBaseURL = "https://api.coingecko.com"
 
-// DefaultMaxCoins caps how many dynamic markets are added.
+// DefaultMaxCoins is the default cap on dynamic markets (MAX_ETH_ECOSYSTEM_COINS).
 const DefaultMaxCoins = 10
+
+// DefaultQuoteCurrency is the quote currency when none is given.
+const DefaultQuoteCurrency = "EUR"
 
 // coinsMarketsPath is the CoinGecko endpoint listing coins by market cap.
 const coinsMarketsPath = "/api/v3/coins/markets"
-
-// defaultKrakenEURMarkets are EUR pairs known to trade on Kraken.
-var defaultKrakenEURMarkets = map[string]struct{}{
-	"ADA/EUR": {}, "AAVE/EUR": {}, "AVAX/EUR": {}, "BAT/EUR": {}, "COMP/EUR": {}, "DOT/EUR": {},
-	"LINK/EUR": {}, "MKR/EUR": {}, "SNX/EUR": {}, "SOL/EUR": {}, "UNI/EUR": {}, "YFI/EUR": {},
-}
 
 // fallbackEthEcosystemCoins is used when the CoinGecko request fails.
 var fallbackEthEcosystemCoins = []string{"ADA", "LINK", "UNI", "AAVE", "MKR", "SNX", "COMP", "YFI", "BAT"}
@@ -41,8 +39,9 @@ var fallbackEthEcosystemCoins = []string{"ADA", "LINK", "UNI", "AAVE", "MKR", "S
 type Options struct {
 	HTTPClient       *http.Client     // default: 10 s timeout client
 	BaseURL          string           // default: DefaultBaseURL
-	AvailableMarkets []string         // default: known Kraken EUR pairs plus the fixed markets
-	MaxCoins         int              // default: DefaultMaxCoins
+	AvailableMarkets []string         // optional allow-list; default: every coin, left to Kraken validation
+	MaxCoins         int              // cap on dynamic markets; 0 adds none, negative selects DefaultMaxCoins
+	QuoteCurrency    string           // quote currency of the dynamic pairs; default DefaultQuoteCurrency
 	Now              func() time.Time // default: UTC now
 }
 
@@ -52,6 +51,7 @@ type Resolver struct {
 	fixedMarkets  []string
 	dynamicSource string
 	maxCoins      int
+	quote         string
 	client        *http.Client
 	baseURL       string
 	available     map[string]struct{}
@@ -65,6 +65,7 @@ func NewResolver(fixedMarkets []string, dynamicSource string, opts Options) *Res
 		fixedMarkets:  append([]string{}, fixedMarkets...),
 		dynamicSource: dynamicSource,
 		maxCoins:      opts.MaxCoins,
+		quote:         strings.ToUpper(strings.TrimSpace(opts.QuoteCurrency)),
 		client:        opts.HTTPClient,
 		baseURL:       strings.TrimRight(opts.BaseURL, "/"),
 		now:           opts.Now,
@@ -72,8 +73,11 @@ func NewResolver(fixedMarkets []string, dynamicSource string, opts Options) *Res
 	if r.dynamicSource == "" {
 		r.dynamicSource = "coingecko"
 	}
-	if r.maxCoins <= 0 {
+	if r.maxCoins < 0 {
 		r.maxCoins = DefaultMaxCoins
+	}
+	if r.quote == "" {
+		r.quote = DefaultQuoteCurrency
 	}
 	if r.client == nil {
 		r.client = &http.Client{Timeout: 10 * time.Second}
@@ -84,16 +88,9 @@ func NewResolver(fixedMarkets []string, dynamicSource string, opts Options) *Res
 	if r.now == nil {
 		r.now = domain.NowUTC
 	}
-	r.available = map[string]struct{}{}
 	if len(opts.AvailableMarkets) > 0 {
+		r.available = map[string]struct{}{}
 		for _, m := range opts.AvailableMarkets {
-			r.available[m] = struct{}{}
-		}
-	} else {
-		for m := range defaultKrakenEURMarkets {
-			r.available[m] = struct{}{}
-		}
-		for _, m := range r.fixedMarkets {
 			r.available[m] = struct{}{}
 		}
 	}
@@ -136,20 +133,24 @@ func (r *Resolver) ResolveUniverse(ctx context.Context) domain.UniverseSnapshot 
 	return snapshot
 }
 
-// ResolveDynamicMarkets returns available EUR pairs for the top Ethereum
-// ecosystem coins by market cap, falling back to a static list on API failure.
+// ResolveDynamicMarkets returns up to maxCoins pairs (coin/quote) for the top
+// Ethereum-ecosystem coins by market cap, falling back to a static coin list
+// on API failure. A cap of 0 adds none without asking CoinGecko.
 func (r *Resolver) ResolveDynamicMarkets(ctx context.Context) []string {
+	markets := []string{}
+	if r.maxCoins == 0 {
+		return markets
+	}
 	coins, err := r.fetchEthEcosystemCoins(ctx)
 	if err != nil {
 		logger.Warn("Dynamic universe API failed; using fallback", "error", err.Error())
 		coins = fallbackEthEcosystemCoins
 	}
 
-	markets := []string{}
 	added := map[string]bool{}
 	for _, coin := range coins {
-		market := coin + "/EUR"
-		if _, ok := r.available[market]; ok && !added[market] {
+		market := coin + "/" + r.quote
+		if r.isAvailable(market) && !added[market] {
 			markets = append(markets, market)
 			added[market] = true
 		}
@@ -160,11 +161,20 @@ func (r *Resolver) ResolveDynamicMarkets(ctx context.Context) []string {
 	return markets
 }
 
+// isAvailable reports whether market passes the optional allow-list.
+func (r *Resolver) isAvailable(market string) bool {
+	if r.available == nil {
+		return true
+	}
+	_, ok := r.available[market]
+	return ok
+}
+
 // fetchEthEcosystemCoins queries CoinGecko for upper-cased coin symbols in
 // market-cap order.
 func (r *Resolver) fetchEthEcosystemCoins(ctx context.Context) ([]string, error) {
 	params := url.Values{}
-	params.Set("vs_currency", "eur")
+	params.Set("vs_currency", strings.ToLower(r.quote))
 	params.Set("category", "ethereum-ecosystem")
 	params.Set("order", "market_cap_desc")
 	params.Set("per_page", strconv.Itoa(r.maxCoins*3))

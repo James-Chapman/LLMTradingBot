@@ -34,7 +34,11 @@ An indicator-consensus signal generator. It compares averaged recent price windo
 **Type:** `BasicAndLLMStrategy`  
 **Strategy ID:** `"basic_and_llm_strategy"` (`strategy.BasicAndLLMID`, also `strategy.DefaultID`)
 
-Uses the same momentum, higher-timeframe, hard-filter, support, and consensus gates as `BasicStrategy`, then calls `Analyser.AnalyseSignal()` for each surviving market. The LLM adjusts signal confidence and can veto the signal entirely when `ConfidenceScale < LLM_VETO_THRESHOLD`. This is the default selected strategy. With no analyser supplied (for example in the backtest replay) it uses `strategy.NeutralAnalyser`, which behaves like an unavailable LLM.
+Uses the same momentum, higher-timeframe, hard-filter, support, and consensus gates as `BasicStrategy`, then calls `Analyser.AnalyseSignal()` for each surviving market. The LLM adjusts signal confidence and can veto the signal entirely when `ConfidenceScale < LLM_VETO_THRESHOLD`. This is the default selected strategy. With no analyser supplied (for example in tests; the backtest refuses LLM strategies) it uses `strategy.NeutralAnalyser`, which behaves like an unavailable LLM.
+
+**Backtest replay** (`internal/backtest`). The replay feeds non-LLM strategies the same `strategy.MarketData` as live, built by the shared `marketdata.Build`, and runs the risk engine, learner, stops and fully automated gates in the live order; LLM strategies are refused. See [14-backtesting.md](14-backtesting.md).
+
+Two indicator details: RSI on a flat series (no gains and no losses, e.g. a pegged pair) is a neutral 50, not 100; and `atr_pct` is computed from the unrounded ATR, because the published `atr` is rounded to 6 decimal places and is 0 for sub-cent coins.
 
 ---
 
@@ -241,14 +245,13 @@ type key struct {
 }
 
 type stats struct {
-	weightedWins  float64   // exponentially decayed winning weight
-	weightedTotal float64   // exponentially decayed total weight
-	rawCount      int       // number of outcomes
-	winPnlTotal   float64
-	winCount      int
-	lossPnlTotal  float64
-	lossCount     int
-	pnlHistory    []float64 // chronological realised P&L values, oldest first
+	rawCount     int       // number of outcomes
+	winPnlTotal  float64   // raw totals for the dashboard's mean win/loss columns
+	winCount     int
+	lossPnlTotal float64
+	lossCount    int
+	pnlHistory   []float64 // chronological realised P&L in currency, oldest first
+	returns      []float64 // the same outcomes as P&L / notional, oldest first
 }
 
 type PerformanceLearner struct {
@@ -265,26 +268,20 @@ Example key: `{"basic_and_llm_strategy", "BTC/EUR", "long"}`
 ### `RecordOutcome()`
 
 ```go
-func (l *PerformanceLearner) RecordOutcome(strategyID, market, direction string, pnl float64) {
-	s := l.statsFor(key{strategyID, market, direction})
-	s.weightedWins *= Decay
-	s.weightedTotal *= Decay
-	s.weightedTotal += 1.0
-	if pnl > 0 {
-		s.weightedWins += 1.0
-	}
-	s.recordPnl(pnl)
-	s.rawCount++
-}
+func (l *PerformanceLearner) RecordOutcomeWithNotional(strategyID, market, direction string, pnl, notional float64)
+func (l *PerformanceLearner) RecordOutcome(strategyID, market, direction string, pnl float64) // notional unknown
 ```
 
-Called through `App.recordClosedOutcome()` for every paper close:
-- Stop-loss and trailing-stop closures
-- Fully-automated SHORT execution (closing a long)
-- Manual approval SHORT execution (closing a long)
-- Manual UI close
+Each outcome is appended to the key's history. `notional` is the trade's entry price × size; the learner stores the trade's return `pnl / notional` for the quality score. When the notional is unknown (`0`, or `RecordOutcome`), the currency P&L is stored instead; the score's normalisation still removes its scale, but trades of different sizes then weigh by size.
 
-and from `paper.ClosePositionsForOperatorReset()` for each position closed by the operator reset.
+Called through `App.recordClosedOutcome()` with the closed trade's notional for every close:
+- Paper stop-loss and trailing-stop closures
+- Fully-automated SHORT execution (closing a paper long)
+- Manual approval SHORT execution (closing a paper long)
+- Manual UI close of a paper position
+- A live sell that fills (stop, signal or manual close), with notional = entry price × executed size from the live book
+
+For paper closes the notional is `AvgPriceAtClose × SizeAtClose` from `paper.Engine.Meta()`. `paper.ClosePositionsForOperatorReset()` passes it the same way for each position closed by the operator reset. At start-up the learner is seeded from `signal_outcomes` with notional = `entry_price × |size|` per row, so a restart scores the same returns. `RecordOutcome` remains for callers with no notional.
 
 ---
 
@@ -303,7 +300,7 @@ func (l *PerformanceLearner) AdjustConfidence(strategyID, market, direction stri
 
 **`Decay = 0.92`** — each older trade is worth 92% of the next more recent one. After 10 trades, the oldest has weight `0.92^9 ≈ 0.47` relative to the newest.
 
-**Scale interpretation:** `qualityScore()` blends the decayed win rate with average win/loss magnitude into an expectancy normalised by the larger of the average win and average loss (at least 1), clamped to [−1, 1]. A strongly negative expectancy can halve confidence, neutral expectancy leaves it unchanged, and strongly positive expectancy can boost confidence by up to 50%.
+**Scale interpretation:** `qualityScore()` computes, with the same recency weights (newest 1.0, then `Decay` per older trade), the win rate and the mean return of winning and of losing trades, where a return is P&L as a fraction of the trade's notional. The expectancy `winRate·meanWin + (1−winRate)·meanLoss` is divided by the larger of `|meanWin|` and `|meanLoss|` and clamped to [−1, 1] (0 when every trade broke even). Because it works on returns and is normalised, the same sequence of percentage outcomes gives the same score on a 100-unit and a 10,000-unit account; previously a floor of 1 currency unit on the normaliser kept the score near 0 for small trades. A strongly negative expectancy can halve confidence, neutral expectancy leaves it unchanged, and strongly positive expectancy can boost confidence by up to 50%.
 
 Adjusted confidence is capped at 0.95. There is no lower clamp in the learner; the strategy's own floor (0.10) applies before adjustment.
 
@@ -315,7 +312,7 @@ Adjusted confidence is capped at 0.95. There is no lower clamp in the learner; t
 func (l *PerformanceLearner) LoadFromOutcomes(outcomes []learner.Outcome)
 ```
 
-Called at start-up with up to 1,000 of the most recent `signal_outcomes` rows (newest first) from the database. Populates the stats and chronological P&L history so the learner has history from previous sessions without requiring live trades. Weights start at 1.0 for the newest outcome per key and decay by `Decay` for each older one.
+Called at start-up with up to 1,000 of the most recent `signal_outcomes` rows (newest first) from the database. Populates the stats and chronological history so the learner has history from previous sessions without requiring live trades. `learner.Outcome.Notional` (entry price × size of the row) gives the trade's return; rows seeded this way score exactly as if they had been recorded one by one. Weights start at 1.0 for the newest outcome per key and decay by `Decay` for each older one.
 
 ---
 
@@ -459,6 +456,8 @@ rec := in.Analyser.RecommendTrade(ctx, llm.RecommendationRequest{
 })
 ```
 
+`in.Portfolio.OpenPositions` comes from `App.strategyPositions()`: for a live-routed market (live environment and the market toggled live) it holds that market's live-book positions, for every other market the paper positions. The positions only appear in the LLM prompt's portfolio block; the indicator strategies do not read them.
+
 The LLM response must contain:
 
 ```json
@@ -471,3 +470,9 @@ The LLM response must contain:
 ```
 
 `hold`, invalid actions, parse failures, or unavailable LLM state (`rec.LLMUsed == false`) produce no signal. A valid `long`/`short` recommendation uses the LLM confidence directly as the trade confidence, with `PositionSizingProposal` from `calc.CalculatePositionSizing(0)` (20%). The normal risk engine, approval flow, position limits, and fully automated confidence threshold still apply after the strategy emits the trade idea.
+
+---
+
+## Backtest Replay (`internal/backtest`)
+
+`backtest.Run` replays cached 30-second bars through the strategy, the shared `marketdata.Build`, the risk engine, the learner (fed only trades the run has closed) and the paper engine, tick by tick in the live loop's order, with a simulated exchange that fills each order on the next tick's bar at taker-side prices plus Kraken fees and order rules. Stops are checked on each tick's last price, as live. The full description, every assumption and its bias are in [14-backtesting.md](14-backtesting.md).

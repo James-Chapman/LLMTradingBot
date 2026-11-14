@@ -9,9 +9,10 @@ import (
 	"time"
 )
 
-// UpsertOpenPosition inserts or updates an open position. On update only size,
-// avg_price and updated_at change; trade_idea_id is set only when non-empty so
-// the opening signal link is never overwritten with nothing.
+// UpsertOpenPosition inserts or updates an open position. On update size,
+// avg_price, entry_fee, short_proceeds and updated_at change (the caller
+// passes the position's current values); trade_idea_id is set only when
+// non-empty so the opening signal link is never overwritten with nothing.
 func (r *Repository) UpsertOpenPosition(ctx context.Context, p OpenPositionInput) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -27,20 +28,21 @@ func (r *Repository) UpsertOpenPosition(ctx context.Context, p OpenPositionInput
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO open_positions (
 				position_id, market, size, avg_price, signal_confidence, strategy_id, direction,
-				trade_idea_id, unrealized_pnl, opened_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0.0, ?, ?)`,
+				trade_idea_id, unrealized_pnl, opened_at, updated_at, entry_fee, short_proceeds
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0.0, ?, ?, ?, ?)`,
 			p.PositionID, p.Market, p.Size, p.AvgPrice, nullableFloat(p.SignalConfidence), p.StrategyID, p.Direction,
-			nullIfEmpty(p.TradeIdeaID), now, now)
+			nullIfEmpty(p.TradeIdeaID), now, now, p.EntryFee, nullableFloat(p.ShortProceeds))
 	case err != nil:
 		return fmt.Errorf("look up position %s: %w", p.PositionID, err)
 	case p.TradeIdeaID != "":
 		_, err = tx.ExecContext(ctx,
-			"UPDATE open_positions SET size = ?, avg_price = ?, updated_at = ?, trade_idea_id = ? WHERE position_id = ?",
-			p.Size, p.AvgPrice, now, p.TradeIdeaID, p.PositionID)
+			`UPDATE open_positions SET size = ?, avg_price = ?, entry_fee = ?, short_proceeds = ?, updated_at = ?,
+				trade_idea_id = ? WHERE position_id = ?`,
+			p.Size, p.AvgPrice, p.EntryFee, nullableFloat(p.ShortProceeds), now, p.TradeIdeaID, p.PositionID)
 	default:
 		_, err = tx.ExecContext(ctx,
-			"UPDATE open_positions SET size = ?, avg_price = ?, updated_at = ? WHERE position_id = ?",
-			p.Size, p.AvgPrice, now, p.PositionID)
+			"UPDATE open_positions SET size = ?, avg_price = ?, entry_fee = ?, short_proceeds = ?, updated_at = ? WHERE position_id = ?",
+			p.Size, p.AvgPrice, p.EntryFee, nullableFloat(p.ShortProceeds), now, p.PositionID)
 	}
 	if err != nil {
 		return fmt.Errorf("upsert position %s: %w", p.PositionID, err)
@@ -61,7 +63,7 @@ func (r *Repository) DeleteOpenPosition(ctx context.Context, positionID string) 
 func (r *Repository) GetOpenPositions(ctx context.Context) ([]OpenPosition, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT position_id, market, size, avg_price, signal_confidence, strategy_id, direction,
-			trade_idea_id, unrealized_pnl, opened_at, updated_at
+			trade_idea_id, unrealized_pnl, opened_at, updated_at, entry_fee, short_proceeds
 		FROM open_positions`)
 	if err != nil {
 		return nil, fmt.Errorf("get open positions: %w", err)
@@ -74,16 +76,19 @@ func (r *Repository) GetOpenPositions(ctx context.Context) ([]OpenPosition, erro
 			p                                      OpenPosition
 			market, strategy, direction, ideaID    sql.NullString
 			size, avgPrice, confidence, unrealized sql.NullFloat64
+			entryFee, shortProceeds                sql.NullFloat64
 			openedAt, updatedAt                    nullTime
 		)
 		if err := rows.Scan(&p.PositionID, &market, &size, &avgPrice, &confidence, &strategy, &direction,
-			&ideaID, &unrealized, &openedAt, &updatedAt); err != nil {
+			&ideaID, &unrealized, &openedAt, &updatedAt, &entryFee, &shortProceeds); err != nil {
 			return nil, err
 		}
 		p.Market, p.Size, p.AvgPrice = market.String, size.Float64, avgPrice.Float64
 		p.SignalConfidence = floatPtr(confidence)
 		p.StrategyID, p.Direction, p.TradeIdeaID = stringPtr(strategy), stringPtr(direction), stringPtr(ideaID)
 		p.UnrealizedPnL = unrealized.Float64
+		// Rows saved before the columns existed read as no fee and no proceeds.
+		p.EntryFee, p.ShortProceeds = entryFee.Float64, floatPtr(shortProceeds)
 		p.OpenedAt, p.UpdatedAt = openedAt.orZero(), updatedAt.orZero()
 		result = append(result, p)
 	}

@@ -24,6 +24,8 @@ type fakeKraken struct {
 	responses map[string][]string
 	requests  []recordedRequest
 	server    *httptest.Server
+	// onRequest, when set, runs for every request before the response is written.
+	onRequest func(path string)
 }
 
 // newFakeKraken starts a fake Kraken REST server that is closed with the test.
@@ -58,7 +60,11 @@ func (f *fakeKraken) handle(w http.ResponseWriter, r *http.Request) {
 			f.responses[r.URL.Path] = queue[1:]
 		}
 	}
+	hook := f.onRequest
 	f.mu.Unlock()
+	if hook != nil {
+		hook(r.URL.Path)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = io.WriteString(w, response)

@@ -35,6 +35,13 @@ func (m *Market) SetPrice(symbol string, price float64) {
 	m.Prices[symbol] = price
 }
 
+// RemovePrice stops quoting symbol, as if Kraken's ticker had no answer for it.
+func (m *Market) RemovePrice(symbol string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.Prices, symbol)
+}
+
 // ValidateSymbols returns the symbols the fake quotes a price for.
 func (m *Market) ValidateSymbols(_ context.Context, symbols []string) []string {
 	m.mu.Lock()
@@ -82,28 +89,71 @@ func (m *Market) Stop() {
 	m.Stopped = true
 }
 
-// Live is a fake Kraken execution engine that records submitted orders.
+// Live is a fake Kraken execution engine that records submitted orders and
+// replays queued reconciliation updates.
 type Live struct {
 	mu         sync.Mutex
 	Executed   []domain.ExecutionIntent
-	Status     string // order status returned by Execute (default "pending")
+	Orders     []domain.OrderRecord // every order Execute returned, oldest first
+	Status     string               // order status returned by Execute (default "pending")
 	Account    *kraken.AccountSnapshot
 	Reconciles int
+	// Tracked is the tracked-order list passed to each ReconcilePendingOrders call.
+	Tracked [][]kraken.PendingLiveOrder
+	// MinOrder is the minimum order volume per market (absent: unknown).
+	MinOrder map[string]float64
+	// OnAccepted, when set, runs with every accepted order before Execute
+	// returns - e.g. to save it like the real engine, or to panic and so
+	// simulate the process stopping right after Kraken accepted the order.
+	OnAccepted func(order domain.OrderRecord)
+	updates    []kraken.OrderUpdate
 }
 
 // Execute records the intent and returns an order with the configured status.
+// Like the real engine it uses opts.OrderID as the order ID when given, and
+// accepted orders carry and return opts.PositionID.
 func (l *Live) Execute(_ context.Context, intent domain.ExecutionIntent, opts kraken.ExecuteOptions) (domain.OrderRecord, string) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	l.Executed = append(l.Executed, intent)
 	status := l.Status
 	if status == "" {
 		status = "pending"
 	}
-	return domain.OrderRecord{
-		ID: domain.NewID(), Market: intent.Market, Direction: intent.Direction, Size: intent.Size,
+	id := opts.OrderID
+	if id == "" {
+		id = domain.NewID()
+	}
+	order := domain.OrderRecord{
+		ID: id, Market: intent.Market, Direction: intent.Direction, Size: intent.Size,
 		Price: opts.MarketPrice, Status: status, Timestamp: time.Now().UTC(), ExchangeOrderID: "FAKE-TXID",
-	}, ""
+	}
+	positionID := ""
+	if status != "rejected" {
+		order.PositionID = opts.PositionID
+		positionID = opts.PositionID
+	}
+	l.Orders = append(l.Orders, order)
+	hook := l.OnAccepted
+	l.mu.Unlock()
+	if hook != nil && status != "rejected" {
+		hook(order)
+	}
+	return order, positionID
+}
+
+// MinOrderSize returns the configured minimum order volume for market.
+func (l *Live) MinOrderSize(_ context.Context, market string) (float64, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	v, ok := l.MinOrder[market]
+	return v, ok
+}
+
+// SetStatus changes the order status Execute returns ("rejected" refuses orders).
+func (l *Live) SetStatus(status string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.Status = status
 }
 
 // GetAccountSnapshot returns the configured account, or an error-free nil.
@@ -113,12 +163,74 @@ func (l *Live) GetAccountSnapshot(_ context.Context, _ string) (*kraken.AccountS
 	return l.Account, nil
 }
 
-// ReconcilePendingOrders counts reconciliation calls.
-func (l *Live) ReconcilePendingOrders(_ context.Context) int {
+// ReconcilePendingOrders counts the call, records the tracked orders and
+// returns (then forgets) the queued updates.
+func (l *Live) ReconcilePendingOrders(_ context.Context, tracked []kraken.PendingLiveOrder) []kraken.OrderUpdate {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.Reconciles++
-	return 0
+	l.Tracked = append(l.Tracked, append([]kraken.PendingLiveOrder(nil), tracked...))
+	out := l.updates
+	l.updates = nil
+	return out
+}
+
+// LastTracked returns the tracked orders passed to the latest reconciliation.
+func (l *Live) LastTracked() []kraken.PendingLiveOrder {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.Tracked) == 0 {
+		return nil
+	}
+	return l.Tracked[len(l.Tracked)-1]
+}
+
+// ReconcileCount returns how many times reconciliation ran.
+func (l *Live) ReconcileCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.Reconciles
+}
+
+// QueueUpdate makes the next ReconcilePendingOrders report update.
+func (l *Live) QueueUpdate(update kraken.OrderUpdate) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.updates = append(l.updates, update)
+}
+
+// FillLastOrder queues a full fill of the most recent order at price with fee
+// and returns that order.
+func (l *Live) FillLastOrder(price, fee float64) domain.OrderRecord {
+	order := l.LastOrder()
+	l.QueueUpdate(kraken.OrderUpdate{
+		OrderID: order.ID, ExchangeOrderID: order.ExchangeOrderID, PositionID: order.PositionID, Direction: order.Direction,
+		Status: "filled", KrakenStatus: "closed", ExecutedSize: order.Size, AvgPrice: price, Fee: fee,
+	})
+	return order
+}
+
+// SellCount returns how many live sells (shorts) were submitted.
+func (l *Live) SellCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := 0
+	for _, intent := range l.Executed {
+		if intent.Direction == domain.Short {
+			n++
+		}
+	}
+	return n
+}
+
+// LastOrder returns the most recent order Execute returned (zero if none).
+func (l *Live) LastOrder() domain.OrderRecord {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.Orders) == 0 {
+		return domain.OrderRecord{}
+	}
+	return l.Orders[len(l.Orders)-1]
 }
 
 // ExecutedCount returns how many live orders were submitted.

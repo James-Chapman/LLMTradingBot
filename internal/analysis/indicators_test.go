@@ -64,10 +64,10 @@ func TestRSI(t *testing.T) {
 		}
 	})
 
-	t.Run("GIVEN flat prices WHEN RSI is computed THEN it is 100", func(t *testing.T) {
+	t.Run("GIVEN flat prices WHEN RSI is computed THEN it is neutral at 50", func(t *testing.T) {
 		got, ok := RSI(flat(100, 50), 14)
-		if !ok || !near(got, 100, 0.1) {
-			t.Fatalf("expected ~100, got %v", got)
+		if !ok || got != 50.0 {
+			t.Fatalf("expected 50 (no gains and no losses), got %v (ok=%v)", got, ok)
 		}
 	})
 
@@ -461,6 +461,27 @@ func TestComputeAll(t *testing.T) {
 		v, present := got["atr_pct"]
 		if !present || v != nil {
 			t.Fatalf("expected atr_pct present and nil, got %v (present=%v)", v, present)
+		}
+	})
+
+	t.Run("GIVEN a sub-cent coin with tiny moves WHEN ComputeAll runs THEN atr_pct still reflects its volatility", func(t *testing.T) {
+		prices := make([]float64, 40)
+		for i := range prices {
+			// Alternate by 2e-8 around 0.0000085: ATR rounds to 0 at 6dp but is ~0.24% of price.
+			prices[i] = 0.0000085 + float64(i%2)*0.00000002
+		}
+		got := ComputeAll(prices, 30, nil)
+		pct, ok := got.Num("atr_pct")
+		if !ok || pct <= 0.1 {
+			t.Fatalf("expected atr_pct around 0.235, got %v (ok=%v)", pct, ok)
+		}
+	})
+
+	t.Run("GIVEN sub-cent OHLC candles WHEN ComputeAll runs THEN atr_pct still reflects the true range", func(t *testing.T) {
+		got := ComputeAll(flat(0.0000085, 40), 30, candles(0.00000851, 0.00000849, 0.0000085, 17))
+		pct, ok := got.Num("atr_pct")
+		if !ok || pct <= 0.1 {
+			t.Fatalf("expected atr_pct around 0.235, got %v (ok=%v)", pct, ok)
 		}
 	})
 

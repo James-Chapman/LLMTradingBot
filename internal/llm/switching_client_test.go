@@ -157,6 +157,20 @@ func TestSwitchingClientChat(t *testing.T) {
 		}
 	})
 
+	t.Run("GIVEN the caller's context is cancelled WHEN LM Studio fails THEN the remote fallback is not tried", func(t *testing.T) {
+		primary, fallback := newFakeBackend("m", true), newFakeBackend("r", true)
+		fallback.reply = jsonReply(0.2)
+		sw := NewSwitchingClient(primary, fallback)
+		cancelled, cancel := context.WithCancel(ctx)
+		cancel()
+
+		_, err := sw.Chat(cancelled, msgs, true)
+
+		if err == nil || fallback.chatCalls != 0 {
+			t.Errorf("err = %v fallbackCalls = %d, want an error and no fallback call", err, fallback.chatCalls)
+		}
+	})
+
 	t.Run("GIVEN only the remote can attempt WHEN chat is called THEN the remote is used", func(t *testing.T) {
 		primary, fallback := newFakeBackend("m", false), newFakeBackend("r", true)
 		primary.canAttempt = false

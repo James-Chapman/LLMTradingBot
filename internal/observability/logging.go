@@ -84,7 +84,15 @@ func Logger(name string) *slog.Logger {
 
 // routingHandler forwards to the current global handlers at log time.
 type routingHandler struct {
-	llm   bool
+	llm bool
+	// steps are the WithAttrs/WithGroup calls in the order they were made;
+	// they are replayed on the live handlers so groups nest and attributes
+	// added before a group stay outside it, as slog.Handler requires.
+	steps []handlerStep
+}
+
+// handlerStep is one WithAttrs (attrs set) or WithGroup (group set) call.
+type handlerStep struct {
 	attrs []slog.Attr
 	group string
 }
@@ -98,11 +106,12 @@ func (h *routingHandler) current() []slog.Handler {
 		hs = append(hs, llmH)
 	}
 	for i, inner := range hs {
-		if h.group != "" {
-			inner = inner.WithGroup(h.group)
-		}
-		if len(h.attrs) > 0 {
-			inner = inner.WithAttrs(h.attrs)
+		for _, step := range h.steps {
+			if step.group != "" {
+				inner = inner.WithGroup(step.group)
+			} else {
+				inner = inner.WithAttrs(step.attrs)
+			}
 		}
 		hs[i] = inner
 	}
@@ -127,14 +136,25 @@ func (h *routingHandler) Handle(ctx context.Context, r slog.Record) error {
 
 // WithAttrs returns a handler carrying extra attributes.
 func (h *routingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	clone := *h
-	clone.attrs = append(append([]slog.Attr{}, h.attrs...), attrs...)
-	return &clone
+	if len(attrs) == 0 {
+		return h
+	}
+	return h.with(handlerStep{attrs: append([]slog.Attr{}, attrs...)})
 }
 
-// WithGroup returns a handler that nests subsequent attributes in a group.
+// WithGroup returns a handler that nests subsequent attributes in a group
+// inside any group opened before.
 func (h *routingHandler) WithGroup(name string) slog.Handler {
+	if name == "" {
+		return h
+	}
+	return h.with(handlerStep{group: name})
+}
+
+// with returns a copy of h with one more step; the step list is copied so
+// sibling loggers never share it.
+func (h *routingHandler) with(step handlerStep) *routingHandler {
 	clone := *h
-	clone.group = name
+	clone.steps = append(append([]handlerStep{}, h.steps...), step)
 	return &clone
 }

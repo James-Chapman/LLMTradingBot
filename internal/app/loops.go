@@ -13,8 +13,8 @@ import (
 
 	"github.com/James-Chapman/LLMTradingBot/internal/analysis"
 	"github.com/James-Chapman/LLMTradingBot/internal/domain"
-	"github.com/James-Chapman/LLMTradingBot/internal/kraken"
 	"github.com/James-Chapman/LLMTradingBot/internal/llm"
+	"github.com/James-Chapman/LLMTradingBot/internal/marketdata"
 	"github.com/James-Chapman/LLMTradingBot/internal/news"
 	"github.com/James-Chapman/LLMTradingBot/internal/paper"
 	"github.com/James-Chapman/LLMTradingBot/internal/portfolio"
@@ -53,16 +53,58 @@ func (a *App) strategyLoop(ctx context.Context) {
 	}
 }
 
-// bootStrategyLoop resolves and validates the market universe, restores the
-// rolling price history, announces start-up and starts the ticker stream.
+// bootRetryMax caps the wait between start-up attempts.
+const bootRetryMax = 5 * time.Minute
+
+// bootStrategyLoop resolves and validates the market universe, then starts
+// the markets. When none of the configured markets validates (Kraken's pair
+// list could not be loaded: network not up yet, a 5xx), it retries with a
+// doubling wait until one does or ctx is cancelled. Each attempt is guarded,
+// so a panic is logged and retried instead of ending the process.
 func (a *App) bootStrategyLoop(ctx context.Context) {
+	wait := a.intervals.BootRetry
+	for attempt := 1; ; attempt++ {
+		var started bool
+		var configured int
+		_ = a.guarded("Strategy loop start-up error", func() error {
+			var active []string
+			active, configured = a.validateUniverse(ctx)
+			// An empty universe cannot improve by retrying.
+			if len(active) > 0 || configured == 0 {
+				a.startMarkets(ctx, active)
+				started = true
+			}
+			return nil
+		})
+		if started || ctx.Err() != nil {
+			return
+		}
+		detail := fmt.Sprintf("Attempt %d: none of the %d configured markets was confirmed by Kraken "+
+			"(its pair list could not be loaded). Retrying in %s.", attempt, configured, wait)
+		a.activity.Warn("No markets could be validated - waiting for Kraken", detail)
+		a.logger.Warn("No markets could be validated; retrying start-up", "attempt", attempt, "configured", configured, "retry_in", wait.String())
+		if !sleepCtx(ctx, wait) {
+			return
+		}
+		wait = min(wait*2, bootRetryMax)
+	}
+}
+
+// validateUniverse resolves the universe and returns the markets Kraken
+// confirms, plus how many markets were configured.
+func (a *App) validateUniverse(ctx context.Context) ([]string, int) {
 	u := a.universe.ResolveUniverse(ctx)
 	all := append(append([]string{}, u.FixedMarkets...), u.DynamicMarkets...)
 	active := a.market.ValidateSymbols(ctx, all)
 	if active == nil {
 		active = []string{}
 	}
+	return active, len(all)
+}
 
+// startMarkets makes the validated markets active, restores their rolling
+// price history, announces start-up and starts the ticker stream.
+func (a *App) startMarkets(ctx context.Context, active []string) {
 	// Restore rolling price history so momentum is available immediately.
 	restored := map[string][]float64{}
 	anyRestored := false
@@ -116,8 +158,13 @@ type pricedSnapshot struct {
 
 // strategyTick runs one strategy-loop iteration. skipped reports a gated
 // tick (stop, no markets, no prices, warm-up) that waits a full interval.
+// Live positions are looked after on every tick, gated or not: their
+// markets are priced and their pending orders reconcile even during the
+// emergency stop (which only pauses their automatic stops), and their stops
+// run when every market is disabled or unpriced.
 func (a *App) strategyTick(ctx context.Context) (skipped bool, err error) {
 	if a.control.EmergencyStop() {
+		a.tendLiveBookDuringStop(ctx)
 		a.activity.Warn("Emergency stop active - tick skipped", "")
 		return true, nil
 	}
@@ -130,47 +177,30 @@ func (a *App) strategyTick(ctx context.Context) (skipped bool, err error) {
 			active = append(active, m)
 		}
 	}
-	cached := map[string]domain.MarketSnapshot{}
-	for _, m := range active {
-		if snap, ok := a.latestSnapshots[m]; ok {
-			cached[m] = snap
-		}
-	}
 	a.mu.Unlock()
 	if len(active) == 0 {
+		a.tendLiveBook(ctx)
 		a.activity.Warn("All markets disabled - tick skipped", "")
 		return true, nil
 	}
 
-	// Streamed snapshots first, then a batch REST call for any gaps.
-	var missing []string
-	for _, m := range active {
-		if _, ok := cached[m]; !ok {
-			missing = append(missing, m)
-		}
-	}
-	fetched := map[string]domain.MarketSnapshot{}
-	if len(missing) > 0 {
-		fetched, _ = a.market.GetTickersBatch(ctx, missing) // never nil; empty on failure
-	}
-	var ordered []pricedSnapshot
-	for _, m := range active {
-		if snap, ok := cached[m]; ok {
-			ordered = append(ordered, pricedSnapshot{m, snap})
-		}
-	}
-	for _, m := range missing {
-		if snap, ok := fetched[m]; ok {
-			ordered = append(ordered, pricedSnapshot{m, snap})
-		}
-	}
+	// Recent streamed snapshots first, then a batch REST call for gaps and
+	// stale snapshots; a market with neither is skipped this tick.
+	ordered := a.freshSnapshots(ctx, active)
 	if len(ordered) == 0 {
+		a.tendLiveBook(ctx)
 		a.activity.Warn("No market prices available - tick skipped", "")
 		return true, nil
 	}
 	prices := make(map[string]float64, len(ordered))
 	for _, ps := range ordered {
 		prices[ps.symbol] = ps.snap.Price
+	}
+	// Live positions on disabled markets, or markets no longer in the active
+	// universe, are priced too: their stops must still run.
+	livePrices := copyPrices(prices)
+	for m, p := range a.liveBookPrices(ctx, prices) {
+		livePrices[m] = p
 	}
 
 	// Append prices to the rolling history and advance the tick counter.
@@ -180,13 +210,14 @@ func (a *App) strategyTick(ctx context.Context) (skipped bool, err error) {
 	}
 	a.sessionTick++
 	tick := a.sessionTick
-	firstMarket := ordered[0].symbol
-	if len(a.activeMarkets) > 0 {
-		if _, ok := a.priceHistory[a.activeMarkets[0]]; ok {
-			firstMarket = a.activeMarkets[0]
-		}
+	// Warm-up progress is the longest history among the markets priced this
+	// tick (all enabled), so a disabled or never-priced market cannot hold
+	// the indicator strategy in warm-up forever.
+	ticksCollected := 0
+	for _, ps := range ordered {
+		ticksCollected = max(ticksCollected, len(a.priceHistory[ps.symbol]))
 	}
-	ticksCollected := min(len(a.priceHistory[firstMarket]), strategy.LookbackTicks+1)
+	ticksCollected = min(ticksCollected, strategy.LookbackTicks+1)
 	histories := make(map[string][]float64, len(ordered))
 	for _, ps := range ordered {
 		histories[ps.symbol] = append([]float64(nil), a.priceHistory[ps.symbol]...)
@@ -202,7 +233,7 @@ func (a *App) strategyTick(ctx context.Context) (skipped bool, err error) {
 
 	summary := make([]string, 0, len(ordered))
 	for _, ps := range ordered {
-		summary = append(summary, fmt.Sprintf("%s %s%s", ps.symbol, a.currencySymbol, fmtMoney(ps.snap.Price)))
+		summary = append(summary, fmt.Sprintf("%s %s%s", ps.symbol, a.currencySymbol, fmtPrice(ps.snap.Price)))
 	}
 	priceSummary := strings.Join(summary, "  ")
 	if warmingUp {
@@ -214,11 +245,22 @@ func (a *App) strategyTick(ctx context.Context) (skipped bool, err error) {
 	marketData := a.buildMarketData(ordered, histories, ohlc5, ohlc15)
 
 	a.mu.Lock()
-	a.currentPrices = copyPrices(prices)
+	a.currentPrices = copyPrices(livePrices)
 	a.bumpVersionLocked()
 	a.mu.Unlock()
 	a.paper.UpdateMarkPrices(prices)
 	a.paper.UpdateTrailingPrices(prices)
+
+	// Live fills are applied first so a just-filled live entry is already
+	// protected by this tick's stops. Kraken is only called while live orders
+	// are pending.
+	a.reconcileLive(ctx)
+
+	// Stops run before the database housekeeping below, so a failed write
+	// cannot leave a position unprotected for the tick. The equity snapshot
+	// that follows then saves the cash from any stop close in the same tick.
+	a.checkStops(ctx, prices)
+	a.checkLiveStops(ctx, livePrices)
 
 	// Persist price ticks and portfolio value for this market-data tick.
 	for _, ps := range ordered {
@@ -245,8 +287,6 @@ func (a *App) strategyTick(ctx context.Context) (skipped bool, err error) {
 		}
 	}
 
-	a.checkStops(ctx, prices)
-
 	// Detect the active strategy type early so warm-up matches its needs.
 	selected := a.strategyByID(a.control.SelectedStrategyID())
 	usesLLM := selected != nil && selected.UsesLLM()
@@ -272,11 +312,6 @@ func (a *App) strategyTick(ctx context.Context) (skipped bool, err error) {
 			a.activity.Info(fmt.Sprintf("Tick #%d - LLM data warmup waiting for %s", tick, strings.Join(waiting, " and ")), "")
 			return true, nil
 		}
-	}
-
-	// Reconcile pending live orders every 2 ticks (~60 s) so fills show promptly.
-	if tick%2 == 0 && a.TradingEnvironment() == string(domain.EnvLive) {
-		a.live.ReconcilePendingOrders(ctx)
 	}
 
 	ideas := a.evaluateStrategy(ctx, marketData, llmMarketData)
@@ -309,39 +344,27 @@ func (a *App) strategyTick(ctx context.Context) (skipped bool, err error) {
 	return false, nil
 }
 
-// buildMarketData assembles the per-market strategy context for this tick.
+// buildMarketData assembles the per-market strategy context for this tick
+// with the builder the backtest replay shares (internal/marketdata).
 func (a *App) buildMarketData(ordered []pricedSnapshot, histories map[string][]float64, ohlc5, ohlc15 map[string][]domain.Candle) map[string]strategy.MarketData {
 	briefing := a.analyser.LatestBriefing()
-	lookback := a.cfg().MomentumLookbackTicks + 1
+	lookbackTicks := a.cfg().MomentumLookbackTicks
 	out := make(map[string]strategy.MarketData, len(ordered))
 	for _, ps := range ordered {
-		hist := histories[ps.symbol]
-		prev := ps.snap.Price
-		if len(hist) >= lookback {
-			prev = hist[len(hist)-lookback]
-		}
-		htf := analysis.Indicators{}
-		if candles := ohlc15[ps.symbol]; len(candles) > 0 {
-			closes := make([]float64, 0, len(candles))
-			for _, c := range candles {
-				closes = append(closes, c.C)
-			}
-			htf = analysis.ComputeAll(closes, 900, candles)
-		}
-		out[ps.symbol] = strategy.MarketData{
-			Price:           ps.snap.Price,
-			PreviousPrice:   prev,
-			PriceHistory:    hist,
-			Volume:          ps.snap.Volume,
-			LLMSentiment:    briefingSentimentForMarket(briefing, ps.symbol),
-			HigherTimeframe: htf,
-			Indicators:      analysis.ComputeAll(hist, analysis.DefaultTickSecs, ohlc5[ps.symbol]),
-		}
+		out[ps.symbol] = marketdata.Build(marketdata.Input{
+			Price:        ps.snap.Price,
+			Volume:       ps.snap.Volume,
+			History:      histories[ps.symbol],
+			OHLC5:        ohlc5[ps.symbol],
+			OHLC15:       ohlc15[ps.symbol],
+			LLMSentiment: briefingSentimentForMarket(briefing, ps.symbol),
+		}, lookbackTicks)
 	}
 	return out
 }
 
-// checkStops closes paper positions whose stop-loss or trailing stop is hit.
+// checkStops closes paper positions whose stop-loss or trailing stop is hit
+// (live positions: checkLiveStops).
 func (a *App) checkStops(ctx context.Context, prices map[string]float64) {
 	for _, pos := range a.paper.OpenPositions() {
 		marketPrice, ok := prices[pos.Market]
@@ -374,10 +397,10 @@ func (a *App) checkStops(ctx context.Context, prices map[string]float64) {
 			continue
 		}
 		strategyID, direction := a.metaStrategyDirection(pos.PositionID)
-		a.recordClosedOutcome(ctx, order.ID, strategyID, pos.Market, direction, pnl)
+		a.recordClosedOutcome(ctx, order.ID, strategyID, pos.Market, direction, pnl, a.paperCloseNotional(pos.PositionID))
 		a.activity.Warn(
-			fmt.Sprintf("%s: %s [%s] closed at %s%s (%s loss)", label, pos.Market, short8(pos.PositionID), a.currencySymbol, fmtMoney(order.Price), pct1(lossPct)),
-			fmt.Sprintf("Entry %s%s  PnL %s%s", a.currencySymbol, fmtMoney(pos.AvgPrice), a.currencySymbol, fmtSignedMoney(pnl)),
+			fmt.Sprintf("%s: %s [%s] closed at %s%s (%s loss)", label, pos.Market, short8(pos.PositionID), a.currencySymbol, fmtPrice(order.Price), pct1(lossPct)),
+			fmt.Sprintf("Entry %s%s  PnL %s%s", a.currencySymbol, fmtPrice(pos.AvgPrice), a.currencySymbol, fmtSignedMoney(pnl)),
 		)
 		a.sendAlert(ctx, closeReason, map[string]any{"market": pos.Market, "position_id": pos.PositionID, "pnl": pnl})
 	}
@@ -398,7 +421,7 @@ func (a *App) evaluateStrategy(ctx context.Context, marketData, llmMarketData ma
 	a.mu.Unlock()
 	in := strategy.Input{
 		MarketData: marketData,
-		Portfolio:  strategy.Portfolio{Equity: equity, Cash: cash, OpenPositions: a.paper.OpenPositions()},
+		Portfolio:  strategy.Portfolio{Equity: equity, Cash: cash, OpenPositions: a.strategyPositions()},
 	}
 	if active.UsesLLM() {
 		in.MarketData = llmMarketData
@@ -407,6 +430,26 @@ func (a *App) evaluateStrategy(ctx context.Context, marketData, llmMarketData ma
 		in.Briefing = a.analyser.LatestBriefing()
 	}
 	return active.Evaluate(ctx, in)
+}
+
+// strategyPositions returns the open positions the strategy sees: for each
+// market, the positions of the route its orders take - the live book on a
+// live-routed market, the paper engine elsewhere - so the portfolio the LLM
+// is shown matches what an exit signal would actually sell.
+func (a *App) strategyPositions() []domain.PositionRecord {
+	environment := a.TradingEnvironment()
+	positions := []domain.PositionRecord{}
+	for _, p := range a.paper.OpenPositions() {
+		if !a.liveRouted(p.Market, environment) {
+			positions = append(positions, p)
+		}
+	}
+	for _, p := range a.liveBook.Records() {
+		if a.liveRouted(p.Market, environment) {
+			positions = append(positions, p)
+		}
+	}
+	return positions
 }
 
 // signalLLMAnalysis reconstructs the LLM verdict stored with a trade idea.
@@ -445,13 +488,25 @@ func (a *App) handleIdea(ctx context.Context, idea *domain.TradeIdea, marketData
 	idea.SupportingSignals["pre_llm_confidence"] = idea.Confidence
 	llmAnalysis := signalLLMAnalysis(*idea)
 
+	// Read the mode and environment once so a change from the web interface
+	// mid-signal cannot split this signal across two modes, or size it from
+	// one account and fill it on the other.
+	mode, environment := a.TradingMode(), a.TradingEnvironment()
+	isLive := a.liveRouted(idea.Market, environment)
+	if isLive {
+		// From the live position check to the order it sends, nothing else
+		// may enter or exit a live position.
+		a.liveMu.Lock()
+		defer a.liveMu.Unlock()
+	}
+
 	a.mu.Lock()
 	cash := a.currentCash
 	equity := a.currentEquity
 	latestNews := append([]storage.NewsEntry(nil), a.latestNews...)
 	a.mu.Unlock()
 
-	opts := risk.EvaluateOptions{OpenPositions: a.paper.OpenPositions(), AvailableCash: &cash}
+	opts := risk.EvaluateOptions{OpenPositions: a.openPositionsFor(isLive), AvailableCash: &cash}
 	if p, ok := prices[idea.Market]; ok {
 		opts.MarketPrice = &p
 	}
@@ -482,9 +537,16 @@ func (a *App) handleIdea(ctx context.Context, idea *domain.TradeIdea, marketData
 		Thesis: idea.Thesis, RiskApproved: decision.Approved, RiskReason: decision.Reason, TradeIdeaID: idea.ID,
 	}
 
-	// Read the mode once so a change from the web interface mid-signal cannot
-	// split this signal across two modes.
-	mode := a.TradingMode()
+	// A short on a live market can only sell a tracked, filled live long, and
+	// not while automatic sells are paused after Kraken rejected one.
+	exitBlock := ""
+	if isLive && idea.Direction == domain.Short {
+		exitBlock = a.liveExitBlock(idea.Market)
+		if exitBlock == "" {
+			exitBlock = a.liveExitPaused(idea.Market)
+		}
+	}
+
 	switch {
 	case !decision.Approved:
 		a.activity.Warn(fmt.Sprintf("Signal %s %s %s - risk blocked", idea.Market, label, pct0(idea.Confidence)), decision.Reason)
@@ -503,15 +565,23 @@ func (a *App) handleIdea(ctx context.Context, idea *domain.TradeIdea, marketData
 			return SignalView{}, false, fmt.Errorf("save risk rejection: %w", err)
 		}
 		if strings.Contains(strings.ToLower(decision.Reason), "daily loss") {
-			a.sendAlert(ctx, "daily_loss_limit_hit", map[string]any{"market": idea.Market, "reason": decision.Reason})
+			a.alertDailyLossOnce(idea.Market, decision.Reason)
 		}
+
+	case a.control.EmergencyStop():
+		// The stop is only checked when a tick starts; a slow evaluation can
+		// still be running when the operator presses it.
+		a.activity.Warn(fmt.Sprintf("Signal %s %s %s - not acted on (emergency stop active)", idea.Market, label, pct0(idea.Confidence)), idea.Thesis)
 
 	case mode == string(domain.ModeManual):
 		a.activity.Info(fmt.Sprintf("Signal %s %s %s - visible in dashboard (manual mode, no action taken)", idea.Market, label, pct0(idea.Confidence)), idea.Thesis)
 
+	case exitBlock != "":
+		a.activity.Info(fmt.Sprintf("Signal %s %s - not acted on (%s)", idea.Market, label, exitBlock), idea.Thesis)
+
 	case mode == string(domain.ModeSemiAutomated):
 		// One position per pair: skip when a same-direction position is open.
-		if a.sameDirectionOpen(idea.Market, direction) {
+		if a.sameDirectionOpen(idea.Market, direction, isLive) {
 			a.activity.Info(fmt.Sprintf("Signal %s %s - skipped (position already open)", idea.Market, label), idea.Thesis)
 		} else if _, ok := a.approvals.Submit(*idea, decision); ok {
 			a.activity.Success(fmt.Sprintf("Signal %s %s %s - submitted for approval", idea.Market, label, pct0(idea.Confidence)), idea.Thesis)
@@ -528,21 +598,31 @@ func (a *App) handleIdea(ctx context.Context, idea *domain.TradeIdea, marketData
 		}
 		marketPrice := prices[idea.Market]
 		switch {
-		case a.sameDirectionOpen(idea.Market, direction):
+		case a.sameDirectionOpen(idea.Market, direction, isLive):
 			// Already in this trade; skip silently.
 		case marketPrice == 0:
 			a.activity.Warn(fmt.Sprintf("Signal %s %s - auto-execution skipped (no live price)", idea.Market, label), "")
 		default:
-			a.autoExecute(ctx, *idea, decision, marketPrice, equity, prices)
+			a.autoExecute(ctx, *idea, decision, marketPrice, equity, prices, isLive)
 		}
 	}
 	return signal, true, nil
 }
 
-// sameDirectionOpen reports whether an open paper position on market already
-// points in direction (an opposite-direction signal is a closing trade).
-func (a *App) sameDirectionOpen(market, direction string) bool {
-	for _, p := range a.paper.PositionsForMarket(market) {
+// sameDirectionOpen reports whether an open position on market already points
+// in direction (an opposite-direction signal is a closing trade). Live-routed
+// signals check the live book, where a pending entry already counts.
+func (a *App) sameDirectionOpen(market, direction string, isLive bool) bool {
+	positions := a.paper.PositionsForMarket(market)
+	if isLive {
+		positions = nil
+		for _, p := range a.liveBook.Records() {
+			if p.Market == market {
+				positions = append(positions, p)
+			}
+		}
+	}
+	for _, p := range positions {
 		if (p.Size > 0 && direction == "long") || (p.Size < 0 && direction == "short") {
 			return true
 		}
@@ -562,13 +642,14 @@ func sizeInBase(idea domain.TradeIdea, decision domain.RiskDecision, equity, mar
 	return sizing * equity / marketPrice
 }
 
-// executeIntent routes an order to Kraken for live markets or to the paper engine.
-// Real orders need both TRADING_ENVIRONMENT=live and the market's live toggle;
-// in the paper environment a live-toggled market trades on paper instead.
-func (a *App) executeIntent(ctx context.Context, intent domain.ExecutionIntent, idea domain.TradeIdea, marketPrice float64) (domain.OrderRecord, string, bool) {
-	marketLive := a.control.IsMarketLive(idea.Market)
-	isLive := marketLive && a.TradingEnvironment() == string(domain.EnvLive)
-	if marketLive && !isLive {
+// executeIntent routes an order to Kraken when isLive (the caller decided the
+// route from one read of the environment and holds a.liveMu) or to the paper
+// engine. In the paper environment a live-toggled market trades on paper.
+func (a *App) executeIntent(ctx context.Context, intent domain.ExecutionIntent, idea domain.TradeIdea, marketPrice float64, isLive bool) (domain.OrderRecord, string) {
+	if isLive {
+		return a.placeLiveTrade(ctx, intent, idea, marketPrice)
+	}
+	if a.control.IsMarketLive(idea.Market) {
 		a.logger.Warn("Live order blocked by paper environment", "market", idea.Market, "trade_idea_id", idea.ID)
 		a.activity.Warn(
 			fmt.Sprintf("%s is toggled live but TRADING_ENVIRONMENT=paper - executing on paper", idea.Market),
@@ -576,29 +657,22 @@ func (a *App) executeIntent(ctx context.Context, intent domain.ExecutionIntent, 
 		)
 	}
 	confidence := idea.Confidence
-	if isLive {
-		order, posID := a.live.Execute(ctx, intent, kraken.ExecuteOptions{
-			MarketPrice: marketPrice, StrategyID: idea.StrategyID, SignalConfidence: &confidence,
-			Environment: string(domain.EnvLive), TradeIdeaID: idea.ID,
-		})
-		return order, posID, true
-	}
-	order, posID := a.paper.Execute(intent, marketPrice, paper.ExecuteOptions{
+	return a.paper.Execute(intent, marketPrice, paper.ExecuteOptions{
 		StrategyID: idea.StrategyID, SignalConfidence: &confidence,
 		Environment: string(domain.EnvPaper), TradeIdeaID: idea.ID,
 	})
-	return order, posID, false
 }
 
-// autoExecute places a fully automated order and records any closed paper long.
-func (a *App) autoExecute(ctx context.Context, idea domain.TradeIdea, decision domain.RiskDecision, marketPrice, equity float64, prices map[string]float64) {
+// autoExecute places a fully automated order and records any closed paper
+// long. A live close is recorded later, when reconciliation sees the sell fill.
+func (a *App) autoExecute(ctx context.Context, idea domain.TradeIdea, decision domain.RiskDecision, marketPrice, equity float64, prices map[string]float64, isLive bool) {
 	size := sizeInBase(idea, decision, equity, marketPrice)
 	intent := domain.ExecutionIntent{ApprovalRequestID: "auto", Market: idea.Market, Direction: idea.Direction, Size: size}
-	order, posID, isLive := a.executeIntent(ctx, intent, idea, marketPrice)
+	order, posID := a.executeIntent(ctx, intent, idea, marketPrice, isLive)
 
 	if !isLive && order.Status == "filled" && idea.Direction == domain.Short && posID != "" {
 		if pnl, ok := a.paper.RecordClosedTrade(posID, order.Price, "auto", idea.ID); ok {
-			a.recordClosedOutcome(ctx, order.ID, idea.StrategyID, idea.Market, string(idea.Direction), pnl)
+			a.recordClosedOutcome(ctx, order.ID, idea.StrategyID, idea.Market, string(idea.Direction), pnl, a.paperCloseNotional(posID))
 		}
 	}
 	if !isLive && order.Status == "filled" {
@@ -606,7 +680,8 @@ func (a *App) autoExecute(ctx context.Context, idea domain.TradeIdea, decision d
 	}
 	a.activity.Success(
 		fmt.Sprintf("Signal %s %s %s - auto-executed (%s)", idea.Market, directionLabel(string(idea.Direction)), pct0(idea.Confidence), order.Status),
-		fmt.Sprintf("Size: %.6f @ %s%s  Order: %s", size, a.currencySymbol, fmtMoney(marketPrice), short8(order.ID)),
+		// order.Size is what filled: a closing short sells the whole long.
+		fmt.Sprintf("Size: %.6f @ %s%s  Order: %s", order.Size, a.currencySymbol, fmtPrice(marketPrice), short8(order.ID)),
 	)
 }
 
@@ -633,7 +708,13 @@ func mergeSignals(fresh, existing []SignalView) []SignalView {
 // accountSnapshot returns cash, equity and position value for the active
 // environment: Kraken balances in live mode, the paper engine otherwise.
 func (a *App) accountSnapshot(ctx context.Context, prices map[string]float64) portfolio.EquitySnapshot {
-	if a.TradingEnvironment() == string(domain.EnvLive) {
+	return a.accountSnapshotFor(ctx, a.TradingEnvironment(), prices)
+}
+
+// accountSnapshotFor returns the account values of the given environment, so
+// a caller that has read the environment once uses it throughout.
+func (a *App) accountSnapshotFor(ctx context.Context, environment string, prices map[string]float64) portfolio.EquitySnapshot {
+	if environment == string(domain.EnvLive) {
 		snap, err := a.live.GetAccountSnapshot(ctx, a.cfg().BaseCurrency)
 		if err == nil && snap != nil {
 			return portfolio.EquitySnapshot{Cash: snap.Cash, Equity: snap.Equity, PositionsValue: snap.PositionsValue}
@@ -648,35 +729,71 @@ func (a *App) accountSnapshot(ctx context.Context, prices map[string]float64) po
 	return portfolio.BuildEquitySnapshot(paperEquity{engine: a.paper}, prices, a.now())
 }
 
-// recordEquitySnapshot computes, caches and persists a mark-to-market point.
+// recordEquitySnapshot computes, caches and persists a mark-to-market point
+// for the current environment. The cached cash handed to the strategy and
+// the risk engine is the paper engine's available cash (open shorts reserve
+// margin); the stored snapshot keeps the engine's full cash so a restart
+// restores it exactly.
 func (a *App) recordEquitySnapshot(ctx context.Context, prices map[string]float64) (portfolio.EquitySnapshot, error) {
-	snap := a.accountSnapshot(ctx, prices)
+	environment := a.TradingEnvironment()
+	snap := a.accountSnapshotFor(ctx, environment, prices)
 	timestamp := snap.Timestamp
 	if timestamp == "" {
 		timestamp = portfolio.FormatISO(a.now())
 	}
+	history := a.equityHistoryFor(ctx, environment)
+	cash := snap.Cash
+	if environment == string(domain.EnvPaper) {
+		cash = a.paper.AvailableCash()
+	}
 	a.mu.Lock()
 	a.currentEquity = snap.Equity
-	a.currentCash = snap.Cash
+	a.currentCash = cash
+	if history != nil {
+		a.equityHistory, a.equityHistoryEnv = history, environment
+	}
 	a.equityHistory = trimTail(append(a.equityHistory, portfolio.EquityPoint{Timestamp: timestamp, Equity: snap.Equity}), equityHistoryMax)
 	a.mu.Unlock()
 	a.risk.UpdateEquity(snap.Equity)
-	if err := a.repo.SaveEquitySnapshot(ctx, snap.Equity, snap.Cash, snap.PositionsValue); err != nil {
+	if err := a.repo.SaveEquitySnapshotFor(ctx, environment, snap.Equity, snap.Cash, snap.PositionsValue); err != nil {
 		return snap, fmt.Errorf("save equity snapshot: %w", err)
 	}
 	return snap, nil
 }
 
+// equityHistoryFor returns the stored chart history of environment when the
+// in-memory history belongs to another one (the environment was switched),
+// or nil when the in-memory history is already the right series.
+func (a *App) equityHistoryFor(ctx context.Context, environment string) []portfolio.EquityPoint {
+	a.mu.Lock()
+	current := a.equityHistoryEnv
+	a.mu.Unlock()
+	if current == environment {
+		return nil
+	}
+	stored, err := a.repo.GetEquityHistoryFor(ctx, environment, equityHistoryMax)
+	if err != nil {
+		a.logger.Warn("Could not load equity history after an environment switch", "environment", environment, "error", err.Error())
+	}
+	history := make([]portfolio.EquityPoint, 0, len(stored)+1)
+	for _, p := range stored {
+		history = append(history, portfolio.EquityPoint{Timestamp: p.Timestamp, Equity: p.Equity})
+	}
+	return history
+}
+
 // equityTickerLoop records an equity point every 10 s for a smooth chart.
 func (a *App) equityTickerLoop(ctx context.Context) {
 	for sleepCtx(ctx, a.intervals.Equity) {
-		prices := a.pricesCopy()
-		if len(prices) == 0 {
-			continue
-		}
-		if _, err := a.recordEquitySnapshot(ctx, prices); err != nil {
-			a.logger.Warn("Equity ticker error", "error", err.Error())
-		}
+		// guarded logs errors and panics, so one bad snapshot never ends the loop.
+		_ = a.guarded("Equity ticker error", func() error {
+			prices := a.pricesCopy()
+			if len(prices) == 0 {
+				return nil
+			}
+			_, err := a.recordEquitySnapshot(ctx, prices)
+			return err
+		})
 	}
 }
 
@@ -699,60 +816,55 @@ func (a *App) newsLoop(ctx context.Context) {
 // newsCycle runs one news fetch: store, cache, brief new articles, re-probe the LLM.
 func (a *App) newsCycle(ctx context.Context) error {
 	var items []domain.NewsItem
+	failures := 0
 	for _, adapter := range a.newsAdapters {
-		fetched, _ := adapter.FetchNews(ctx) // adapters log their own failures
+		fetched, err := adapter.FetchNews(ctx) // adapters log their own failures
+		if err != nil {
+			failures++
+		}
 		items = append(items, fetched...)
+	}
+	if len(a.newsAdapters) > 0 && failures == len(a.newsAdapters) {
+		// Nothing was fetched: keep the previous cache rather than emptying it
+		// (an empty cache would pause LLM strategies) and brief nothing.
+		a.llmClient.RecheckPrimary(ctx)
+		return fmt.Errorf("all %d news sources failed - keeping the previous %d cached articles", failures, len(a.News()))
 	}
 	for i := range items {
 		items[i] = news.NormaliseNewsItem(items[i])
 	}
 	sort.SliceStable(items, func(i, j int) bool { return items[i].PublishedAt.After(items[j].PublishedAt) })
+	fetched := make([]storage.NewsEntry, 0, len(items))
 	for _, item := range items {
 		_ = a.repo.UpsertNewsItem(ctx, item) // duplicates are ignored
+		fetched = append(fetched, newsEntry(item))
 	}
 
-	// Keep the 60 most recent articles across all sources.
-	latest := make([]storage.NewsEntry, 0, latestNewsMax)
-	for _, item := range items {
-		if len(latest) == latestNewsMax {
-			break
-		}
-		var url *string
-		if item.URL != "" {
-			u := item.URL
-			url = &u
-		}
-		summary := item.Content
-		if r := []rune(summary); len(r) > 200 {
-			summary = string(r[:200])
-		}
-		latest = append(latest, storage.NewsEntry{
-			ID: item.ID, Source: item.Source, Title: item.Title, URL: url,
-			Summary: strings.TrimSpace(summary), PublishedAt: portfolio.FormatISO(item.PublishedAt),
-		})
-	}
-
-	// Replace (not grow) the briefed set so it stays bounded to the cache.
+	// Merge into the previous cache (60 newest across all sources) so a feed
+	// that failed this cycle keeps its articles. Only articles never briefed
+	// before count as new; the briefed set keeps every cached ID and is
+	// bounded by briefedNewsIDsMax.
 	a.mu.Lock()
+	latest := mergeNews(a.latestNews, fetched, latestNewsMax)
 	a.latestNews = latest
-	current := map[string]bool{}
 	var fresh []storage.NewsEntry
 	for _, n := range latest {
-		current[n.ID] = true
 		if !a.briefedNewsIDs[n.ID] {
 			fresh = append(fresh, n)
+			a.briefedNewsIDs[n.ID] = true
 		}
 	}
-	a.briefedNewsIDs = current
+	if len(a.briefedNewsIDs) > briefedNewsIDsMax {
+		a.briefedNewsIDs = make(map[string]bool, len(latest))
+		for _, n := range latest {
+			a.briefedNewsIDs[n.ID] = true
+		}
+	}
 	a.mu.Unlock()
 
 	if len(fresh) > 0 {
-		a.tasks.Add(1)
-		go func() {
-			defer a.tasks.Done()
-			a.marketBriefingTask(ctx, fresh)
-		}()
 		a.logger.Info("Market briefing triggered", "new_articles", len(fresh))
+		a.startBriefing(ctx, fresh, a.marketBriefingTask)
 	}
 
 	sourceSet := map[string]bool{}
@@ -865,20 +977,30 @@ func (a *App) ohlcLoop(ctx context.Context) {
 		}
 	}
 	for ctx.Err() == nil {
-		for _, market := range a.ActiveMarkets() {
-			if !a.control.IsMarketEnabled(market) {
-				continue
-			}
-			a.refreshOHLC(ctx, market, 5)
-			if !sleepCtx(ctx, a.intervals.OHLCIntervalGap) {
-				return
-			}
-			a.refreshOHLC(ctx, market, 15)
-			if !sleepCtx(ctx, a.intervals.OHLCMarketGap) {
-				return
-			}
-		}
+		// guarded logs a panic in one cycle so the loop carries on.
+		_ = a.guarded("OHLC loop error", func() error {
+			a.ohlcCycle(ctx)
+			return nil
+		})
 		if !sleepCtx(ctx, a.intervals.OHLCRefresh) {
+			return
+		}
+	}
+}
+
+// ohlcCycle refreshes both candle intervals for every enabled market once,
+// pausing between requests; it stops early when ctx is cancelled.
+func (a *App) ohlcCycle(ctx context.Context) {
+	for _, market := range a.ActiveMarkets() {
+		if !a.control.IsMarketEnabled(market) {
+			continue
+		}
+		a.refreshOHLC(ctx, market, 5)
+		if !sleepCtx(ctx, a.intervals.OHLCIntervalGap) {
+			return
+		}
+		a.refreshOHLC(ctx, market, 15)
+		if !sleepCtx(ctx, a.intervals.OHLCMarketGap) {
 			return
 		}
 	}

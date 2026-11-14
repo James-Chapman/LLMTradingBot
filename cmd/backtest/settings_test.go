@@ -1,51 +1,51 @@
 package main
 
 import (
-	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
-
-	"github.com/James-Chapman/LLMTradingBot/internal/config"
-	"github.com/James-Chapman/LLMTradingBot/internal/secret"
-	"github.com/James-Chapman/LLMTradingBot/internal/storage"
 )
 
-// TestBacktestSettings covers where the replay takes its strategy settings from.
-func TestBacktestSettings(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("GIVEN no database file WHEN settings load THEN the defaults are used and no file is created", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "missing.db")
-		s, _, err := loadSettings(ctx, path, secret.Reversible())
-		if err != nil {
+// TestRunSettings covers where `backtest run` takes its settings from.
+func TestRunSettings(t *testing.T) {
+	t.Run("GIVEN a settings file WHEN a backtest runs THEN the result records the settings used and no database is created", func(t *testing.T) {
+		cache := importedCache(t)
+		workDir := t.TempDir()
+		t.Chdir(workDir)
+		settings := filepath.Join(workDir, "settings.json")
+		if err := os.WriteFile(settings, []byte(`{"MIN_SIGNAL_CONFIDENCE": 0.9, "STOP_LOSS_PCT": 0.04}`), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if s.MinSignalConfidence != config.Defaults().MinSignalConfidence {
-			t.Errorf("expected default confidence, got %v", s.MinSignalConfidence)
+		out := filepath.Join(workDir, "res")
+		code, stdout, stderr := runCLI(t, append(runArgs(cache, out), "--settings", settings)...)
+		if code != 0 {
+			t.Fatalf("code %d\nstdout %s\nstderr %s", code, stdout, stderr)
 		}
-		if _, err := os.Stat(path); !os.IsNotExist(err) {
-			t.Errorf("the backtest must not create a database, stat: %v", err)
+		var res struct {
+			Settings map[string]string `json:"settings"`
+		}
+		raw, err := os.ReadFile(filepath.Join(out, "result.json"))
+		if err != nil || json.Unmarshal(raw, &res) != nil {
+			t.Fatalf("read result: %v", err)
+		}
+		if res.Settings["MIN_SIGNAL_CONFIDENCE"] != "0.9" || res.Settings["STOP_LOSS_PCT"] != "0.04" {
+			t.Fatalf("settings snapshot %v", res.Settings)
+		}
+		if _, err := os.Stat(filepath.Join(workDir, "trading_bot.db")); !os.IsNotExist(err) {
+			t.Fatalf("the backtest must never create or open the bot database: %v", err)
 		}
 	})
 
-	t.Run("GIVEN settings saved from the dashboard WHEN settings load THEN the replay uses them", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "bot.db")
-		repo, err := storage.Open(path)
-		if err != nil {
+	t.Run("GIVEN a settings file holding a secret WHEN a backtest runs THEN it refuses to start", func(t *testing.T) {
+		settings := filepath.Join(t.TempDir(), "settings.json")
+		if err := os.WriteFile(settings, []byte(`{"KRAKEN_API_SECRET": "x"}`), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if err := repo.SaveSettings(ctx, map[string]string{"MIN_SIGNAL_CONFIDENCE": "0.9"}); err != nil {
-			t.Fatal(err)
-		}
-		repo.Close()
-
-		s, _, err := loadSettings(ctx, path, secret.Reversible())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if s.MinSignalConfidence != 0.9 {
-			t.Errorf("expected the saved confidence 0.9, got %v", s.MinSignalConfidence)
+		code, _, stderr := runCLI(t, append(runArgs(importedCache(t), filepath.Join(t.TempDir(), "res")), "--settings", settings)...)
+		if code == 0 || !strings.Contains(stderr, "secret") {
+			t.Fatalf("code %d stderr %q, want a refusal naming secrets", code, stderr)
 		}
 	})
 }

@@ -93,7 +93,17 @@ for _, p := range marketPositions {
 
 This check is direction-aware. A LONG signal is blocked if any long already exists for that market. A SHORT (closing) signal is not blocked by an existing long — that is the intended close trade.
 
-If `OpenPositions` is empty or nil, no position can match and the check passes. All current call sites pass the paper engine's open positions.
+If `OpenPositions` is empty or nil, no position can match and the check passes. Call sites pass the open positions of the route the trade takes: the live book (`App.openPositionsFor(true)`, pending entries included) for a live-routed market, the paper engine's positions otherwise.
+
+### Check 2b: Positive Equity
+
+```go
+if !(e.currentEquity > 0) && !closesLong {
+	return e.reject(idea, "Account equity is €0.00 - no new trades until equity is positive")
+}
+```
+
+Every limit below is a share of equity, and `AdjustedSizing` divides by it. With zero equity (for example a live snapshot of an empty Kraken account) or `NaN`, new exposure is refused with this reason instead of producing an infinite or `NaN` sizing that would break the dashboard's JSON. An exit (a short closing an open long) still passes; its decision then carries no `AdjustedSizing`.
 
 ### Check 3: Cash Sufficiency And Cash Adjustment
 
@@ -101,7 +111,7 @@ When a trade requires cash and the account has less than the target plus fee/sli
 
 ```go
 feeFactor := 1 + s.FeeAndSlippage
-if opts.AvailableCash != nil && hasPrice && requiresCash {
+if opts.AvailableCash != nil && hasPrice && !closesLong {
 	cash := *opts.AvailableCash
 	if cash < proposedSize*feeFactor {
 		cashSized := cash / feeFactor
@@ -116,7 +126,9 @@ if opts.AvailableCash != nil && hasPrice && requiresCash {
 
 `FEE_AND_SLIPPAGE = 0.0036` (0.26% taker fee + 0.1% slippage). This is intentionally conservative. The check only runs when both available cash and a positive market price are supplied.
 
-Short signals that fully close an existing long (total long size ≥ `proposedSize / marketPrice`) are exempt from the cash requirement. New short exposure still requires cash as margin in paper mode.
+In paper trading the app passes the paper engine's **available** cash (`paper.Engine.AvailableCash()`): cash less the sale proceeds of open paper shorts, which are reserved as margin. `App.recordEquitySnapshot()` caches that figure, so the strategy and this check never count a short's proceeds as spendable.
+
+**Exits are exempt.** A short signal on a market that has an open long is an exit (`closesLong`): execution sells the whole long, whatever size the signal proposes. It needs no cash and adds no exposure, so checks 2b, 3, 4 and 5 are skipped for it. Without this, a day at its loss limit would refuse the very trade that closes a losing position, leaving it open until its stop. New short exposure still requires available cash as margin in paper mode and passes through every check.
 
 ### Check 4: Per-Trade Loss Limit
 
@@ -153,12 +165,12 @@ decision := domain.RiskDecision{
 	ProposedSize: domain.Float(proposedSize),
 	Timestamp:    e.now().UTC(),
 }
-if adjusted {
+if adjusted && e.currentEquity > 0 {
 	decision.AdjustedSizing = domain.Float(proposedSize / e.currentEquity)
 }
 ```
 
-`ProposedSize` (JSON `proposed_size_eur`) is always set on approval and is the exact quote-currency amount to trade; execution paths divide it by the market price to get the base-asset order size. `AdjustedSizing` is set whenever risk uses the fixed target amount, clamps to the minimum, or reduces to available cash, and is only used as a fallback when `ProposedSize` is absent.
+`ProposedSize` (JSON `proposed_size_eur`) is always set on approval and is the exact quote-currency amount to trade; execution paths divide it by the market price to get the base-asset order size. `AdjustedSizing` is set whenever risk uses the fixed target amount, clamps to the minimum, or reduces to available cash (and equity is positive), and is only used as a fallback when `ProposedSize` is absent.
 
 ---
 
@@ -182,6 +194,8 @@ func (e *Engine) recordTradeResultLocked(pnl float64) {
 
 In the app, every position close (stop-loss, trailing stop, auto-execution, manual approval, manual close, operator reset) goes through `risk.RecordTradeResultAndPersist(engine, store, pnl)`, which records the result and then saves the daily counters to the `risk_state` table. The engine is always updated even if saving fails; the store error is returned and logged as a warning.
 
+The backtest replay (`internal/backtest`, `docs/14-backtesting.md`) calls `RecordTradeResult` for every closed trade (signal exits and stop exits) and `UpdateEquity` every 30 s tick on the replay clock, so the daily loss limit accumulates and resets at UTC midnight of the replayed time as it does live.
+
 ### `RestoreState(state State) bool`
 
 Called at start-up with the row loaded by `Repository.LoadRiskState()`. The persisted counters are applied only if `LastResetDate` is today (UTC); stale state is ignored so the daily reset still happens after a restart on a new day. This means the daily loss limit survives a same-day restart.
@@ -201,12 +215,12 @@ if intent.Direction == domain.Long {
 	if hasLong {
 		return ReasonLongAlreadyOpen // hard block
 	}
-	if !affordable { // cash >= fillValue + fee
+	if !affordable { // available cash (cash less short margin) >= fillValue + fee
 		return ReasonInsufficientFunds
 	}
 	return ""
 }
-// SHORT
+// SHORT (Execute has already sized a closing short to the long it closes)
 if totalLong >= intent.Size {
 	return "" // closing existing long, no cash needed
 }
