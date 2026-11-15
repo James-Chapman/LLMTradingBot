@@ -126,6 +126,7 @@ var createTableStatements = []string{
 	position_id VARCHAR,
 	pnl FLOAT,
 	trade_idea_id VARCHAR,
+	client_order_id VARCHAR,
 	PRIMARY KEY (id)
 )`,
 	`CREATE TABLE IF NOT EXISTS fill_records (
@@ -150,6 +151,8 @@ var createTableStatements = []string{
 	unrealized_pnl FLOAT,
 	opened_at DATETIME,
 	updated_at DATETIME,
+	entry_fee FLOAT,
+	short_proceeds FLOAT,
 	PRIMARY KEY (position_id)
 )`,
 	`CREATE TABLE IF NOT EXISTS signal_outcomes (
@@ -177,6 +180,7 @@ var createTableStatements = []string{
 	cash FLOAT,
 	positions_value FLOAT,
 	timestamp DATETIME,
+	environment VARCHAR DEFAULT 'paper',
 	PRIMARY KEY (id)
 )`,
 	`CREATE TABLE IF NOT EXISTS audit_logs (
@@ -215,6 +219,7 @@ var createTableStatements = []string{
 	trading_mode VARCHAR,
 	trading_environment VARCHAR,
 	updated_at DATETIME,
+	emergency_stop_since DATETIME,
 	PRIMARY KEY (id)
 )`,
 	`CREATE TABLE IF NOT EXISTS settings (
@@ -248,6 +253,29 @@ var createTableStatements = []string{
 	last_reset_date VARCHAR,
 	updated_at DATETIME,
 	PRIMARY KEY (id)
+)`,
+	// live_positions is the live (Kraken) position book, kept apart from the
+	// paper engine's open_positions so neither engine can touch the other's.
+	`CREATE TABLE IF NOT EXISTS live_positions (
+	position_id VARCHAR NOT NULL,
+	market VARCHAR,
+	status VARCHAR,
+	requested_size FLOAT,
+	size FLOAT,
+	avg_price FLOAT,
+	entry_fee FLOAT,
+	entry_order_id VARCHAR,
+	exit_order_id VARCHAR,
+	exit_reason VARCHAR,
+	exit_trade_idea_id VARCHAR,
+	strategy_id VARCHAR,
+	trade_idea_id VARCHAR,
+	signal_confidence FLOAT,
+	opened_at DATETIME,
+	updated_at DATETIME,
+	trailing_high FLOAT,
+	exit_requested_at DATETIME,
+	PRIMARY KEY (position_id)
 )`,
 	`CREATE TABLE IF NOT EXISTS rejected_trades (
 	id INTEGER NOT NULL,
@@ -290,6 +318,8 @@ var indexes = []indexDef{
 	{"ix_llm_reflections_generated_at", "llm_reflections", []string{"generated_at"}},
 	{"ix_rejected_trades_trade_idea_id", "rejected_trades", []string{"trade_idea_id"}},
 	{"ix_rejected_trades_timestamp", "rejected_trades", []string{"timestamp"}},
+	{"ix_live_positions_market", "live_positions", []string{"market"}},
+	{"ix_equity_snapshots_environment_timestamp", "equity_snapshots", []string{"environment", "timestamp"}},
 }
 
 // columnDef is a column name plus the DDL used to ALTER it onto a legacy table.
@@ -303,7 +333,8 @@ var columnMigrations = []struct {
 	table   string
 	columns []columnDef
 }{
-	{"order_records", []columnDef{{"position_id", "TEXT"}, {"pnl", "REAL"}, {"trade_idea_id", "TEXT"}}},
+	// client_order_id stays NULL on old rows: they were sent without one.
+	{"order_records", []columnDef{{"position_id", "TEXT"}, {"pnl", "REAL"}, {"trade_idea_id", "TEXT"}, {"client_order_id", "TEXT"}}},
 	{"trade_ideas", []columnDef{
 		{"momentum_pct", "REAL"},
 		{"indicators", "JSON"},
@@ -316,12 +347,20 @@ var columnMigrations = []struct {
 		{"risk_reason", "TEXT"},
 	}},
 	{"signal_outcomes", []columnDef{{"trade_idea_id", "TEXT"}, {"position_id", "TEXT"}, {"closing_trade_idea_id", "TEXT"}}},
-	{"open_positions", []columnDef{{"trade_idea_id", "TEXT"}}},
+	// Old rows get no entry fee (NULL reads as 0) and no short proceeds (the
+	// paper engine derives them from size × average price).
+	{"open_positions", []columnDef{{"trade_idea_id", "TEXT"}, {"entry_fee", "REAL"}, {"short_proceeds", "REAL"}}},
+	// Snapshots written before environments were recorded were paper values.
+	{"equity_snapshots", []columnDef{{"environment", "TEXT DEFAULT 'paper'"}}},
+	// Live positions saved before 0.9.3 have no trailing high (NULL reads as 0:
+	// the app seeds it from the entry price) and no exit request time.
+	{"live_positions", []columnDef{{"trailing_high", "REAL"}, {"exit_requested_at", "DATETIME"}}},
 	{"control_state", []columnDef{
 		{"live_markets", "JSON"},
 		{"selected_strategy", "TEXT DEFAULT 'unknown'"},
 		{"trading_mode", "TEXT"},
 		{"trading_environment", "TEXT"},
+		{"emergency_stop_since", "DATETIME"},
 	}},
 }
 

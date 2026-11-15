@@ -6,14 +6,17 @@ type OrderPnLStore interface {
 	UpdateOrderPnL(orderID string, pnl float64) error
 }
 
-// OutcomeLearner learns from realised trade outcomes.
+// OutcomeLearner learns from realised trade outcomes; notional is the trade's
+// entry price × size.
 type OutcomeLearner interface {
-	RecordOutcome(strategyID, market, direction string, pnl float64)
+	RecordOutcomeWithNotional(strategyID, market, direction string, pnl, notional float64)
 }
 
 // ClosePositionsForOperatorReset closes every open paper position through the
 // normal close-order accounting path and returns how many were closed and
-// recorded. Positions without a live price close at their entry price.
+// recorded. Positions without a live price close at their entry price. Each
+// close deletes its own database row, so a position opened while the reset
+// runs is left open rather than wiped.
 // recordTradeResult receives each realised P&L (e.g. the risk engine);
 // store and learner may be nil.
 func ClosePositionsForOperatorReset(
@@ -46,11 +49,12 @@ func ClosePositionsForOperatorReset(
 			}
 		}
 		if learner != nil {
-			strategyID, direction := "unknown", "long"
+			strategyID, direction, notional := "unknown", directionOrFromSize("", pos.Size), 0.0
 			if meta, found := engine.Meta(pos.PositionID); found {
 				strategyID, direction = meta.StrategyID, meta.Direction
+				notional = meta.AvgPriceAtClose * meta.SizeAtClose
 			}
-			learner.RecordOutcome(strategyID, pos.Market, direction, pnl)
+			learner.RecordOutcomeWithNotional(strategyID, pos.Market, direction, pnl, notional)
 		}
 		closed++
 	}

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/mail"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/James-Chapman/LLMTradingBot/internal/domain"
@@ -20,17 +21,26 @@ const (
 	RSSUserAgent = "KrakenBot/0.1 (RSS reader; personal use)"
 	// DefaultMaxItems is how many feed items are considered per fetch.
 	DefaultMaxItems = 20
+	// MaxTitleRunes caps a cleaned item title.
+	MaxTitleRunes = 200
+	// MaxDescriptionRunes caps a cleaned item description.
+	MaxDescriptionRunes = 300
 
 	rssTimeout      = 15 * time.Second
 	maxFeedBodySize = 10 << 20 // 10 MiB guard against runaway responses
 )
 
-// RSSAdapter fetches one RSS feed. Build it with NewRSSAdapter or RSSAdapterFromSpec.
+// RSSAdapter fetches one RSS feed. Build it with NewRSSAdapter or
+// RSSAdapterFromSpec; it must not be copied after first use.
 type RSSAdapter struct {
 	Name     string
 	URL      string
-	Client   *http.Client // nil: default client with a 15 s timeout
-	MaxItems int          // <= 0: DefaultMaxItems
+	Client   *http.Client     // nil: default client with a 15 s timeout
+	MaxItems int              // <= 0: DefaultMaxItems
+	Now      func() time.Time // nil: domain.NowUTC
+
+	mu        sync.Mutex
+	firstSeen map[string]time.Time // undated item ID → when this adapter first saw it
 }
 
 // NewRSSAdapter returns an adapter for the feed at url labelled name.
@@ -43,7 +53,9 @@ func (a *RSSAdapter) SourceName() string {
 	return a.Name
 }
 
-// FetchNews downloads and parses the feed.
+// FetchNews downloads and parses the feed. Items without a usable pubDate get
+// the time this adapter first saw them, so they do not jump to the top of the
+// newest-first order on every fetch.
 func (a *RSSAdapter) FetchNews(ctx context.Context) ([]domain.NewsItem, error) {
 	body, err := a.download(ctx)
 	if err != nil {
@@ -54,13 +66,41 @@ func (a *RSSAdapter) FetchNews(ctx context.Context) ([]domain.NewsItem, error) {
 	if maxItems <= 0 {
 		maxItems = DefaultMaxItems
 	}
-	items, err := ParseRSS(body, a.Name, maxItems, domain.NowUTC())
+	parsed, err := parseRSSItems(body, a.Name, maxItems)
 	if err != nil {
 		log.Warn(a.Name+" RSS parse failed", "error", err.Error())
 		return []domain.NewsItem{}, err
 	}
+	items := a.applyFirstSeen(parsed)
 	log.Info(fmt.Sprintf("Fetched %d items from %s", len(items), a.Name))
 	return items, nil
+}
+
+// applyFirstSeen dates undated items with the time they were first seen and
+// forgets items that have left the feed, so the map stays bounded.
+func (a *RSSAdapter) applyFirstSeen(parsed []parsedItem) []domain.NewsItem {
+	now := domain.NowUTC()
+	if a.Now != nil {
+		now = NormalisePublishedAt(a.Now())
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	seen := make(map[string]time.Time)
+	items := make([]domain.NewsItem, 0, len(parsed))
+	for _, p := range parsed {
+		item := p.item
+		if !p.dated {
+			first, ok := a.firstSeen[item.ID]
+			if !ok {
+				first = now
+			}
+			seen[item.ID] = first
+			item.PublishedAt = first
+		}
+		items = append(items, item)
+	}
+	a.firstSeen = seen
+	return items
 }
 
 // download performs the HTTP GET for the feed and returns the body.
@@ -131,16 +171,40 @@ func (it rssItem) text(local string) string {
 	return ""
 }
 
-// ParseRSS parses up to maxItems <item> elements from an RSS document. Items
-// without a title are skipped; unparseable pubDates fall back to now (UTC).
+// parsedItem is a feed item plus whether its pubDate could be parsed.
+type parsedItem struct {
+	item  domain.NewsItem
+	dated bool
+}
+
+// ParseRSS parses up to maxItems <item> elements from an RSS document. Title
+// and description are cleaned to plain single-line text and capped (see
+// CleanText); only http(s) links are kept. Items without a title are
+// skipped; unparseable pubDates fall back to now (UTC).
 func ParseRSS(data []byte, sourceName string, maxItems int, now time.Time) ([]domain.NewsItem, error) {
+	parsed, err := parseRSSItems(data, sourceName, maxItems)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]domain.NewsItem, 0, len(parsed))
+	for _, p := range parsed {
+		if !p.dated {
+			p.item.PublishedAt = NormalisePublishedAt(now)
+		}
+		items = append(items, p.item)
+	}
+	return items, nil
+}
+
+// parseRSSItems does the work of ParseRSS, leaving undated items' time zero.
+func parseRSSItems(data []byte, sourceName string, maxItems int) ([]parsedItem, error) {
 	decoder := xml.NewDecoder(bytes.NewReader(data))
 	decoder.Strict = false // tolerate HTML entities such as &nbsp; common in feeds
 	decoder.Entity = xml.HTMLEntity
 	// No HTMLAutoClose: RSS <link> carries text and must not be treated as a void element.
 	decoder.CharsetReader = charsetReader
 
-	items := []domain.NewsItem{}
+	items := []parsedItem{}
 	seen := 0
 	for seen < maxItems {
 		token, err := decoder.Token()
@@ -160,34 +224,67 @@ func ParseRSS(data []byte, sourceName string, maxItems int, now time.Time) ([]do
 		}
 		seen++
 
-		title := raw.text("title")
+		// Feed text is untrusted and ends up in LLM prompts: reduce it to plain,
+		// single-line, length-capped text before anything else sees it.
+		title := CleanText(raw.text("title"), MaxTitleRunes)
 		if title == "" {
 			continue
 		}
-		link := raw.text("link")
-		items = append(items, domain.NewsItem{
-			ID:          StableID(title, link),
-			Source:      sourceName,
-			Title:       title,
-			Content:     raw.text("description"),
-			PublishedAt: parsePubDate(raw.text("pubDate"), now),
-			URL:         link,
+		link := safeLink(raw.text("link"))
+		published, dated := parseDate(raw.text("pubDate"))
+		items = append(items, parsedItem{
+			item: domain.NewsItem{
+				ID:          StableID(title, link),
+				Source:      sourceName,
+				Title:       title,
+				Content:     CleanText(raw.text("description"), MaxDescriptionRunes),
+				PublishedAt: published,
+				URL:         link,
+			},
+			dated: dated,
 		})
 	}
 	return items, nil
 }
 
+// usZoneOffsets maps the US zone abbreviations feeds use to numeric offsets;
+// Go's parser would otherwise read them as UTC.
+var usZoneOffsets = map[string]string{
+	"EST": "-0500", "EDT": "-0400",
+	"CST": "-0600", "CDT": "-0500",
+	"MST": "-0700", "MDT": "-0600",
+	"PST": "-0800", "PDT": "-0700",
+}
+
 // parsePubDate parses an RFC 822/1123 (or RFC 3339) date to UTC, defaulting to now.
 func parsePubDate(value string, now time.Time) time.Time {
-	if value != "" {
-		if t, err := mail.ParseDate(value); err == nil {
-			return NormalisePublishedAt(t)
-		}
-		if t, err := time.Parse(time.RFC3339, value); err == nil {
-			return NormalisePublishedAt(t)
-		}
+	if t, ok := parseDate(value); ok {
+		return t
 	}
 	return NormalisePublishedAt(now)
+}
+
+// parseDate parses an RFC 822/1123 (or RFC 3339) date to UTC and reports
+// whether it succeeded. A trailing US zone abbreviation is replaced by its
+// offset first.
+func parseDate(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	if fields := strings.Fields(value); len(fields) > 1 {
+		if offset, ok := usZoneOffsets[strings.ToUpper(fields[len(fields)-1])]; ok {
+			fields[len(fields)-1] = offset
+			value = strings.Join(fields, " ")
+		}
+	}
+	if t, err := mail.ParseDate(value); err == nil {
+		return NormalisePublishedAt(t), true
+	}
+	if t, err := time.Parse(time.RFC3339, value); err == nil {
+		return NormalisePublishedAt(t), true
+	}
+	return time.Time{}, false
 }
 
 // charsetReader decodes the non-UTF-8 encodings feeds commonly declare.

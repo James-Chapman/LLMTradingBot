@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -35,6 +36,7 @@ func newResolver(srv *httptest.Server, fixed []string, available []string) *Reso
 		HTTPClient:       srv.Client(),
 		BaseURL:          srv.URL,
 		AvailableMarkets: available,
+		MaxCoins:         DefaultMaxCoins,
 	})
 }
 
@@ -124,7 +126,7 @@ func TestResolveDynamicMarkets(t *testing.T) {
 
 	t.Run("GIVEN the API fails WHEN dynamic markets resolve THEN the fallback coin list is used", func(t *testing.T) {
 		srv, _ := coinServer(t, nil, http.StatusInternalServerError)
-		resolver := NewResolver([]string{"BTC/EUR"}, "coingecko", Options{HTTPClient: srv.Client(), BaseURL: srv.URL})
+		resolver := NewResolver([]string{"BTC/EUR"}, "coingecko", Options{HTTPClient: srv.Client(), BaseURL: srv.URL, MaxCoins: DefaultMaxCoins})
 
 		markets := resolver.ResolveDynamicMarkets(context.Background())
 
@@ -132,11 +134,8 @@ func TestResolveDynamicMarkets(t *testing.T) {
 			t.Fatal("expected fallback markets")
 		}
 		for _, m := range markets {
-			if m == "BTC/EUR" {
-				continue
-			}
-			if _, ok := defaultKrakenEURMarkets[m]; !ok {
-				t.Fatalf("fallback market %q is not a known Kraken EUR pair", m)
+			if !strings.HasSuffix(m, "/EUR") {
+				t.Fatalf("fallback market %q is not quoted in the base currency", m)
 			}
 		}
 	})
@@ -156,6 +155,53 @@ func TestResolveDynamicMarkets(t *testing.T) {
 		}
 		if last.Query().Get("per_page") != "6" {
 			t.Fatalf("per_page %q, want 3x the cap", last.Query().Get("per_page"))
+		}
+	})
+}
+
+// TestDynamicMarketSettings covers the cap of 0 and quoting in the base currency.
+func TestDynamicMarketSettings(t *testing.T) {
+	t.Run("GIVEN a cap of 0 WHEN the universe resolves THEN no dynamic market is added and CoinGecko is not asked", func(t *testing.T) {
+		asked := false
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			asked = true
+			_, _ = w.Write([]byte(`[{"symbol":"link"}]`))
+		}))
+		t.Cleanup(srv.Close)
+		resolver := NewResolver([]string{"BTC/EUR"}, "coingecko", Options{HTTPClient: srv.Client(), BaseURL: srv.URL, MaxCoins: 0})
+
+		snap := resolver.ResolveUniverse(context.Background())
+
+		if len(snap.DynamicMarkets) != 0 || len(snap.FixedMarkets) != 1 {
+			t.Fatalf("expected the fixed market only, got %+v", snap)
+		}
+		if asked {
+			t.Error("CoinGecko must not be asked when no dynamic market is wanted")
+		}
+	})
+
+	t.Run("GIVEN base currency USD WHEN dynamic markets resolve THEN they are quoted in USD and priced in USD", func(t *testing.T) {
+		srv, last := coinServer(t, []string{"link", "uni"}, http.StatusOK)
+		resolver := NewResolver(nil, "coingecko", Options{HTTPClient: srv.Client(), BaseURL: srv.URL, MaxCoins: 5, QuoteCurrency: "usd"})
+
+		markets := resolver.ResolveDynamicMarkets(context.Background())
+
+		if len(markets) != 2 || markets[0] != "LINK/USD" || markets[1] != "UNI/USD" {
+			t.Fatalf("expected USD pairs, got %v", markets)
+		}
+		if last.Query().Get("vs_currency") != "usd" {
+			t.Errorf("expected CoinGecko asked in usd, got %q", last.Query().Get("vs_currency"))
+		}
+	})
+
+	t.Run("GIVEN no list of available markets WHEN dynamic markets resolve THEN every coin becomes a pair for Kraken to validate", func(t *testing.T) {
+		srv, _ := coinServer(t, []string{"render", "link"}, http.StatusOK)
+		resolver := NewResolver(nil, "coingecko", Options{HTTPClient: srv.Client(), BaseURL: srv.URL, MaxCoins: 5})
+
+		markets := resolver.ResolveDynamicMarkets(context.Background())
+
+		if len(markets) != 2 || markets[0] != "RENDER/EUR" {
+			t.Fatalf("expected both coins as EUR pairs, got %v", markets)
 		}
 	})
 }

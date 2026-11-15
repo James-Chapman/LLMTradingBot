@@ -5,20 +5,26 @@ package server
 
 import (
 	"bytes"
+	"context"
+	"crypto/subtle"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/James-Chapman/LLMTradingBot/internal/app"
+	"github.com/James-Chapman/LLMTradingBot/internal/config"
 	"github.com/James-Chapman/LLMTradingBot/internal/observability"
 	"github.com/James-Chapman/LLMTradingBot/internal/storage"
 )
@@ -40,12 +46,33 @@ var csvFields = []string{
 	"confidence", "exit_reason", "entry_at", "exit_at", "position_id", "trade_idea_id", "closing_trade_idea_id",
 }
 
+// TokenSource is the dashboard access token (app.AccessToken in production).
+type TokenSource interface {
+	Token() string
+	Rotate(ctx context.Context) (string, error)
+}
+
+// SessionCookieName is the cookie set by POST /api/login.
+const SessionCookieName = "tradingbot_session"
+
+// defaultFailedLoginDelay slows down guessing: every wrong token waits this long.
+const defaultFailedLoginDelay = time.Second
+
 // Options configures the HTTP handler.
 type Options struct {
-	// FrontendDir holds index.html, approvals.html, sw.js and static/
-	// (default "frontend", relative to the working directory).
+	// FrontendDir holds index.html, approvals.html, login.html, sw.js and
+	// static/ (default "frontend", relative to the working directory).
 	FrontendDir string
 	Logger      *slog.Logger
+	// AllowedHosts are extra Host header names always accepted, on top of
+	// those derived from the listen address and ALLOWED_HOSTS.
+	AllowedHosts []string
+	// Access is the access token required when the settings' Host is not a
+	// loopback address. Without one such a server refuses every request
+	// except /health and the login page.
+	Access TokenSource
+	// FailedLoginDelay is the wait after a wrong token (default 1 s).
+	FailedLoginDelay time.Duration
 }
 
 // handler serves the API for one App.
@@ -53,18 +80,40 @@ type handler struct {
 	app         *app.App
 	frontendDir string
 	logger      *slog.Logger
+	// requireLogin is set when the bot listens on a non-loopback address.
+	requireLogin bool
+	access       TokenSource
+	failDelay    time.Duration
 }
 
-// New returns the bot's HTTP handler wrapped in the CORS middleware.
+// New returns the bot's HTTP handler: the Host check, then CORS, then (when
+// the bot listens on a non-loopback address) the access-token check, then
+// the routes.
 func New(a *app.App, opts Options) http.Handler {
-	h := &handler{app: a, frontendDir: opts.FrontendDir, logger: opts.Logger}
+	settings := a.Settings()
+	h := &handler{
+		app:          a,
+		frontendDir:  opts.FrontendDir,
+		logger:       opts.Logger,
+		requireLogin: !config.IsLoopbackHost(settings.Host),
+		access:       opts.Access,
+		failDelay:    opts.FailedLoginDelay,
+	}
 	if h.frontendDir == "" {
 		h.frontendDir = "frontend"
 	}
 	if h.logger == nil {
 		h.logger = observability.Logger("server")
 	}
-	return corsMiddleware(a.Settings().CORSOrigins, h.routes())
+	if h.failDelay <= 0 {
+		h.failDelay = defaultFailedLoginDelay
+	}
+	var next http.Handler = h.routes()
+	if h.requireLogin {
+		next = h.requireSession(next)
+	}
+	next = corsMiddleware(settings.CORSOrigins, next)
+	return hostCheck(newHostPolicy(settings.Host, append(slices.Clone(opts.AllowedHosts), settings.AllowedHosts...)), next)
 }
 
 // routes registers every endpoint main.py exposed.
@@ -74,6 +123,11 @@ func (h *handler) routes() *http.ServeMux {
 	// Pages
 	mux.HandleFunc("GET /{$}", h.page("index.html"))
 	mux.HandleFunc("GET /approvals", h.page("approvals.html"))
+	mux.HandleFunc("GET /login", h.loginPage)
+
+	// Access (only used when the bot listens on a non-loopback address)
+	mux.HandleFunc("POST /api/login", h.login)
+	mux.HandleFunc("POST /api/access-token/rotate", h.rotateToken)
 	mux.HandleFunc("GET /sw.js", h.serviceWorker)
 	mux.Handle("GET /static/", h.staticFiles())
 
@@ -108,6 +162,7 @@ func (h *handler) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/export/trades.csv", h.exportTradesCSV)
 	mux.HandleFunc("GET /api/signals/{trade_idea_id}", h.signalDetail)
 	mux.HandleFunc("POST /api/positions/{position_id}/close", h.closePosition)
+	mux.HandleFunc("POST /api/positions/{position_id}/forget", h.forgetPosition)
 	mux.HandleFunc("POST /api/positions/reset", h.resetPositions)
 	mux.HandleFunc("GET /api/news", h.news)
 	mux.HandleFunc("GET /api/health", h.apiHealth)
@@ -219,14 +274,17 @@ func (h *handler) dashboard(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
-	w.Header().Set("ETag", etag)
 	defer func() {
 		if rec := recover(); rec != nil {
 			h.logger.Error("Failed to get dashboard data", "error", fmt.Sprint(rec))
 			writeJSON(w, http.StatusOK, h.app.FallbackDashboard())
 		}
 	}()
-	writeJSON(w, http.StatusOK, h.app.Dashboard())
+	view := h.app.Dashboard()
+	// Only a real payload gets the ETag: a fallback sent with it would be
+	// kept by the browser (304) until the next version change.
+	w.Header().Set("ETag", etag)
+	writeJSON(w, http.StatusOK, view)
 }
 
 // listApprovals returns the pending approvals.
@@ -268,17 +326,32 @@ func (h *handler) resume(w http.ResponseWriter, _ *http.Request) {
 // Request body limits for the endpoints that accept JSON.
 const (
 	maxTradingBody  = 1 << 10  // trading mode / environment
+	maxLoginBody    = 1 << 10  // login token
 	maxSettingsBody = 64 << 10 // dashboard settings
 )
 
-// decodeBody decodes a JSON request body of at most limit bytes into dst,
-// writing a 400 and returning false when it is missing or malformed.
+// errTrailingData reports bytes after the JSON value in a request body.
+var errTrailingData = errors.New("trailing data after the JSON value")
+
+// decodeBody decodes a JSON request body of at most limit bytes into dst.
+// It writes a 413 for an oversized body and a 400 for a missing or
+// malformed one (including data after the JSON value), and returns false.
 func decodeBody(w http.ResponseWriter, r *http.Request, limit int64, dst any) bool {
-	if err := json.NewDecoder(io.LimitReader(r.Body, limit)).Decode(dst); err != nil {
-		writeDetail(w, http.StatusBadRequest, "Request body must be JSON")
-		return false
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
+	err := dec.Decode(dst)
+	if err == nil && dec.Decode(&struct{}{}) != io.EOF {
+		err = errTrailingData
 	}
-	return true
+	var tooLarge *http.MaxBytesError
+	switch {
+	case err == nil:
+		return true
+	case errors.As(err, &tooLarge):
+		writeDetail(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("Request body is larger than %d bytes", limit))
+	default:
+		writeDetail(w, http.StatusBadRequest, "Request body must be one JSON value")
+	}
+	return false
 }
 
 // setTradingMode changes the trading mode: {"mode": "manual|semi_automated|fully_automated"}.
@@ -335,11 +408,17 @@ func (h *handler) marketAction(w http.ResponseWriter, r *http.Request) {
 		writeDetail(w, http.StatusNotFound, "Not Found")
 		return
 	}
+	// Only markets of the bot's universe may be saved into the control state.
+	if (action == "toggle" || action == "live-toggle") && !h.app.KnownMarket(market) {
+		writeDetail(w, http.StatusNotFound, "Market not found")
+		return
+	}
 	switch action {
 	case "toggle":
 		writeJSON(w, http.StatusOK, h.app.ToggleMarket(market))
 	case "live-toggle":
-		writeJSON(w, http.StatusOK, h.app.ToggleMarketLive(market))
+		result, err := h.app.ToggleMarketLive(market)
+		h.writeResult(w, r, result, err)
 	default:
 		writeDetail(w, http.StatusNotFound, "Not Found")
 	}
@@ -488,13 +567,21 @@ func (h *handler) signalDetail(w http.ResponseWriter, r *http.Request) {
 	h.writeResult(w, r, detail, err)
 }
 
-// closePosition manually closes one open paper position.
+// closePosition manually closes one open position: a paper position at the
+// market price, or a live position by sending a real market sell ("closing").
 func (h *handler) closePosition(w http.ResponseWriter, r *http.Request) {
 	result, err := h.app.ClosePosition(r.Context(), r.PathValue("position_id"))
 	h.writeResult(w, r, result, err)
 }
 
-// resetPositions closes and clears every open paper position.
+// forgetPosition removes a live position from the bot's book without sending
+// any order (the holding on Kraken is untouched).
+func (h *handler) forgetPosition(w http.ResponseWriter, r *http.Request) {
+	result, err := h.app.ForgetLivePosition(r.PathValue("position_id"))
+	h.writeResult(w, r, result, err)
+}
+
+// resetPositions closes and logs every open paper position, one by one.
 func (h *handler) resetPositions(w http.ResponseWriter, r *http.Request) {
 	count, err := h.app.ResetPositions(r.Context())
 	h.writeResult(w, r, map[string]int{"cleared": count}, err)
@@ -523,10 +610,11 @@ func (h *handler) health(w http.ResponseWriter, _ *http.Request) {
 const corsAllowMethods = "DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT"
 
 // corsMiddleware ports Starlette's CORSMiddleware with allow_credentials,
-// all methods and all headers allowed for the configured origins.
+// all methods and all headers allowed for the configured origins. A "*"
+// entry is never a wildcard (the settings refuse it): it would let every
+// site read the API with the user's credentials.
 func corsMiddleware(origins []string, next http.Handler) http.Handler {
-	allowAll := slices.Contains(origins, "*")
-	allowed := func(origin string) bool { return allowAll || slices.Contains(origins, origin) }
+	allowed := func(origin string) bool { return origin != "*" && slices.Contains(origins, origin) }
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
@@ -561,7 +649,215 @@ func corsMiddleware(origins []string, next http.Handler) http.Handler {
 		if allowed(origin) {
 			headers.Set("Access-Control-Allow-Origin", origin)
 			headers.Set("Access-Control-Allow-Credentials", "true")
+		} else if changesState(r.Method) && !sameOrigin(origin, r.Host) {
+			// CORS headers only stop a foreign page reading the reply; a plain
+			// cross-site POST is still delivered, so refuse it here.
+			writeDetail(w, http.StatusForbidden, "Cross-origin request refused")
+			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// changesState reports whether an HTTP method can modify the bot.
+func changesState(method string) bool {
+	return method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions
+}
+
+// sameOrigin reports whether a browser Origin header names the host the
+// request was sent to, i.e. the dashboard calling its own API.
+func sameOrigin(origin, host string) bool {
+	u, err := url.Parse(origin)
+	return err == nil && u.Host != "" && strings.EqualFold(u.Host, host)
+}
+
+// ---------------------------------------------------------------------------
+// Host check and access token
+// ---------------------------------------------------------------------------
+
+// hostPolicy lists the Host header names the server answers to.
+type hostPolicy struct {
+	names map[string]bool
+	// anyIP accepts any IP-address Host. DNS rebinding always arrives with
+	// the attacker's host name, never an IP literal, so this is safe; it
+	// lets a LAN user open http://<this computer's IP>:<port>.
+	anyIP bool
+}
+
+// newHostPolicy derives the accepted Host names from the listen address:
+// loopback names always; for a non-loopback address also that address, this
+// computer's name, extra, and any IP address.
+func newHostPolicy(listenHost string, extra []string) hostPolicy {
+	p := hostPolicy{names: map[string]bool{"localhost": true, "127.0.0.1": true, "::1": true}}
+	for _, name := range extra {
+		p.names[normalHost(name)] = true
+	}
+	if config.IsLoopbackHost(listenHost) {
+		return p
+	}
+	p.anyIP = true
+	if host := normalHost(listenHost); host != "" {
+		p.names[host] = true
+	}
+	if name, err := os.Hostname(); err == nil && name != "" {
+		p.names[normalHost(name)] = true
+	}
+	return p
+}
+
+// allows reports whether a request's Host header (host or host:port) is accepted.
+func (p hostPolicy) allows(hostHeader string) bool {
+	host := hostHeader
+	if h, _, err := net.SplitHostPort(hostHeader); err == nil {
+		host = h
+	}
+	host = normalHost(host)
+	if p.names[host] {
+		return true
+	}
+	return p.anyIP && net.ParseIP(host) != nil
+}
+
+// normalHost lower-cases a host name and drops IPv6 brackets and a trailing dot.
+func normalHost(host string) string {
+	return strings.TrimSuffix(strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]"), ".")
+}
+
+// hostCheck refuses (403) requests addressed to a host name the server is
+// not reached by. This closes DNS rebinding: a foreign page whose name was
+// re-pointed at this computer still sends its own name as the Host.
+func hostCheck(policy hostPolicy, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !policy.allows(r.Host) {
+			writeDetail(w, http.StatusForbidden, "Host not allowed. Add it under Settings → Advanced → Allowed host names")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// publicPaths are served without a session: liveness, the login page, its
+// stylesheet and the login call itself.
+var publicPaths = map[string]bool{
+	"GET /health":             true,
+	"GET /login":              true,
+	"GET /static/styles.css":  true,
+	"POST /api/login":         true,
+	"HEAD /health":            true,
+	"HEAD /static/styles.css": true,
+}
+
+// requireSession lets a request through when it carries the access token as
+// "Authorization: Bearer <token>" or in the session cookie. Otherwise pages
+// redirect to /login and everything else gets 401. A wrong bearer token
+// waits failDelay before the answer.
+func (h *handler) requireSession(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if publicPaths[r.Method+" "+r.URL.Path] {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
+			if h.validToken(bearer) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			h.waitAfterFailure(r.Context())
+		} else if c, err := r.Cookie(SessionCookieName); err == nil && h.validToken(c.Value) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		isPage := (r.Method == http.MethodGet || r.Method == http.MethodHead) && !strings.HasPrefix(r.URL.Path, "/api/")
+		if isPage {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+		w.Header().Set("WWW-Authenticate", `Bearer realm="tradingbot"`)
+		writeDetail(w, http.StatusUnauthorized, "Access token required: log in at /login or send Authorization: Bearer <token>")
+	})
+}
+
+// validToken compares candidate with the access token in constant time. It
+// is false when no token is configured, so such a server admits nobody.
+func (h *handler) validToken(candidate string) bool {
+	if h.access == nil {
+		return false
+	}
+	want := h.access.Token()
+	return want != "" && subtle.ConstantTimeCompare([]byte(candidate), []byte(want)) == 1
+}
+
+// waitAfterFailure pauses after a wrong token so guessing is slow.
+func (h *handler) waitAfterFailure(ctx context.Context) {
+	timer := time.NewTimer(h.failDelay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+}
+
+// setSessionCookie stores token in the HttpOnly, SameSite=Strict session
+// cookie (Secure over TLS). It lasts until the browser closes.
+func setSessionCookie(w http.ResponseWriter, r *http.Request, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     SessionCookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   r.TLS != nil,
+	})
+}
+
+// loginPage serves the token form; a loopback-bound bot needs no login and
+// sends the browser to the dashboard.
+func (h *handler) loginPage(w http.ResponseWriter, r *http.Request) {
+	if !h.requireLogin {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	h.page("login.html")(w, r)
+}
+
+// login checks {"token": "..."} and sets the session cookie: 200 when the
+// token is right, 401 (after the failure delay) when it is not.
+func (h *handler) login(w http.ResponseWriter, r *http.Request) {
+	if !h.requireLogin {
+		writeDetail(w, http.StatusNotFound, "Login is not used: the dashboard listens on a loopback address")
+		return
+	}
+	var body struct {
+		Token string `json:"token"`
+	}
+	if !decodeBody(w, r, maxLoginBody, &body) {
+		return
+	}
+	token := strings.TrimSpace(body.Token)
+	if !h.validToken(token) {
+		h.logger.Warn("Failed dashboard login", "remote", r.RemoteAddr)
+		h.waitAfterFailure(r.Context())
+		writeDetail(w, http.StatusUnauthorized, "Wrong access token")
+		return
+	}
+	setSessionCookie(w, r, token)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// rotateToken replaces the access token (the caller already proved it holds
+// the current one) and returns the new one, with a fresh session cookie.
+// Every other session and script must use the new token from now on.
+func (h *handler) rotateToken(w http.ResponseWriter, r *http.Request) {
+	if !h.requireLogin || h.access == nil {
+		writeDetail(w, http.StatusNotFound, "No access token is used: the dashboard listens on a loopback address")
+		return
+	}
+	fresh, err := h.access.Rotate(r.Context())
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	h.logger.Warn("Dashboard access token rotated", "remote", r.RemoteAddr)
+	setSessionCookie(w, r, fresh)
+	writeJSON(w, http.StatusOK, map[string]string{"token": fresh})
 }

@@ -1,8 +1,16 @@
 # API Endpoints
 
-All routes are registered on a standard-library `http.ServeMux` in `internal/server/server.go` (`routes()`), wrapped in a CORS middleware that allows the origins in `CORS_ORIGINS`. Handlers delegate to the `App` in `internal/app`. Paths, methods, status codes and JSON keys match the original FastAPI app, so the frontend works unchanged.
+All routes are registered on a standard-library `http.ServeMux` in `internal/server/server.go` (`routes()`). Requests pass, in order, the Host check, the CORS middleware (origins in `CORS_ORIGINS`) and, when the bot listens on a non-loopback address, the access-token check. Handlers delegate to the `App` in `internal/app`. Paths, methods, status codes and JSON keys match the original FastAPI app, so the frontend works unchanged.
 
-`cmd/tradingbot` binds the server to `HOST` (default `127.0.0.1`) on `PORT` (default `8000`). The frontend is served from the same process; no separate web server is required. The `-frontend` flag sets the directory the pages are served from (default `frontend`).
+**Host check.** Every request whose `Host` header names a host the bot is not reached by gets `403 {"detail": "Host not allowed. ..."}`, which stops DNS rebinding. Bound to a loopback address, only `localhost`, `127.0.0.1` and `[::1]` (any port) pass; bound to any other address, that address, this computer's name, any IP address and the names in `ALLOWED_HOSTS` pass too (see [01-configuration.md](01-configuration.md#access-from-other-computers)).
+
+**Access token.** Only when `-host` is not a loopback address. Every route except `GET /health`, `GET /login`, `GET /static/styles.css` and `POST /api/login` needs the token, sent as `Authorization: Bearer <token>` or in the `tradingbot_session` cookie set by `POST /api/login`. Without it, pages (`GET`/`HEAD` outside `/api/`) redirect with `303` to `/login`, and everything else gets `401 {"detail": "Access token required: ..."}` with `WWW-Authenticate: Bearer`. A wrong bearer token waits 1 second before the `401`. Loopback-bound instances need no token.
+
+**Cross-site requests.** CORS headers only stop a foreign page *reading* a reply; a browser still delivers a plain cross-site `POST`. The middleware therefore refuses every state-changing request (any method other than `GET`, `HEAD`, `OPTIONS`) whose `Origin` header is neither in `CORS_ORIGINS` nor the host the request was sent to, with `403 {"detail": "Cross-origin request refused"}`. Requests without an `Origin` header (the CLI, scripts, `curl`) and the dashboard's own requests are unaffected. On its own this is not authentication; the access token above is what protects a bot reachable from other computers.
+
+`cmd/tradingbot` binds the server to `-host` (default `127.0.0.1`) on `-port` (default `8000`). The frontend is served from the same process; no separate web server is required. The `-frontend` flag sets the directory the pages are served from (default `frontend`). The server's timeouts are: read header 10 s, read 30 s, write 2 min (room for an approval that places a live Kraken order), idle 2 min. No response streams.
+
+**Request bodies.** Endpoints that take JSON read at most their limit (1 KB for trading mode, environment and login; 64 KB for settings). A larger body gets `413 {"detail": "Request body is larger than N bytes"}`; a missing or malformed body, or data after the JSON value, gets `400 {"detail": "Request body must be one JSON value"}`. Nothing changes in either case.
 
 ---
 
@@ -12,10 +20,27 @@ All routes are registered on a standard-library `http.ServeMux` in `internal/ser
 |--------|------|-------------|
 | `GET` | `/` | Serves `frontend/index.html` — the main dashboard |
 | `GET` | `/approvals` | Serves `frontend/approvals.html` — the approval management page |
+| `GET` | `/login` | Serves `frontend/login.html` — the access-token form. Only used when the bot listens on a non-loopback address; otherwise it redirects to `/` |
 | `GET` | `/sw.js` | Serves the service worker from the root scope |
 | `GET` | `/static/...` | Serves files under `frontend/static/` (no directory listings) |
 
 HTML pages and `sw.js` are sent with `Cache-Control: no-store, max-age=0` so frontend fixes apply immediately.
+
+---
+
+## Access
+
+Only used when the bot listens on a non-loopback address. On a loopback-bound bot both endpoints return `404`.
+
+### `POST /api/login`
+
+**Request body** (1 KB limit): `{"token": "<access token>"}`
+
+With the right token: `200 {"status": "ok"}` and the session cookie `tradingbot_session` (the token itself; HttpOnly, SameSite=Strict, Path=/, Secure over HTTPS, ends when the browser closes). With a wrong token: `401 {"detail": "Wrong access token"}` after a 1-second delay, and a `Failed dashboard login` warning in the log.
+
+### `POST /api/access-token/rotate`
+
+Needs the current token. Generates a new token, stores it sealed, and returns `200 {"token": "<new token>"}` with a new session cookie. The old token and every session using it stop working at once; scripts must use the new token.
 
 ---
 
@@ -70,8 +95,9 @@ The response carries an `ETag` header holding the dashboard version counter, whi
     "cash": "312.50",
     "open_position_ids": ["3fa85f64-5717-4562-b3fc-2c963f66afa6"],
     "markets": [
-        {"symbol": "BTC/EUR", "price": "85420.00", "enabled": true, "live": false},
-        {"symbol": "ETH/EUR", "price": "-",        "enabled": true, "live": false}
+        {"symbol": "BTC/EUR",  "price": "85420.00",    "price_value": 85420,     "enabled": true, "live": false},
+        {"symbol": "PEPE/EUR", "price": "0.000008500", "price_value": 0.0000085, "enabled": true, "live": false},
+        {"symbol": "ETH/EUR",  "price": "-",           "price_value": null,      "enabled": true, "live": false}
     ],
     "signals": [
         {
@@ -94,11 +120,29 @@ The response carries an `ETag` header holding the dashboard version counter, whi
             "opened_at":        "2026-04-23T14:32:10",
             "size":             "0.001140",
             "avg_price":        "85420.00",
+            "avg_price_value":  85420,
             "unrealized_pnl":   "4.20",
             "strategy":         "llm_only_strategy",
             "source":           "",
             "status":           "open",
+            "environment":      "paper",
             "trade_idea_id":    "7c9e6679-..."
+        },
+        {
+            "position_id":      "9b2e41d0",
+            "position_id_full": "9b2e41d0-1c7a-4f0e-9a51-7d3c2b6e8f10",
+            "market":           "ETH/EUR",
+            "direction":        "long",
+            "opened_at":        "2026-04-23T14:35:02",
+            "size":             "0.030000",
+            "avg_price":        "3012.40",
+            "avg_price_value":  3012.4,
+            "unrealized_pnl":   "0.00",
+            "strategy":         "basic_strategy",
+            "source":           "",
+            "status":           "entry_pending",
+            "environment":      "live",
+            "trade_idea_id":    "5d1c0e7a-..."
         }
     ],
     "approvals": [
@@ -195,6 +239,9 @@ The response carries an `ETag` header holding the dashboard version counter, whi
 **Notes:**
 
 - `equity`, `cash`, market `price` and the position numbers are pre-formatted strings, as in the Python API. A market that has not been priced yet shows `"-"`.
+- Money amounts (`equity`, `cash`, `unrealized_pnl`) have 2 decimals. Prices (`price`, `avg_price`) have 2 decimals at or above 1 and 4 significant digits below 1, so sub-cent coins are not shown as `0.00`.
+- `markets[].price_value` (a number, `null` while unpriced) and `positions[].avg_price_value` carry the raw prices; the dashboard formats prices from these.
+- `markets[].live` is `true` when the market is toggled live (`control.live_markets`).
 - `signals` holds the 12 most recent signals from the strategy loop. This is not a ledger; older entries roll off.
 - `equity_history` is limited to the last 1 440 snapshots (4 hours at 10-second resolution, produced by `equityTickerLoop`). The last point is aligned with the current equity.
 - `risk_rejections` returns the most recent 20 of the 50 rejections kept in memory.
@@ -203,7 +250,8 @@ The response carries an `ETag` header holding the dashboard version counter, whi
 - `learning` is the learner summary (see `GET /api/learning`).
 - `llm.briefing` and `llm.reflection` are `null` if the LLM has not yet produced results.
 - In paper mode, `cash` and `equity` come from the paper engine (`internal/paper`). In live mode, both come from Kraken account balances: `cash` is the selected quote-currency balance and `equity` is quote cash plus non-quote balances marked to the latest known prices.
-- `open_position_ids` is a list of full UUIDs for all currently open positions. The frontend uses this to display OPEN/CLOSED status in the trade ledger without a separate API call.
+- `positions` lists the open paper positions followed by the live positions (positions opened by real Kraken orders, tracked in `live_positions`). `environment` is `"paper"` or `"live"`. `status` is `"open"` for paper positions; a live position is `"entry_pending"` while its buy order is open on Kraken (its `size` is then the requested size and `unrealized_pnl` is `0.00`), `"open"` once the buy has filled (`size`, `avg_price` and the fee are the executed values), and `"exit_pending"` while its sell order is open. Live positions are always spot longs. Live positions stay listed in the paper environment, because they are still held on Kraken.
+- `open_position_ids` is a list of full UUIDs for all currently open positions, paper and live (including live positions whose entry or exit is pending). The frontend uses this to display OPEN/CLOSED status in the trade ledger without a separate API call.
 
 ---
 
@@ -227,15 +275,17 @@ Returns all currently pending (non-expired) approval requests.
 
 ### `POST /api/approvals/{approval_id}/approve`
 
-Approves and immediately executes the pending trade. Markets toggled to live route to Kraken; all others go to the paper engine.
+Approves and immediately executes the pending trade. In the live environment, markets toggled live route to Kraken; all others go to the paper engine.
 
 **Path parameter:** `approval_id` — UUID of the `ApprovalRequest`.
 
 **Pre-conditions checked by the handler:**
 
-1. Emergency stop is not active (`503`).
+1. Emergency stop is not active (`503`; the approval stays pending).
 2. Approval exists and is not expired (`404`).
-3. A live market price is available. Without one, the approval is consumed and logged but not executed (`200` with status `approved_no_price`).
+3. A live market price is available. Without one nothing is executed and the approval **stays pending**, so it can be approved again once a price arrives (`503`).
+4. On a live market, a short can only sell a filled live long that has no sell pending (`409`; the approval is removed when there is no live position at all, because a spot account cannot open a short).
+5. The risk checks pass again with the current state (open positions of the route, cash, daily loss, price). If they no longer pass, the approval is removed and nothing is executed (`409`, the `detail` names the reason). The order is sized from this fresh decision.
 
 **Response (success):**
 
@@ -244,9 +294,12 @@ Approves and immediately executes the pending trade. Markets toggled to live rou
     "status":       "approved",
     "id":           "7c9e6679-...",
     "order_id":     "a3f1c2d4-...",
-    "order_status": "filled"
+    "order_status": "filled",
+    "environment":  "paper"
 }
 ```
+
+`environment` is `"live"` when the order went to Kraken. A live order's `order_status` is usually `"pending"`: the position appears in the dashboard as `entry_pending` (or `exit_pending` for a sell) until reconciliation sees the fill. `order_status` `"rejected"` means the order was refused (for example insufficient funds, or Kraken rejected it); the approval is still consumed.
 
 **Response (emergency stop active, `503`):**
 
@@ -260,14 +313,16 @@ Approves and immediately executes the pending trade. Markets toggled to live rou
 {"detail": "Approval not found or expired"}
 ```
 
-**Response (no price available, `200`):**
+**Response (no price available, `503`):**
 
 ```json
-{
-    "status": "approved_no_price",
-    "id":     "7c9e6679-...",
-    "detail": "No live price for ETH/EUR; trade logged but not executed"
-}
+{"detail": "No live price for ETH/EUR - the approval is still pending; try again when a price is available"}
+```
+
+**Response (refused by the risk re-check, `409`):**
+
+```json
+{"detail": "Risk check failed at approval time: Daily loss limit reached. The approval was removed."}
 ```
 
 ---
@@ -319,6 +374,8 @@ Deactivates the emergency stop and resumes normal operation. The strategy loop p
 
 Toggles a market on or off. Market symbols contain a slash, so the route is registered as `/api/control/markets/{market...}`: it captures the rest of the path and treats the last segment as the action. Send the symbol URL-encoded (`BTC%2FEUR`) or raw (`BTC/EUR`).
 
+Only markets the bot knows can be toggled: an active market, a configured fixed market, or one that already has a saved toggle. Any other symbol gets `404 {"detail": "Market not found"}` and nothing is saved. The same applies to `live-toggle`.
+
 When a market is disabled:
 - The strategy loop skips it.
 - The OHLC loop stops refreshing its candles.
@@ -361,11 +418,11 @@ Switches between paper and live (real money). The choice is saved in `control_st
 ```
 
 - Switching to `live` requires `"confirmation": "LIVE"` (the text the dashboard makes you type) **and** Kraken API keys in use. Keys saved in Settings but not yet loaded are refused with *Kraken API keys were saved but are not in use yet: restart the bot, then switch to live*; no keys gives *Kraken API keys are not set: add them under Settings → Kraken first*.
-- Switching to `paper` needs no confirmation field; the dashboard still shows a confirm dialog.
+- Switching to `paper` needs no confirmation field; the dashboard still shows a confirm dialog. It is refused while any live position is open (entry or exit pending counts): close the live positions first, so the switch never leaves a real holding behind a paper dashboard.
 
 **Response:** `{"trading_environment": "live"}`
 
-**Errors:** `400` for a malformed body, an unknown environment, a missing or wrong confirmation, or missing Kraken API keys. The `detail` field explains which; nothing changes.
+**Errors:** `400` for a malformed body, an unknown environment, a missing or wrong confirmation, or missing Kraken API keys. `409` when switching to paper with live positions open: `{"detail": "Cannot switch to paper while 1 live position(s) are open: BTC/EUR [3fa85f64] open. Close them first, or use Forget for any sold on Kraken."}`. The `detail` field explains which; nothing changes.
 
 Going live only affects markets toggled live (see below); all others keep trading on paper.
 
@@ -373,13 +430,15 @@ Going live only affects markets toggled live (see below); all others keep tradin
 
 ### `POST /api/control/markets/{market}/live-toggle`
 
-Toggles whether orders for a market route to Kraken live execution instead of the paper engine. The live engine still refuses orders when the Kraken API keys are not set (see [09-ingestion-adapters.md](09-ingestion-adapters.md)). The flag only sends real orders while the trading environment is `live`; in the paper environment the order executes on paper and a warning is logged. The state persists in the control state (`live_markets`). There is no dashboard control for this toggle yet.
+Toggles whether orders for a market route to Kraken live execution instead of the paper engine. The live engine still refuses orders when the Kraken API keys are not set (see [09-ingestion-adapters.md](09-ingestion-adapters.md)). The flag only sends real orders while the trading environment is `live`; in the paper environment the order executes on paper and a warning is logged. The state persists in the control state (`live_markets`). In the live environment the dashboard's Markets panel has a confirmed **Live / Paper** button per market for this toggle.
 
 **Response:**
 
 ```json
 {"market": "ETH/EUR", "live": true}
 ```
+
+**Errors:** `409` when turning the flag **off** for a market that holds a live position (any status); the `detail` names the position. Nothing changes. Close the position first, or forget it if it was already sold on Kraken.
 
 ---
 
@@ -739,22 +798,27 @@ Returns the in-memory news cache: the 60 most recent articles across all sources
 
 ### `POST /api/positions/{position_id}/close`
 
-Closes a named open paper position at the current market price. In addition to filling the order, the handler:
+Closes a named open position. A **paper** position is closed at the current market price. In addition to filling the order, the handler:
 - Writes a `signal_outcomes` row (`exit_reason = "manual_close"`) for history and LLM learning
-- Records the realised P&L in the risk engine and persists the daily counters, so the drawdown tracker reflects the close
+- Records the realised P&L (entry and exit fees included) in the risk engine and persists the daily counters, so the drawdown tracker reflects the close
 - Records realised P&L on the order row
-- Records the outcome in the performance learner so it adjusts future confidence
+- Records the outcome in the performance learner (as a return on the trade's entry price × size) so it adjusts future confidence
 - Saves an equity snapshot immediately
+
+A **live** position (one listed with `"environment": "live"` in the dashboard) is closed by sending one real Kraken market sell of its executed size. Nothing is realised yet: the response has `"status": "closing"` and `"pnl": null`, and the P&L, outcome and learner update are recorded when reconciliation sees the sell fill on a later tick. Until then the position shows as `exit_pending`.
 
 **Path parameter:** `position_id` — either the full UUID (e.g. `3fa85f64-5717-4562-b3fc-2c963f66afa6`) or the 8-character prefix (e.g. `3fa85f64`). The prefix form is accepted for convenience, but the full UUID is preferred to avoid ambiguity.
 
 **Pre-conditions checked by the handler:**
 
-1. Emergency stop is not active (`503`).
-2. The position ID matches an existing open position (`404`).
-3. A live market price is available for the position's market (`503`).
+1. The position ID matches an existing open paper or live position (`404`).
+2. A live market price is available for the position's market (`503`).
+3. Live positions only: the position is `open` — no buy or sell order is pending (`409`).
+4. Live positions only: the size is at least Kraken's minimum order. A smaller position is removed from the book as dust and nothing is sent (`409`, "below Kraken's minimum order and was removed as dust").
 
-**Response (success):**
+A manual close is allowed **during the emergency stop** and, for a live position, in either environment: it is the operator's way out while automation is halted. It is also not held back by the back-off that pauses automatic exits after a rejected sell.
+
+**Response (paper position closed):**
 
 ```json
 {
@@ -766,6 +830,23 @@ Closes a named open paper position at the current market price. In addition to f
     "cash":        476.80
 }
 ```
+
+**Response (live sell sent):**
+
+```json
+{
+    "status":       "closing",
+    "position_id":  "9b2e41d0-1c7a-4f0e-9a51-7d3c2b6e8f10",
+    "order_id":     "c4d5e6f7-...",
+    "order_status": "pending",
+    "environment":  "live",
+    "fill_price":   3050.10,
+    "pnl":          null,
+    "cash":         412.30
+}
+```
+
+`fill_price` is the reference price the sell was sent at; the real fill price is recorded on reconciliation. A Kraken rejection of the sell returns `502` and the position stays open.
 
 **Response (position not found, `404`):**
 
@@ -781,21 +862,33 @@ Closes a named open paper position at the current market price. In addition to f
 
 ---
 
+### `POST /api/positions/{position_id}/forget`
+
+Removes a **live** position from the bot's book **without sending any order**. Use it when the holding was already sold on Kraken by hand, or is too small to sell, and the bot can no longer close it. The holding on Kraken is not touched; any order still pending for the position is no longer tracked. The dashboard asks for confirmation first. The action is written to the activity log ("Live position forgotten: … - no order sent").
+
+**Path parameter:** `position_id` — full UUID or the 8-character prefix.
+
+**Response:**
+
+```json
+{"status": "forgotten", "position_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6", "market": "BTC/EUR"}
+```
+
+**Errors:** `404` for an unknown position; `409` for a paper position ("Only live positions can be forgotten - close a paper position instead"); `500` if the row could not be deleted from the database (the position is gone until the next restart, then returns).
+
+---
+
 ### `POST /api/positions/reset`
 
-Closes and clears all open paper positions from both the in-memory state and the database. **Paper mode only.** Returns `403` (`"Position reset is not allowed in live mode"`) when the trading environment is `live`.
+Closes every open paper position, one by one. **Paper environment only.** Returns `403` (`"Position reset is not allowed in live mode"`) when the trading environment is `live`. Live positions are never touched.
 
-Before clearing, `paper.ClosePositionsForOperatorReset()` writes a complete audit trail for every open position so no trade disappears from history:
+`paper.ClosePositionsForOperatorReset()` writes a complete audit trail for every open position so no trade disappears from history:
 
-1. Each position is closed through the normal close-order accounting path at the last known market price, falling back to its entry price if no live price is cached.
+1. Each position is closed through the normal close-order accounting path at the last known market price, falling back to its entry price if no live price is cached. That close removes the position from memory and deletes its own `open_positions` row.
 2. A `signal_outcomes` row is written with `exit_reason = "operator_reset"`.
-3. The realised P&L is recorded in the risk engine and the performance learner so in-memory state reflects the forced close.
+3. The realised P&L is recorded in the risk engine, on the close order and in the performance learner so in-memory state reflects the forced close.
 
-Then clears:
-- All rows from `open_positions` in SQLite
-- The paper engine's in-memory positions and position metadata
-
-Finally an equity snapshot is saved.
+Nothing is blanket-cleared afterwards, so a position opened while the reset runs stays open instead of vanishing without a close. Finally an equity snapshot is saved.
 
 **Note:** Reset positions appear in the Closed Trades panel with `exit_reason = "operator_reset"` and are included in the LLM reflection data.
 
@@ -819,8 +912,14 @@ All error responses use the FastAPI-compatible `{"detail": ...}` format. Operati
 
 Common HTTP status codes:
 - `304` — Dashboard unchanged since the `ETag` sent in `If-None-Match`
-- `403` — Position reset called in live mode
-- `404` — Resource not found (unknown route, approval, position, strategy, or signal)
+- `303` — Page requested without a session on a non-loopback bot (redirect to `/login`)
+- `400` — Malformed request body or invalid value
+- `401` — Access token missing or wrong (non-loopback bot only)
+- `403` — Host not allowed, cross-origin state change, or position reset called in live mode
+- `404` — Resource not found (unknown route, approval, position, strategy, signal or market)
+- `409` — Approval refused by the risk re-check, a live short with nothing to sell, a live position whose order is still pending or that was removed as dust, forgetting a paper position, or switching to paper / turning a market's live flag off while a live position is open
+- `502` — Kraken rejected the sell for a live position close
+- `413` — Request body over the endpoint's limit
 - `422` — Invalid `interval` query parameter on `/api/ohlc`
 - `500` — Unexpected error (`{"detail": "Internal Server Error"}`, logged to the application log)
-- `503` — Emergency stop active, or no live price available for a manual close
+- `503` — Emergency stop active (approvals), or no live price available for an approval (it stays pending) or a manual close

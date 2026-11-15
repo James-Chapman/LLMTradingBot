@@ -64,26 +64,50 @@ func (r *Repository) TrimOldPriceTicks(ctx context.Context, symbol string) error
 	return nil
 }
 
-// SaveEquitySnapshot records the current account value.
+// EnvironmentPaper is the environment label of paper-trading equity snapshots.
+const EnvironmentPaper = "paper"
+
+// equityEnvironment returns the environment an equity snapshot belongs to;
+// "" means paper, the environment every snapshot had before it was recorded.
+func equityEnvironment(environment string) string {
+	if environment == "" {
+		return EnvironmentPaper
+	}
+	return environment
+}
+
+// SaveEquitySnapshot records a paper account value (see SaveEquitySnapshotFor).
 func (r *Repository) SaveEquitySnapshot(ctx context.Context, totalEquity, cash, positionsValue float64) error {
+	return r.SaveEquitySnapshotFor(ctx, EnvironmentPaper, totalEquity, cash, positionsValue)
+}
+
+// SaveEquitySnapshotFor records the current account value of one trading
+// environment ("paper" or "live"), so the two series never mix.
+func (r *Repository) SaveEquitySnapshotFor(ctx context.Context, environment string, totalEquity, cash, positionsValue float64) error {
 	_, err := r.db.ExecContext(ctx,
-		"INSERT INTO equity_snapshots (total_equity, cash, positions_value, timestamp) VALUES (?, ?, ?, ?)",
-		totalEquity, cash, positionsValue, formatDBTime(time.Now()))
+		"INSERT INTO equity_snapshots (total_equity, cash, positions_value, timestamp, environment) VALUES (?, ?, ?, ?, ?)",
+		totalEquity, cash, positionsValue, formatDBTime(time.Now()), equityEnvironment(environment))
 	if err != nil {
 		return fmt.Errorf("save equity snapshot: %w", err)
 	}
 	return nil
 }
 
-// TrimOldEquitySnapshots deletes all but the newest keep snapshots.
+// TrimOldEquitySnapshots deletes all but the newest keep snapshots of each
+// environment, so a long live session cannot push out the paper history.
 // keep <= 0 uses MaxEquityRows.
 func (r *Repository) TrimOldEquitySnapshots(ctx context.Context, keep int) error {
 	_, err := r.db.ExecContext(ctx, `
 		DELETE FROM equity_snapshots
-		WHERE id NOT IN (
-			SELECT id FROM equity_snapshots
-			ORDER BY timestamp DESC, id DESC
-			LIMIT ?
+		WHERE id IN (
+			SELECT id FROM (
+				SELECT id, ROW_NUMBER() OVER (
+					PARTITION BY COALESCE(environment, 'paper')
+					ORDER BY timestamp DESC, id DESC
+				) AS newest_rank
+				FROM equity_snapshots
+			)
+			WHERE newest_rank > ?
 		)`, orDefault(keep, MaxEquityRows))
 	if err != nil {
 		return fmt.Errorf("trim equity snapshots: %w", err)
@@ -91,12 +115,20 @@ func (r *Repository) TrimOldEquitySnapshots(ctx context.Context, keep int) error
 	return nil
 }
 
-// GetEquityHistory returns up to limit newest equity snapshots, oldest first,
-// for the equity chart. limit <= 0 uses DefaultEquityHistoryLimit.
+// GetEquityHistory returns the paper equity history (see GetEquityHistoryFor).
 func (r *Repository) GetEquityHistory(ctx context.Context, limit int) ([]EquityPoint, error) {
-	rows, err := r.db.QueryContext(ctx,
-		"SELECT timestamp, total_equity FROM equity_snapshots ORDER BY timestamp DESC, id DESC LIMIT ?",
-		orDefault(limit, DefaultEquityHistoryLimit))
+	return r.GetEquityHistoryFor(ctx, EnvironmentPaper, limit)
+}
+
+// GetEquityHistoryFor returns up to limit newest equity snapshots of one
+// environment, oldest first, for the equity chart. limit <= 0 uses
+// DefaultEquityHistoryLimit.
+func (r *Repository) GetEquityHistoryFor(ctx context.Context, environment string, limit int) ([]EquityPoint, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT timestamp, total_equity FROM equity_snapshots
+		WHERE COALESCE(environment, 'paper') = ?
+		ORDER BY timestamp DESC, id DESC LIMIT ?`,
+		equityEnvironment(environment), orDefault(limit, DefaultEquityHistoryLimit))
 	if err != nil {
 		return nil, fmt.Errorf("get equity history: %w", err)
 	}
@@ -117,22 +149,29 @@ func (r *Repository) GetEquityHistory(ctx context.Context, limit int) ([]EquityP
 	return reversed(newestFirst), nil
 }
 
-// GetLatestEquity returns the newest total equity, or nil if none is stored.
+// GetLatestEquity returns the newest paper total equity, or nil if none is stored.
 func (r *Repository) GetLatestEquity(ctx context.Context) (*float64, error) {
-	return r.latestEquityColumn(ctx, "total_equity")
+	return r.latestEquityColumn(ctx, EnvironmentPaper, "total_equity")
 }
 
-// GetLatestCash returns the newest persisted cash balance, or nil if none is stored.
+// GetLatestCash returns the newest persisted paper cash balance, or nil if none is stored.
 func (r *Repository) GetLatestCash(ctx context.Context) (*float64, error) {
-	return r.latestEquityColumn(ctx, "cash")
+	return r.GetLatestCashFor(ctx, EnvironmentPaper)
 }
 
-// latestEquityColumn reads one column of the newest equity snapshot.
-// column is always a package constant, never user input.
-func (r *Repository) latestEquityColumn(ctx context.Context, column string) (*float64, error) {
+// GetLatestCashFor returns the newest cash balance of one environment, or nil
+// if that environment has no snapshot.
+func (r *Repository) GetLatestCashFor(ctx context.Context, environment string) (*float64, error) {
+	return r.latestEquityColumn(ctx, environment, "cash")
+}
+
+// latestEquityColumn reads one column of an environment's newest equity
+// snapshot. column is always a package constant, never user input.
+func (r *Repository) latestEquityColumn(ctx context.Context, environment, column string) (*float64, error) {
 	var v sql.NullFloat64
 	err := r.db.QueryRowContext(ctx,
-		"SELECT "+column+" FROM equity_snapshots ORDER BY timestamp DESC, id DESC LIMIT 1").Scan(&v)
+		"SELECT "+column+" FROM equity_snapshots WHERE COALESCE(environment, 'paper') = ? ORDER BY timestamp DESC, id DESC LIMIT 1",
+		equityEnvironment(environment)).Scan(&v)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

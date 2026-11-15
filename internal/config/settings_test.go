@@ -117,6 +117,26 @@ func TestSettingsFields(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("GIVEN any decimal setting WHEN a non-finite number is applied THEN it is refused and the setting unchanged", func(t *testing.T) {
+		// NaN compares false against every bound, so it would slip past the
+		// range checks and switch off the risk gates that read the value.
+		for _, f := range Fields() {
+			if f.Kind != KindFloat {
+				continue
+			}
+			for _, raw := range []string{"NaN", "Inf", "-Inf", "+Infinity"} {
+				s := Defaults()
+				before := f.Value(s)
+				if err := f.Apply(&s, raw); err == nil {
+					t.Errorf("%s=%q: expected a non-finite number to be refused", f.Key, raw)
+				}
+				if f.Value(s) != before {
+					t.Errorf("%s=%q: a refused value must not change the setting", f.Key, raw)
+				}
+			}
+		}
+	})
 }
 
 // TestDefaultMarkets covers the built-in market list used when Kraken cannot be asked.

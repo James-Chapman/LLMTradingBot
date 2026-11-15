@@ -14,6 +14,7 @@ import (
 	"github.com/James-Chapman/LLMTradingBot/internal/observability"
 	"github.com/James-Chapman/LLMTradingBot/internal/paper"
 	"github.com/James-Chapman/LLMTradingBot/internal/portfolio"
+	"github.com/James-Chapman/LLMTradingBot/internal/risk"
 	"github.com/James-Chapman/LLMTradingBot/internal/storage"
 )
 
@@ -128,12 +129,12 @@ func (a *App) Dashboard() DashboardView {
 			continue
 		}
 		seen[sym] = true
-		markets = append(markets, MarketView{Symbol: sym, Price: fmt.Sprintf("%.2f", price), Enabled: !disabled[sym], Live: live[sym]})
+		markets = append(markets, marketView(sym, price, true, !disabled[sym], live[sym]))
 	}
 	for _, sym := range a.activeMarkets {
 		if !seen[sym] {
 			seen[sym] = true
-			markets = append(markets, MarketView{Symbol: sym, Price: "-", Enabled: !disabled[sym], Live: live[sym]})
+			markets = append(markets, marketView(sym, 0, false, !disabled[sym], live[sym]))
 		}
 	}
 	signals := append([]SignalView{}, a.latestSignals...)
@@ -148,28 +149,12 @@ func (a *App) Dashboard() DashboardView {
 	openIDs := []string{}
 	for _, pos := range a.paper.OpenPositions() {
 		meta, _ := a.paper.Meta(pos.PositionID)
-		direction := "short"
-		if pos.Size > 0 {
-			direction = "long"
-		}
-		openedAt := ""
-		if !pos.Timestamp.IsZero() {
-			openedAt = portfolio.FormatISO(pos.Timestamp)
-		}
-		positions = append(positions, PositionView{
-			PositionID:     short8(pos.PositionID),
-			PositionIDFull: pos.PositionID,
-			Market:         pos.Market,
-			Direction:      direction,
-			OpenedAt:       openedAt,
-			Size:           fmt.Sprintf("%.6f", abs(pos.Size)),
-			AvgPrice:       fmt.Sprintf("%.2f", pos.AvgPrice),
-			UnrealizedPnL:  fmt.Sprintf("%.2f", pos.UnrealizedPnL),
-			Strategy:       meta.StrategyID,
-			Source:         "", // the paper engine never records a source
-			Status:         "open",
-			TradeIdeaID:    meta.TradeIdeaID,
-		})
+		positions = append(positions, positionView(pos, meta))
+		openIDs = append(openIDs, pos.PositionID)
+	}
+	// Live positions follow the paper ones, including pending entries and exits.
+	for _, pos := range a.LivePositions() {
+		positions = append(positions, livePositionView(pos))
 		openIDs = append(openIDs, pos.PositionID)
 	}
 
@@ -283,12 +268,23 @@ func (a *App) ToggleMarket(market string) map[string]any {
 	return map[string]any{"market": market, "enabled": enabled}
 }
 
-// ToggleMarketLive flips whether market routes to live execution.
-func (a *App) ToggleMarketLive(market string) map[string]any {
+// ToggleMarketLive flips whether market routes to live execution. Turning it
+// off is refused (409) while the market holds a live position: its exit
+// signals would otherwise be routed to paper.
+func (a *App) ToggleMarketLive(market string) (map[string]any, error) {
+	a.liveMu.Lock()
+	defer a.liveMu.Unlock()
 	live := !a.control.IsMarketLive(market)
+	if !live {
+		if summary, n := a.liveBookSummary(market); n > 0 {
+			return nil, statusError(http.StatusConflict, fmt.Sprintf(
+				"Cannot turn live trading off for %s while it holds a live position (%s). Close it first, or use Forget if it was sold on Kraken.",
+				market, summary))
+		}
+	}
 	a.control.SetMarketLive(market, live)
 	a.bumpVersion()
-	return map[string]any{"market": market, "live": live}
+	return map[string]any{"market": market, "live": live}, nil
 }
 
 // SelectStrategy makes the strategy (legacy IDs accepted) the active one and
@@ -319,57 +315,90 @@ func (a *App) ReloadStrategies() []string {
 
 // ApproveTrade executes a pending approval at the current market price,
 // routing to Kraken for live markets and to the paper engine otherwise.
+// The risk checks run again with the current state (open positions of the
+// route, cash, daily loss, price) and the order is sized from that fresh
+// decision. Without a price the approval stays pending (503) so it can be
+// retried; when the checks no longer pass it is removed (409). The approval
+// is only consumed once the order is about to be sent.
 func (a *App) ApproveTrade(ctx context.Context, approvalID string) (map[string]any, error) {
 	if a.control.EmergencyStop() {
 		return nil, statusError(http.StatusServiceUnavailable, "Emergency stop is active - cannot execute trades")
 	}
-	if _, ok := a.approvals.Get(approvalID); !ok {
-		return nil, statusError(http.StatusNotFound, "Approval not found or expired")
-	}
-	req, ok := a.approvals.Approve(approvalID)
+	req, ok := a.approvals.Get(approvalID)
 	if !ok {
-		return nil, statusError(http.StatusNotFound, "Approval expired between peek and approve")
+		return nil, statusError(http.StatusNotFound, "Approval not found or expired")
 	}
 
 	idea := req.TradeIdea
+	label := directionLabel(string(idea.Direction))
 	prices := a.pricesCopy()
 	marketPrice, ok := prices[idea.Market]
 	if !ok || marketPrice <= 0 {
-		a.logger.Warn("Cannot execute: no live price for market", "market", idea.Market)
-		return map[string]any{
-			"status": "approved_no_price",
-			"id":     approvalID,
-			"detail": fmt.Sprintf("No live price for %s; trade logged but not executed", idea.Market),
-		}, nil
+		a.logger.Warn("Cannot execute approval: no live price for market", "market", idea.Market, "approval_id", approvalID)
+		return nil, statusError(http.StatusServiceUnavailable,
+			fmt.Sprintf("No live price for %s - the approval is still pending; try again when a price is available", idea.Market))
+	}
+
+	// Decide the route once; a live route holds the live lock until the order is recorded.
+	environment := a.TradingEnvironment()
+	isLive := a.liveRouted(idea.Market, environment)
+	if isLive {
+		a.liveMu.Lock()
+		defer a.liveMu.Unlock()
+		if idea.Direction == domain.Short {
+			if block := a.liveExitBlock(idea.Market); block != "" {
+				if len(a.liveBook.ForMarket(idea.Market)) == 0 {
+					a.approvals.Reject(approvalID) // can never execute on a spot account
+				}
+				a.activity.Warn(fmt.Sprintf("Manual approval: %s %s - not executed (%s)", idea.Market, label, block), "")
+				return nil, statusError(http.StatusConflict, fmt.Sprintf("Cannot execute: %s", block))
+			}
+		}
 	}
 
 	account := a.accountSnapshot(ctx, prices)
-	size := sizeInBase(idea, req.RiskDecision, account.Equity, marketPrice)
+	cash := account.Cash
+	decision := a.risk.EvaluateTrade(idea, risk.EvaluateOptions{
+		OpenPositions: a.openPositionsFor(isLive), AvailableCash: &cash, MarketPrice: &marketPrice,
+	})
+	if !decision.Approved {
+		a.approvals.Reject(approvalID)
+		a.logger.Warn("Approval refused by the risk re-check", "approval_id", approvalID, "market", idea.Market, "reason", decision.Reason)
+		a.activity.Warn(fmt.Sprintf("Manual approval: %s %s - refused by risk check, approval removed", idea.Market, label), decision.Reason)
+		a.bumpVersion()
+		return nil, statusError(http.StatusConflict,
+			fmt.Sprintf("Risk check failed at approval time: %s. The approval was removed.", decision.Reason))
+	}
+	if _, ok := a.approvals.Approve(approvalID); !ok {
+		return nil, statusError(http.StatusNotFound, "Approval expired between peek and approve")
+	}
+
+	size := sizeInBase(idea, decision, account.Equity, marketPrice)
 	intent := domain.ExecutionIntent{ApprovalRequestID: approvalID, Market: idea.Market, Direction: idea.Direction, Size: size}
-	order, posID, isLive := a.executeIntent(ctx, intent, idea, marketPrice)
-	environment := string(domain.EnvPaper)
+	order, posID := a.executeIntent(ctx, intent, idea, marketPrice, isLive)
+	route := string(domain.EnvPaper)
 	if isLive {
-		environment = string(domain.EnvLive)
+		route = string(domain.EnvLive)
 	}
 	a.logger.Info("Trade executed after approval",
 		"approval_id", approvalID, "order_id", order.ID, "market", idea.Market,
-		"status", order.Status, "environment", environment, "position_id", posID)
+		"status", order.Status, "environment", route, "position_id", posID)
 
-	label := directionLabel(string(idea.Direction))
 	if order.Status == "rejected" {
 		a.activity.Error(
-			fmt.Sprintf("Manual approval: %s %s - order REJECTED (insufficient funds)", idea.Market, label),
-			fmt.Sprintf("Equity %s%.2f  Cash %s%.2f  Needed %s%.2f",
+			fmt.Sprintf("Manual approval: %s %s - order REJECTED", idea.Market, label),
+			fmt.Sprintf("Reason %s  Equity %s%.2f  Cash %s%.2f  Needed %s%.2f", order.ExchangeOrderID,
 				a.currencySymbol, account.Equity, a.currencySymbol, account.Cash, a.currencySymbol, size*marketPrice),
 		)
 	} else {
 		if !isLive {
 			a.savePaperEquity(ctx, prices)
 		}
-		// Record outcome and P&L when this approval closed an existing long.
+		// Record outcome and P&L when this approval closed an existing paper
+		// long; a live close is recorded when its sell fills.
 		if !isLive && idea.Direction == domain.Short && posID != "" {
 			if pnl, ok := a.paper.RecordClosedTrade(posID, order.Price, "manual_approve", idea.ID); ok {
-				a.recordClosedOutcome(ctx, order.ID, idea.StrategyID, idea.Market, string(idea.Direction), pnl)
+				a.recordClosedOutcome(ctx, order.ID, idea.StrategyID, idea.Market, string(idea.Direction), pnl, a.paperCloseNotional(posID))
 			}
 		}
 		shortPos := "-"
@@ -377,12 +406,14 @@ func (a *App) ApproveTrade(ctx context.Context, approvalID string) (map[string]a
 			shortPos = short8(posID)
 		}
 		a.activity.Success(
-			fmt.Sprintf("Manual approval: %s %s - %s order %s", idea.Market, label, environment, order.Status),
-			fmt.Sprintf("Size: %.6f @ %s%s  Order: %s  [%s]", size, a.currencySymbol, fmtMoney(marketPrice), short8(order.ID), shortPos),
+			fmt.Sprintf("Manual approval: %s %s - %s order %s", idea.Market, label, route, order.Status),
+			fmt.Sprintf("Size: %.6f @ %s%s  Order: %s  [%s]", order.Size, a.currencySymbol, fmtPrice(marketPrice), short8(order.ID), shortPos),
 		)
 	}
 	a.bumpVersion()
-	return map[string]any{"status": "approved", "id": approvalID, "order_id": order.ID, "order_status": order.Status}, nil
+	return map[string]any{
+		"status": "approved", "id": approvalID, "order_id": order.ID, "order_status": order.Status, "environment": route,
+	}, nil
 }
 
 // RejectTrade declines a pending approval.
@@ -397,12 +428,12 @@ func (a *App) RejectTrade(approvalID string) (map[string]any, error) {
 	return map[string]any{"status": "rejected", "id": approvalID}, nil
 }
 
-// ClosePosition manually closes one open paper position (full ID or the
-// dashboard's 8-character prefix) at the current market price.
+// ClosePosition manually closes one open position (full ID or the
+// dashboard's 8-character prefix): a paper position at the current market
+// price, or a live position with a real market sell of its held size. It is
+// allowed during the emergency stop and in any environment: an explicit
+// operator action that reduces exposure.
 func (a *App) ClosePosition(ctx context.Context, positionID string) (map[string]any, error) {
-	if a.control.EmergencyStop() {
-		return nil, statusError(http.StatusServiceUnavailable, "Emergency stop is active")
-	}
 	pos, found := a.paper.Position(positionID)
 	if !found {
 		for _, p := range a.paper.OpenPositions() {
@@ -414,6 +445,9 @@ func (a *App) ClosePosition(ctx context.Context, positionID string) (map[string]
 		}
 	}
 	if !found {
+		if live, ok := a.liveBook.Find(positionID); ok {
+			return a.closeLivePosition(ctx, live.ID)
+		}
 		return nil, statusError(http.StatusNotFound, "Position not found")
 	}
 
@@ -432,14 +466,14 @@ func (a *App) ClosePosition(ctx context.Context, positionID string) (map[string]
 		return nil, statusError(http.StatusInternalServerError, "Closed position outcome could not be recorded")
 	}
 	strategyID, direction := a.metaStrategyDirection(positionID)
-	a.recordClosedOutcome(ctx, order.ID, strategyID, pos.Market, direction, pnl)
+	a.recordClosedOutcome(ctx, order.ID, strategyID, pos.Market, direction, pnl, a.paperCloseNotional(positionID))
 	a.savePaperEquity(ctx, prices)
 
 	cash := a.paper.Cash()
 	a.activity.Success(
 		fmt.Sprintf("Position manually closed: %s %s", pos.Market, directionLabel(string(order.Direction))),
 		fmt.Sprintf("@ %s%s  PnL %s%s  Cash now %s%s",
-			a.currencySymbol, fmtMoney(order.Price), a.currencySymbol, fmtSignedMoney(pnl), a.currencySymbol, fmtMoney(cash)),
+			a.currencySymbol, fmtPrice(order.Price), a.currencySymbol, fmtSignedMoney(pnl), a.currencySymbol, fmtMoney(cash)),
 	)
 	a.logger.Info("Position manually closed",
 		"position_id", positionID, "market", pos.Market, "fill_price", order.Price, "order_id", order.ID, "pnl", pnl)
@@ -454,18 +488,16 @@ func (a *App) ClosePosition(ctx context.Context, positionID string) (map[string]
 	}, nil
 }
 
-// ResetPositions closes and logs every open paper position, then clears
-// them from memory and the database. Refused in live mode.
+// ResetPositions closes and logs every open paper position; each close
+// removes its own database row. Nothing is blanket-cleared afterwards, so a
+// position opened while the reset runs stays open instead of vanishing
+// without a close. Refused in live mode.
 func (a *App) ResetPositions(ctx context.Context) (int, error) {
 	if a.TradingEnvironment() == string(domain.EnvLive) {
 		return 0, statusError(http.StatusForbidden, "Position reset is not allowed in live mode")
 	}
 	prices := a.pricesCopy()
 	count := paper.ClosePositionsForOperatorReset(a.paper, prices, a.recordTradeResult, paperStore{repo: a.repo}, a.learner)
-	if _, err := a.repo.ClearAllOpenPositions(ctx); err != nil {
-		return 0, err
-	}
-	a.paper.ClearPositions()
 	a.savePaperEquity(ctx, prices)
 
 	a.logger.Warn("Open positions reset by operator", "cleared", count)

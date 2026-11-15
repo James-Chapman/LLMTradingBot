@@ -1,329 +1,558 @@
 package backtest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
-	"reflect"
-	"sync"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/James-Chapman/LLMTradingBot/internal/config"
 	"github.com/James-Chapman/LLMTradingBot/internal/domain"
-	"github.com/James-Chapman/LLMTradingBot/internal/kraken"
-	"github.com/James-Chapman/LLMTradingBot/internal/llm"
+	"github.com/James-Chapman/LLMTradingBot/internal/histdata"
 	"github.com/James-Chapman/LLMTradingBot/internal/strategy"
 )
 
-// fixtureAnalyser always recommends a confident long, like the Python FixtureAnalyser.
-type fixtureAnalyser struct {
-	mu    sync.Mutex
-	calls int
-}
-
-// AnalyseSignal returns a supportive analysis.
-func (f *fixtureAnalyser) AnalyseSignal(_ context.Context, _ llm.SignalRequest) llm.SignalAnalysis {
-	return llm.SignalAnalysis{ConfidenceScale: 1.0, Sentiment: 0.6, Reasoning: "fixture uptrend", LLMUsed: true}
-}
-
-// RecommendTrade counts the call and returns a long recommendation.
-func (f *fixtureAnalyser) RecommendTrade(_ context.Context, _ llm.RecommendationRequest) llm.LLMTradeRecommendation {
-	f.mu.Lock()
-	f.calls++
-	f.mu.Unlock()
-	return llm.LLMTradeRecommendation{Action: "long", Confidence: 0.80, Sentiment: 0.60, Reasoning: "fixture uptrend", LLMUsed: true}
-}
-
-// fixtureFile is the pinned generator spec for a profitable 48-hour replay.
-type fixtureFile struct {
-	Generator struct {
-		Count      int     `json:"count"`
-		StartPrice float64 `json:"start_price"`
-		CloseStep  float64 `json:"close_step"`
-		HighOffset float64 `json:"high_offset"`
-		LowOffset  float64 `json:"low_offset"`
-		Volume     float64 `json:"volume"`
-	} `json:"generator"`
-}
-
-// profitable48hCandles builds the 576 pinned synthetic 5-minute candles.
-func profitable48hCandles(t *testing.T) []domain.Candle {
-	t.Helper()
-	raw, err := os.ReadFile(filepath.Join("testdata", "btc_eur_5m_profitable_48h.json"))
-	if err != nil {
-		t.Fatalf("read fixture: %v", err)
-	}
-	var f fixtureFile
-	if err := json.Unmarshal(raw, &f); err != nil {
-		t.Fatalf("parse fixture: %v", err)
-	}
-	g := f.Generator
-	start := time.Date(2026, 4, 23, 0, 0, 0, 0, time.UTC).Unix()
-	candles := make([]domain.Candle, 0, g.Count)
-	price := g.StartPrice
-	for i := 0; i < g.Count; i++ {
-		closePrice := price + g.CloseStep
-		candles = append(candles, domain.Candle{
-			T: start + int64(i)*300,
-			O: price,
-			H: closePrice + g.HighOffset,
-			L: price - g.LowOffset,
-			C: closePrice,
-			V: g.Volume,
-		})
-		price = closePrice
-	}
-	return candles
-}
-
-// llmOnlyReplay runs the fixture through the LLM-only strategy.
-func llmOnlyReplay(t *testing.T, candles []domain.Candle) Result {
-	t.Helper()
-	result, err := RunReplay(context.Background(), Options{
-		CandlesByMarket: map[string][]domain.Candle{"BTC/EUR": candles},
-		StrategyID:      strategy.LLMOnlyID,
-		StartingCapital: 500.0,
-		Analyser:        &fixtureAnalyser{},
-		Settings:        defaultSettings(),
-	})
-	if err != nil {
-		t.Fatalf("replay: %v", err)
-	}
-	return result
-}
-
-// fakeOHLC is an OHLCSource that serves fixed candles and records the request.
-type fakeOHLC struct {
-	candles  []domain.Candle
-	symbol   string
-	interval int
-	limit    int
-}
-
-// GetOHLC returns the configured candles.
-func (f *fakeOHLC) GetOHLC(_ context.Context, symbol string, intervalMinutes, limit int) ([]domain.Candle, error) {
-	f.symbol, f.interval, f.limit = symbol, intervalMinutes, limit
-	return f.candles, nil
-}
-
-// TestReplay covers the deterministic historical replay engine.
-func TestReplay(t *testing.T) {
-	t.Run("GIVEN a pinned profitable 48h fixture WHEN replayed THEN the bot ends in profit after fees", func(t *testing.T) {
-		result := llmOnlyReplay(t, profitable48hCandles(t))
-		if result.EndingEquity <= result.StartingEquity || result.RealisedPnL <= 0 {
-			t.Fatalf("expected profit: %+v", result)
+// randomPlan plans random long/short ideas on markets between ticks from and to.
+func randomPlan(seed uint64, markets []string, from, to, every int) *scripted {
+	rng := rand.New(rand.NewPCG(seed, 99))
+	s := &scripted{}
+	for i := from; i < to; i++ {
+		for _, m := range markets {
+			if rng.IntN(every) != 0 {
+				continue
+			}
+			d := domain.Long
+			if rng.IntN(2) == 0 {
+				d = domain.Short
+			}
+			s.at(tick(i), m, d)
 		}
-		if result.TradeCount < 1 || result.Fees <= 0 {
-			t.Fatalf("expected at least one fee-paying trade: count=%d fees=%v", result.TradeCount, result.Fees)
+	}
+	return s
+}
+
+// twoMarkets returns a reader with two seeded random-walk markets.
+func twoMarkets(n int) memReader {
+	return memReader{bars: map[string][]histdata.Bar{
+		"BTC/EUR": randomWalkBars(1, n, t0, 50000, 0.002),
+		"ETH/EUR": randomWalkBars(2, n, t0, 3000, 0.003),
+	}}
+}
+
+// TestReplayAccounting covers that the replay's money is the paper engine's money.
+func TestReplayAccounting(t *testing.T) {
+	t.Run("GIVEN a round trip at an unchanged price WHEN it completes THEN equity falls by exactly the fees plus the spread paid", func(t *testing.T) {
+		cfg := testConfig([]string{"BTC/EUR"}, 79)
+		cfg.Exchange.FillModel = FillFixed
+		cfg.Exchange.FixedHalfSpreadBps = 10
+		s := (&scripted{}).at(tick(entryTick), "BTC/EUR", domain.Long).at(tick(exitTick), "BTC/EUR", domain.Short)
+		res := mustRun(t, oneMarket(flatSeries(80, 100)), withScript(cfg, s, nil))
+		fees, spread := 0.0, 0.0
+		for _, o := range ordersWhere(res, func(o OrderLogEntry) bool { return o.Status == StatusFilled }) {
+			if o.LatencyDrift != 0 {
+				t.Fatalf("price did not move, yet drift is %v", o.LatencyDrift)
+			}
+			fees += o.Fee
+			spread += o.FilledQty * (o.SpreadCost + o.ImpactCost + o.RoundingCost)
+		}
+		if len(res.Trades) != 1 || fees <= 0 || spread <= 0 {
+			t.Fatalf("want one trade with fees and spread, got trades=%d fees=%v spread=%v", len(res.Trades), fees, spread)
+		}
+		if change := res.EndingEquity - res.StartingCapital; !near(change, -fees-spread, 1e-9) {
+			t.Fatalf("equity changed by %v, want -(fees %v + spread %v)", change, fees, spread)
+		}
+		if !near(res.Trades[0].PnL, -fees-spread, 1e-9) {
+			t.Fatalf("trade pnl %v, want %v", res.Trades[0].PnL, -fees-spread)
 		}
 	})
 
-	t.Run("GIVEN the same fixture and settings WHEN replayed twice THEN results are identical", func(t *testing.T) {
-		candles := profitable48hCandles(t)
-		first := llmOnlyReplay(t, candles)
-		second := llmOnlyReplay(t, candles)
-		if first.EndingEquity != second.EndingEquity || first.RealisedPnL != second.RealisedPnL {
-			t.Fatalf("equity differs between runs")
+	t.Run("GIVEN trading on two markets WHEN every tick is observed THEN equity equals cash plus positions marked at the tick price", func(t *testing.T) {
+		cfg := testConfig([]string{"BTC/EUR", "ETH/EUR"}, 899)
+		cfg.Settings.StartingCapital = 5000
+		var obs []TickObservation
+		res := mustRun(t, twoMarkets(900), withScript(cfg, randomPlan(5, cfg.Markets, 36, 890, 15), &obs))
+		curve := map[time.Time]EquityPoint{}
+		for _, p := range res.EquityCurve {
+			curve[p.Time] = p
 		}
-		if len(first.Orders) != len(second.Orders) || !reflect.DeepEqual(first.SignalDecisions, second.SignalDecisions) {
-			t.Fatalf("orders or signals differ between runs")
+		multi := false
+		for _, o := range obs {
+			want := o.Cash
+			for _, p := range o.Positions {
+				want += p.Size * o.Prices[p.Market]
+			}
+			if !near(o.Equity, want, 1e-9) {
+				t.Fatalf("at %v equity %v, want cash+positions %v", o.Time, o.Equity, want)
+			}
+			if p, ok := curve[o.Time]; !ok || p.Equity != o.Equity || p.Cash != o.Cash {
+				t.Fatalf("equity curve point at %v is %+v, want equity %v cash %v", o.Time, p, o.Equity, o.Cash)
+			}
+			multi = multi || len(o.Positions) > 1
+		}
+		if !multi {
+			t.Fatal("the scenario never held two positions at once")
+		}
+	})
+}
+
+// TestReplayTime covers simulated time in the risk engine and the learner.
+func TestReplayTime(t *testing.T) {
+	t.Run("GIVEN a stop-loss that hits the daily loss limit WHEN simulated UTC midnight passes THEN new entries are allowed again", func(t *testing.T) {
+		start := time.Date(2026, 1, 4, 22, 0, 0, 0, time.UTC)
+		at := func(i int) time.Time { return start.Add(time.Duration(i) * histdata.BarInterval) }
+		bars := make([]histdata.Bar, 300)
+		for i := range bars {
+			price := 100.0
+			if i >= 125 {
+				price = 90
+			}
+			bars[i] = flatBar(at(i), price, 0.001, 1000)
+		}
+		cfg := testConfig([]string{"BTC/EUR"}, 0)
+		cfg.Start, cfg.End = start, at(299)
+		cfg.Settings.MaxDailyLossPercent = 1
+		s := (&scripted{}).
+			at(at(120), "BTC/EUR", domain.Long). // 23:00, stopped out at 23:03
+			at(at(180), "BTC/EUR", domain.Long). // 23:30, same UTC day
+			at(at(260), "BTC/EUR", domain.Long)  // 00:10, next UTC day
+		res := mustRun(t, oneMarket(bars), withScript(cfg, s, nil))
+
+		byTime := map[time.Time]Decision{}
+		for _, d := range res.Decisions {
+			byTime[d.Time] = d
+		}
+		if d := byTime[at(120)]; d.Outcome != OutcomeSubmitted {
+			t.Fatalf("first entry %+v, want submitted", d)
+		}
+		if d := byTime[at(180)]; d.Outcome != OutcomeRiskRejected || !strings.Contains(d.RiskReason, "Daily loss limit") {
+			t.Fatalf("same-day entry %+v, want a daily loss rejection", d)
+		}
+		if d := byTime[at(260)]; d.Outcome != OutcomeSubmitted {
+			t.Fatalf("next-day entry %+v, want submitted after the UTC reset", d)
 		}
 	})
 
-	t.Run("GIVEN future candles WHEN replay runs THEN the strategy only sees visible candles", func(t *testing.T) {
-		result := llmOnlyReplay(t, profitable48hCandles(t)[:40])
-		if len(result.SignalDecisions) == 0 {
-			t.Fatalf("expected signal decisions")
+	t.Run("GIVEN trades closing over time WHEN each tick is evaluated THEN the learner has seen exactly the trades closed by that tick", func(t *testing.T) {
+		cfg := testConfig([]string{"BTC/EUR", "ETH/EUR"}, 899)
+		cfg.Settings.StartingCapital = 5000
+		var obs []TickObservation
+		res := mustRun(t, twoMarkets(900), withScript(cfg, randomPlan(9, cfg.Markets, 36, 890, 10), &obs))
+		if obs[0].LearnedOutcomes != 0 {
+			t.Fatalf("the learner must start empty, saw %d outcomes", obs[0].LearnedOutcomes)
 		}
-		for _, s := range result.SignalDecisions {
-			if s.VisibleCandleCount > 40 {
-				t.Fatalf("look-ahead: visible count %d", s.VisibleCandleCount)
+		for _, o := range obs {
+			closed := len(ordersWhere(res, func(x OrderLogEntry) bool {
+				return x.Side == SideSell && x.Status == StatusFilled && x.Reason != ReasonEndOfRun && !x.FillTime.After(o.Time)
+			}))
+			if o.LearnedOutcomes != closed {
+				t.Fatalf("at %v the learner saw %d outcomes, %d trades had closed", o.Time, o.LearnedOutcomes, closed)
+			}
+		}
+		if obs[len(obs)-1].LearnedOutcomes < 5 {
+			t.Fatalf("too few closed trades (%d) to exercise the learner", obs[len(obs)-1].LearnedOutcomes)
+		}
+	})
+
+	t.Run("GIVEN the learner is switched off WHEN trades close THEN it learns nothing and confidence is never adjusted", func(t *testing.T) {
+		cfg := testConfig([]string{"BTC/EUR", "ETH/EUR"}, 899)
+		cfg.DisableLearner = true
+		var obs []TickObservation
+		res := mustRun(t, twoMarkets(900), withScript(cfg, randomPlan(9, cfg.Markets, 36, 890, 10), &obs))
+		for _, o := range obs {
+			if o.LearnedOutcomes != 0 {
+				t.Fatalf("learner disabled but saw %d outcomes", o.LearnedOutcomes)
+			}
+		}
+		for _, d := range res.Decisions {
+			if d.Confidence != d.RawConfidence {
+				t.Fatalf("confidence adjusted with the learner off: %+v", d)
 			}
 		}
 	})
+}
 
-	t.Run("GIVEN a replay result WHEN a report is written THEN it contains summary and ledger data", func(t *testing.T) {
-		result := llmOnlyReplay(t, profitable48hCandles(t))
-		path := filepath.Join(t.TempDir(), "nested", "replay_report_test.json")
-		if err := WriteReport(result, path); err != nil {
-			t.Fatalf("write report: %v", err)
-		}
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("report not written: %v", err)
-		}
-		var report map[string]any
-		if err := json.Unmarshal(raw, &report); err != nil {
-			t.Fatalf("report is not JSON: %v", err)
-		}
-		summary := report["summary"].(map[string]any)
-		if summary["strategy_id"] != "llm_only_strategy" {
-			t.Fatalf("wrong strategy id: %v", summary["strategy_id"])
-		}
-		if summary["ending_equity"].(float64) <= summary["starting_equity"].(float64) {
-			t.Fatalf("report should show profit")
-		}
-		if orders := report["orders"].([]any); len(orders) < 2 {
-			t.Fatalf("expected open and close orders, got %d", len(orders))
-		}
-		for _, key := range []string{"signals", "equity_curve"} {
-			if _, ok := report[key]; !ok {
-				t.Fatalf("report missing %s", key)
+// TestReplayDeterminism covers byte-identical results across runs.
+func TestReplayDeterminism(t *testing.T) {
+	t.Run("GIVEN the same data, settings and seed WHEN replayed twice THEN the result files are byte-identical and ids are sequence numbers", func(t *testing.T) {
+		dir := t.TempDir()
+		var files [2][]byte
+		for i := range files {
+			cfg := testConfig([]string{"BTC/EUR", "ETH/EUR"}, 899)
+			cfg.Settings.StartingCapital = 5000
+			res := mustRun(t, twoMarkets(900), withScript(cfg, randomPlan(5, cfg.Markets, 36, 890, 12), nil))
+			path := filepath.Join(dir, "run", "result.json")
+			if err := WriteResult(res, path); err != nil {
+				t.Fatal(err)
 			}
-		}
-	})
-
-	t.Run("GIVEN an LLM strategy and no analyser WHEN replayed THEN it runs with a neutral LLM", func(t *testing.T) {
-		for _, id := range []string{strategy.LLMOnlyID, strategy.BasicAndLLMID, strategy.BasicID} {
-			result, err := RunReplay(context.Background(), Options{
-				CandlesByMarket: map[string][]domain.Candle{"BTC/EUR": profitable48hCandles(t)[:60]},
-				StrategyID:      id,
-				Settings:        defaultSettings(),
-			})
+			raw, err := os.ReadFile(path)
 			if err != nil {
-				t.Fatalf("%s: %v", id, err)
+				t.Fatal(err)
 			}
-			if result.StartingEquity != 500.0 || len(result.EquityCurve) != 62 {
-				t.Fatalf("%s: unexpected result shape: start=%v curve=%d", id, result.StartingEquity, len(result.EquityCurve))
+			files[i] = raw
+			idPattern := regexp.MustCompile(`^[a-z]+-\d{6}$`)
+			for _, o := range res.Orders {
+				if !idPattern.MatchString(o.ID) || (o.PositionID != "" && !idPattern.MatchString(o.PositionID)) {
+					t.Fatalf("non-sequential id in %+v", o)
+				}
 			}
-			if id == strategy.LLMOnlyID && len(result.SignalDecisions) != 0 {
-				t.Fatalf("neutral LLM should never recommend a trade")
+			if len(res.Trades) < 3 {
+				t.Fatalf("the scenario produced too few trades (%d)", len(res.Trades))
+			}
+		}
+		if !bytes.Equal(files[0], files[1]) {
+			t.Fatal("two identical runs produced different result files")
+		}
+	})
+}
+
+// TestReplayStrategies covers which strategies a backtest can run.
+func TestReplayStrategies(t *testing.T) {
+	for _, id := range []string{strategy.BasicAndLLMID, strategy.LLMOnlyID, "llm_only"} { // llm_only: legacy id
+		t.Run("GIVEN the LLM strategy "+id+" WHEN a backtest is asked for THEN it refuses with a clear error and no result", func(t *testing.T) {
+			cfg := testConfig([]string{"BTC/EUR"}, 79)
+			cfg.StrategyID = id
+			res, err := Run(context.Background(), oneMarket(flatSeries(80, 100)), cfg)
+			if !errors.Is(err, ErrLLMStrategy) || res != nil {
+				t.Fatalf("want ErrLLMStrategy and no result, got %v / %v", err, res)
+			}
+			if !strings.Contains(err.Error(), "news") || !strings.Contains(err.Error(), "reproducible") {
+				t.Fatalf("the error must say why: %v", err)
+			}
+		})
+	}
+
+	t.Run("GIVEN an unknown strategy WHEN a backtest is asked for THEN it fails", func(t *testing.T) {
+		cfg := testConfig([]string{"BTC/EUR"}, 79)
+		cfg.StrategyID = "nope"
+		if _, err := Run(context.Background(), oneMarket(flatSeries(80, 100)), cfg); err == nil {
+			t.Fatal("want an error for an unknown strategy")
+		}
+	})
+}
+
+// observedJSON marshals the observations at or before limit for comparison.
+func observedJSON(t *testing.T, obs []TickObservation, limit time.Time) []byte {
+	t.Helper()
+	var keep []TickObservation
+	for _, o := range obs {
+		if !o.Time.After(limit) {
+			keep = append(keep, o)
+		}
+	}
+	raw, err := json.Marshal(keep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// TestReplayNoLookAhead covers that data after a time cannot affect anything before it.
+func TestReplayNoLookAhead(t *testing.T) {
+	t.Run("GIVEN two series identical up to T WHEN both are replayed with the real strategy THEN every input, decision and fill up to T is identical", func(t *testing.T) {
+		const n, cut = 3000, 1500
+		base := randomWalkBars(21, n, t0, 100, 0.004)
+		alt := append([]histdata.Bar(nil), base...)
+		for i := range alt {
+			if !alt[i].Start.Before(tick(cut)) {
+				alt[i].Open *= 1.5
+				alt[i].High *= 1.6
+				alt[i].Low *= 1.4
+				alt[i].Close *= 1.5
+				alt[i].BuyNotional *= 1.5
+				alt[i].SellNotional *= 1.5
+				alt[i].Volume *= 3
+			}
+		}
+		limit := tick(cut)
+		var results [2]*Result
+		var observations [2][]TickObservation
+		for i, bars := range [][]histdata.Bar{base, alt} {
+			cfg := testConfig([]string{"BTC/EUR"}, n-1)
+			cfg.observe = func(o TickObservation) {
+				observations[i] = append(observations[i], copyObservation(o))
+			}
+			results[i] = mustRun(t, oneMarket(bars), cfg)
+		}
+		if !bytes.Equal(observedJSON(t, observations[0], limit), observedJSON(t, observations[1], limit)) {
+			t.Fatal("strategy inputs before T differ: data after T leaked into them")
+		}
+		for i := range results {
+			results[i].Decisions = decisionsUpTo(results[i].Decisions, limit)
+			results[i].Orders = ordersWhere(results[i], func(o OrderLogEntry) bool { return !o.FillTime.After(limit) })
+		}
+		a, _ := json.Marshal([]any{results[0].Decisions, results[0].Orders})
+		b, _ := json.Marshal([]any{results[1].Decisions, results[1].Orders})
+		if !bytes.Equal(a, b) {
+			t.Fatal("decisions or fills up to T differ")
+		}
+		if len(results[0].Decisions) == 0 {
+			t.Fatal("the strategy made no decision before T, so the test proves nothing")
+		}
+	})
+
+	t.Run("GIVEN scripted orders around T WHEN the series differ after T THEN fills up to T are identical", func(t *testing.T) {
+		const n, cut = 600, 300
+		base := randomWalkBars(4, n, t0, 100, 0.002)
+		alt := append([]histdata.Bar(nil), base...)
+		for i := range alt {
+			if !alt[i].Start.Before(tick(cut)) {
+				alt[i] = flatBar(alt[i].Start, 10, 0.01, 1)
+			}
+		}
+		var logs [2][]byte
+		for i, bars := range [][]histdata.Bar{base, alt} {
+			res := mustRun(t, oneMarket(bars), withScript(testConfig([]string{"BTC/EUR"}, n-1), randomPlan(8, []string{"BTC/EUR"}, 36, n-5, 6), nil))
+			raw, _ := json.Marshal(ordersWhere(res, func(o OrderLogEntry) bool { return !o.FillTime.After(tick(cut)) }))
+			logs[i] = raw
+		}
+		if !bytes.Equal(logs[0], logs[1]) {
+			t.Fatal("fills up to T depend on data after T")
+		}
+	})
+}
+
+// scaleVolume multiplies the traded amounts of the bars in [from, to) by k.
+func scaleVolume(bars []histdata.Bar, from, to time.Time, k float64) {
+	for i := range bars {
+		if !bars[i].Start.Before(from) && bars[i].Start.Before(to) {
+			bars[i].Volume *= k
+			bars[i].BuyVolume *= k
+			bars[i].BuyNotional *= k
+			bars[i].SellVolume *= k
+			bars[i].SellNotional *= k
+		}
+	}
+}
+
+// TestReplayUniverse covers point-in-time market selection.
+func TestReplayUniverse(t *testing.T) {
+	t.Run("GIVEN A is the biggest market before the start and B the biggest over the following day WHEN the universe is re-selected THEN the start picks A, the next day picks B, and the dropped A blocks new entries", func(t *testing.T) {
+		const ticks = 2*2880 + 100
+		from := t0.Add(-PreRoll)
+		n := int(PreRoll/histdata.BarInterval) + ticks
+		a := randomWalkBars(41, n, from, 100, 0.002)
+		b := randomWalkBars(42, n, from, 100, 0.002)
+		scaleVolume(a, from, t0, 3)                                 // A trades 3x more before the start
+		scaleVolume(b, t0, t0.Add(ticks*histdata.BarInterval), 100) // B trades 100x more from the start on
+		reader := memReader{bars: map[string][]histdata.Bar{"AAA/EUR": a, "BBB/EUR": b, "CCC/USD": a}}
+		cfg := testConfig(nil, ticks)
+		cfg.Universe = &UniverseRule{TopN: 1, Every: "24h"}
+		day := 2880
+		s := (&scripted{}).at(tick(100), "AAA/EUR", domain.Long).at(tick(day+50), "AAA/EUR", domain.Long)
+		res := mustRun(t, reader, withScript(cfg, s, nil))
+
+		if len(res.UniverseSelections) != 3 {
+			t.Fatalf("selections %+v, want one at the start and one per day", res.UniverseSelections)
+		}
+		// A selection that could see the following 24 hours would pick B at the start.
+		first, second := res.UniverseSelections[0], res.UniverseSelections[1]
+		if !first.Time.Equal(t0) || len(first.Markets) != 1 || first.Markets[0] != "AAA/EUR" {
+			t.Fatalf("first selection %+v, want AAA/EUR from the day before %v only", first, t0)
+		}
+		if !second.Time.Equal(t0.Add(24*time.Hour)) || len(second.Markets) != 1 || second.Markets[0] != "BBB/EUR" {
+			t.Fatalf("second selection %+v, want BBB/EUR picked at %v", second, t0.Add(24*time.Hour))
+		}
+		for _, sel := range res.UniverseSelections {
+			for _, m := range sel.Markets {
+				if !strings.HasSuffix(m, "/EUR") {
+					t.Fatalf("a market outside the quote currency was selected: %v", sel)
+				}
+			}
+		}
+		var late *Decision
+		for i := range res.Decisions {
+			if res.Decisions[i].Time.Equal(tick(day + 50)) {
+				late = &res.Decisions[i]
+			}
+		}
+		if late == nil || late.Outcome == OutcomeSubmitted {
+			t.Fatalf("a long on a market dropped from the universe was handled as %+v", late)
+		}
+	})
+
+	t.Run("GIVEN a market out of the universe for a day while its price moves from 100 to 150 WHEN it re-enters THEN its price history is the continuous last 200 ticks, not old prices spliced to new ones", func(t *testing.T) {
+		const ticks = 3*2880 + 50
+		from := t0.Add(-PreRoll)
+		n := int(PreRoll/histdata.BarInterval) + ticks
+		day := 24 * time.Hour
+		a := make([]histdata.Bar, n)
+		for i := range a {
+			start := from.Add(time.Duration(i) * histdata.BarInterval)
+			price := 100.0
+			if !start.Before(t0.Add(day)) { // rises while A is out of the universe
+				price = 100 + 50*math.Min(1, float64(start.Sub(t0.Add(day)))/float64(day))
+			}
+			if i%120 < 60 { // a 1 % swing every hour, so A is not taken for a pegged pair
+				price *= 1.01
+			}
+			a[i] = flatBar(start, price, 0.001, 10)
+		}
+		b := randomWalkBars(43, n, from, 100, 0.002)
+		scaleVolume(a, from, t0, 1000)                   // A is the biggest before the start
+		scaleVolume(b, t0, t0.Add(day), 1000)            // B during the first day
+		scaleVolume(a, t0.Add(day), t0.Add(2*day), 1000) // A again during the second
+		reader := memReader{bars: map[string][]histdata.Bar{"AAA/EUR": a, "BBB/EUR": b}}
+		cfg := testConfig(nil, ticks)
+		cfg.Universe = &UniverseRule{TopN: 1, Every: "24h"}
+		reentry := t0.Add(2 * day).Add(histdata.BarInterval)
+		var seen *strategy.MarketData
+		cfg.strategy = &scripted{}
+		cfg.observe = func(o TickObservation) {
+			if o.Time.Equal(reentry) {
+				if md, ok := o.MarketData["AAA/EUR"]; ok {
+					seen = &md
+				}
+			}
+		}
+		res := mustRun(t, reader, cfg)
+		if got := res.UniverseSelections; len(got) < 3 || got[0].Markets[0] != "AAA/EUR" || got[1].Markets[0] != "BBB/EUR" || got[2].Markets[0] != "AAA/EUR" {
+			t.Fatalf("selections %+v, want AAA, BBB, AAA", got)
+		}
+		if seen == nil {
+			t.Fatal("AAA/EUR had no strategy input on re-entry")
+		}
+		hist := seen.PriceHistory
+		if len(hist) != 200 {
+			t.Fatalf("history of %d ticks on re-entry, want the full 200", len(hist))
+		}
+		for i := range hist {
+			at := reentry.Add(-time.Duration(len(hist)-1-i) * histdata.BarInterval)
+			want, _ := naiveLastPrice(a, at)
+			if hist[i] != want {
+				t.Fatalf("history[%d] = %v, want the price %v at %v", i, hist[i], want, at)
+			}
+		}
+		if seen.PreviousPrice < 149 {
+			t.Fatalf("previous price %v on re-entry, want the recent ~150, not the stale 100", seen.PreviousPrice)
+		}
+	})
+
+	t.Run("GIVEN several markets in a universe WHEN one market's data changes after T THEN no decision, selection or fill at or before T changes", func(t *testing.T) {
+		const n, cut = 4000, 2400
+		markets := []string{"AAA/EUR", "BBB/EUR", "CCC/EUR"}
+		build := func(mutate bool) memReader {
+			r := memReader{bars: map[string][]histdata.Bar{}}
+			for i, m := range markets {
+				bars := randomWalkBars(uint64(60+i), n+int(PreRoll/histdata.BarInterval), t0.Add(-PreRoll), 100, 0.004)
+				if mutate && m == "CCC/EUR" {
+					for j := range bars {
+						if !bars[j].Start.Before(tick(cut)) {
+							bars[j] = flatBar(bars[j].Start, bars[j].Close*1.5, 0.001, bars[j].Volume*1000)
+						}
+					}
+				}
+				r.bars[m] = bars
+			}
+			return r
+		}
+		var out [2][]byte
+		for i, mutate := range []bool{false, true} {
+			cfg := testConfig(nil, n-1)
+			cfg.Universe = &UniverseRule{TopN: 2, Every: "6h"}
+			res := mustRun(t, build(mutate), cfg)
+			var sels []UniverseSelection
+			for _, s := range res.UniverseSelections {
+				if !s.Time.After(tick(cut)) {
+					sels = append(sels, s)
+				}
+			}
+			decisions := decisionsUpTo(res.Decisions, tick(cut))
+			if len(decisions) == 0 {
+				t.Fatal("no decision before T: the test proves nothing")
+			}
+			raw, _ := json.Marshal([]any{sels, decisions, ordersWhere(res, func(o OrderLogEntry) bool { return !o.FillTime.After(tick(cut)) })})
+			out[i] = raw
+		}
+		if !bytes.Equal(out[0], out[1]) {
+			t.Fatal("changing one market after T changed selections, decisions or fills at or before T")
+		}
+	})
+}
+
+// decisionsUpTo keeps the decisions made at or before limit.
+func decisionsUpTo(ds []Decision, limit time.Time) []Decision {
+	var out []Decision
+	for _, d := range ds {
+		if !d.Time.After(limit) {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// copyObservation deep-copies an observation's market data through JSON so
+// later ticks cannot change it.
+func copyObservation(o TickObservation) TickObservation {
+	raw, _ := json.Marshal(o.MarketData)
+	o.MarketData = nil
+	_ = json.Unmarshal(raw, &o.MarketData)
+	o.Positions = append([]domain.PositionRecord(nil), o.Positions...)
+	return o
+}
+
+// TestReplayPlumbing covers end-to-end trading with the real strategy.
+func TestReplayPlumbing(t *testing.T) {
+	t.Run("GIVEN a trending series WHEN the real basic strategy is replayed THEN it trades through the real risk and paper engines and pays fees", func(t *testing.T) {
+		res := mustRun(t, oneMarket(trendBars(6000, 0.00025)), testConfig([]string{"BTC/EUR"}, 5999))
+		buys := ordersWhere(res, func(o OrderLogEntry) bool { return o.Side == SideBuy && o.Status == StatusFilled })
+		exits := ordersWhere(res, func(o OrderLogEntry) bool {
+			return o.Side == SideSell && o.Status == StatusFilled && o.Reason != ReasonEndOfRun
+		})
+		if len(buys) == 0 || len(exits) == 0 || res.FeesPaid <= 0 {
+			t.Fatalf("want filled buys and exits with fees, got %d buys %d exits fees %v (decisions %v)", len(buys), len(exits), res.FeesPaid, res.DecisionCounts)
+		}
+		if res.EndingEquity <= res.StartingCapital {
+			t.Fatalf("a strong uptrend should end in profit (plumbing only, not evidence of an edge): %v -> %v", res.StartingCapital, res.EndingEquity)
+		}
+		for _, tr := range res.Trades {
+			if tr.EntryFee <= 0 || tr.ExitFee <= 0 {
+				t.Fatalf("trade without fees: %+v", tr)
 			}
 		}
 	})
 
-	t.Run("GIVEN invalid input WHEN replayed THEN an error is returned", func(t *testing.T) {
-		if _, err := RunReplay(context.Background(), Options{StrategyID: strategy.BasicID}); err == nil {
-			t.Fatalf("expected error for empty candles")
-		}
-		_, err := RunReplay(context.Background(), Options{
-			CandlesByMarket: map[string][]domain.Candle{"BTC/EUR": profitable48hCandles(t)[:5]},
-			StrategyID:      "nope",
-		})
-		if err == nil {
-			t.Fatalf("expected error for unknown strategy")
-		}
-	})
+	t.Run("GIVEN random-walk markets and realistic costs WHEN replayed over many seeds THEN the average result is not a profit", func(t *testing.T) {
+		const seeds, n = 6, 4000
+		basicTotal, scriptTotal, basicTrades := 0.0, 0.0, 0
+		for seed := uint64(1); seed <= seeds; seed++ {
+			bars := randomWalkBars(100+seed, n, t0, 100, 0.0025)
 
-	t.Run("GIVEN an OHLC source WHEN a live replay runs THEN the candle limit covers the requested hours", func(t *testing.T) {
-		src := &fakeOHLC{candles: profitable48hCandles(t)[:50]}
-		result, err := RunLiveReplay(context.Background(), src, LiveOptions{
-			Market: "BTC/EUR", Hours: 48, Interval: 5, StrategyID: strategy.LLMOnlyID,
-			StartingCapital: 500, Analyser: &fixtureAnalyser{}, Settings: defaultSettings(),
-		})
-		if err != nil {
-			t.Fatalf("live replay: %v", err)
-		}
-		if src.symbol != "BTC/EUR" || src.interval != 5 || src.limit != 576 {
-			t.Fatalf("unexpected OHLC request: %+v", src)
-		}
-		if result.StrategyID != strategy.LLMOnlyID {
-			t.Fatalf("wrong strategy")
-		}
-	})
+			basic := mustRun(t, oneMarket(bars), testConfig([]string{"BTC/EUR"}, n-1))
+			basicTotal += basic.EndingEquity - basic.StartingCapital
+			basicTrades += len(basic.Trades)
 
-	t.Run("GIVEN a losing live replay with require-profit WHEN run THEN acceptance fails", func(t *testing.T) {
-		falling := profitable48hCandles(t)[:50]
-		for i := range falling {
-			falling[i].C, falling[i].O = 200-float64(i), 200-float64(i)+1
+			scriptRes := mustRun(t, oneMarket(bars), withScript(testConfig([]string{"BTC/EUR"}, n-1), randomPlan(seed, []string{"BTC/EUR"}, 36, n-5, 20), nil))
+			scriptTotal += scriptRes.EndingEquity - scriptRes.StartingCapital
 		}
-		_, err := RunLiveReplay(context.Background(), &fakeOHLC{candles: falling}, LiveOptions{
-			Market: "BTC/EUR", Hours: 4, Interval: 5, StrategyID: strategy.LLMOnlyID,
-			StartingCapital: 500, RequireProfit: true, Analyser: &fixtureAnalyser{}, Settings: defaultSettings(),
-		})
-		if !errors.Is(err, ErrNotProfitable) {
-			t.Fatalf("expected ErrNotProfitable, got %v", err)
+		if basicTrades == 0 {
+			t.Fatal("the basic strategy never traded on the random walks, so the guard proves nothing")
+		}
+		if basicTotal/seeds > 0 || scriptTotal/seeds >= 0 {
+			t.Fatalf("random walks look profitable: basic mean %v (trades %d), random-entry mean %v", basicTotal/seeds, basicTrades, scriptTotal/seeds)
 		}
 	})
 }
 
-// TestProfitRequirement covers explicit profit acceptance.
-func TestProfitRequirement(t *testing.T) {
-	loss := Result{StrategyID: "combined", StartingEquity: 500, EndingEquity: 499, RealisedPnL: -1, MaxDrawdown: 1, TradeCount: 1}
-
-	t.Run("GIVEN a losing smoke result WHEN profit is not required THEN no error is raised", func(t *testing.T) {
-		if err := EnforceProfitRequirement(loss, false); err != nil {
-			t.Fatalf("unexpected error: %v", err)
+// trendBars returns n bars of a noisy uptrend (drift per bar) with one 6 %
+// pullback in the middle third.
+func trendBars(n int, drift float64) []histdata.Bar {
+	bars := randomWalkBars(77, n, t0, 100, 0.0015)
+	for i := range bars {
+		k := int(bars[i].Start.Sub(t0) / histdata.BarInterval)
+		f := math.Exp(float64(k) * math.Log1p(drift))
+		if k >= n/2 && k < n/2+200 {
+			f *= 0.94
 		}
-	})
-
-	t.Run("GIVEN a losing acceptance result WHEN profit is required THEN acceptance fails", func(t *testing.T) {
-		if err := EnforceProfitRequirement(loss, true); !errors.Is(err, ErrNotProfitable) {
-			t.Fatalf("expected ErrNotProfitable, got %v", err)
-		}
-	})
+		b := &bars[i]
+		b.Open, b.High, b.Low, b.Close = b.Open*f, b.High*f, b.Low*f, b.Close*f
+		b.BuyNotional, b.SellNotional = b.BuyNotional*f, b.SellNotional*f
+	}
+	return bars
 }
-
-// TestReplayMetrics covers drawdown, trade statistics and resampling.
-func TestReplayMetrics(t *testing.T) {
-	t.Run("GIVEN an equity series with a known drawdown WHEN computed THEN the peak-to-trough loss is returned", func(t *testing.T) {
-		got := MaxDrawdown([]float64{1000, 1100, 900, 1050, 800})
-		if got < 299.999999 || got > 300.000001 {
-			t.Fatalf("drawdown = %v", got)
-		}
-	})
-
-	t.Run("GIVEN an empty equity series WHEN max drawdown is computed THEN zero is returned", func(t *testing.T) {
-		if MaxDrawdown(nil) != 0 {
-			t.Fatalf("expected zero")
-		}
-	})
-
-	t.Run("GIVEN mixed P&L values WHEN trade stats are computed THEN win rate and profit factor match", func(t *testing.T) {
-		stats := ComputeTradeStats([]float64{10, -5, 8, -3, 12})
-		if diff := stats.WinRate - 0.6; diff > 1e-9 || diff < -1e-9 {
-			t.Fatalf("win rate = %v", stats.WinRate)
-		}
-		if diff := stats.ProfitFactor - 30.0/8.0; diff > 1e-9 || diff < -1e-9 {
-			t.Fatalf("profit factor = %v", stats.ProfitFactor)
-		}
-	})
-
-	t.Run("GIVEN all-loss P&L WHEN trade stats are computed THEN win rate and profit factor are zero", func(t *testing.T) {
-		stats := ComputeTradeStats([]float64{-1, -2, -3})
-		if stats.WinRate != 0 || stats.ProfitFactor != 0 {
-			t.Fatalf("unexpected stats: %+v", stats)
-		}
-	})
-
-	t.Run("GIVEN only winning P&L WHEN trade stats are computed THEN profit factor is the gross profit", func(t *testing.T) {
-		stats := ComputeTradeStats([]float64{2, 3})
-		if stats.WinRate != 1 || stats.ProfitFactor != 5 {
-			t.Fatalf("unexpected stats: %+v", stats)
-		}
-	})
-
-	t.Run("GIVEN nine 5m candles WHEN resampled to 15m THEN three aggregated candles are returned", func(t *testing.T) {
-		candles := make([]domain.Candle, 9)
-		for i := range candles {
-			f := float64(i)
-			candles[i] = domain.Candle{T: int64(i), O: 100 + f, H: 102 + f, L: 99 + f, C: 101 + f, V: 10}
-		}
-		got := ResampleTo15m(candles)
-		if len(got) != 3 {
-			t.Fatalf("got %d candles", len(got))
-		}
-		first := got[0]
-		if first.O != 100 || first.H != 104 || first.L != 99 || first.C != 103 || first.V != 30 || first.T != 2 {
-			t.Fatalf("unexpected first candle: %+v", first)
-		}
-	})
-
-	t.Run("GIVEN fewer than three candles WHEN resampled THEN no 15m candles are returned", func(t *testing.T) {
-		if got := ResampleTo15m(make([]domain.Candle, 2)); len(got) != 0 {
-			t.Fatalf("expected none, got %d", len(got))
-		}
-	})
-}
-
-// defaultSettings returns a pointer to the default settings.
-func defaultSettings() *config.Settings {
-	s := config.Defaults()
-	return &s
-}
-
-// The Kraken market adapter must be usable as a replay candle source.
-var _ OHLCSource = (*kraken.MarketAdapter)(nil)

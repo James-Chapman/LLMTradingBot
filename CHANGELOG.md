@@ -7,6 +7,169 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.11.0] — 2026-11-14
+
+Historical backtesting: replay the bot's own strategy against real Kraken trade history, with documented execution assumptions, to see whether it would have made money after costs. Full guide: `docs/14-backtesting.md`.
+
+### Added
+- **Historical data** (`backtest data`). Imports Kraken's downloadable trade archive, or pages trades from Kraken's public REST API, validates them, and stores them locally as 30-second bars with checksums and a record of where each month came from. Commands: `import`, `fetch`, `verify`, `list`, `universe`.
+  - The cache is its own folder (`data/history`, git-ignored), never the bot's database.
+  - `universe` lists the biggest markets as of a past date, using only data from before it.
+- **Replay** (`backtest run`). Runs the real strategy, risk engine, paper engine and learner on a simulated clock, one tick every 30 seconds, in the same order as live.
+  - It sees the inputs live sees: 30-second prices, clock-aligned 5- and 15-minute candles including the one still forming, and 24-hour volume. The bot's market-data builder is now shared code that both live and the backtest call.
+  - A decision fills on the next tick, never on the tick that produced it. Stops are checked on the 30-second price, as live does.
+  - Two runs with the same data and settings give byte-identical files.
+- **Simulated exchange.** Fills are priced at what takers on that side paid in the fill bar. When only the other side traded, the order crosses the full measured spread. Other rules: a taker fee on every fill, extra cost for orders large against the bar's traded value, rejection beyond a liquidity cap, minimum order size, lot rounding, cash checks. Spot only: it never opens a short.
+- **Reports.** `summary.md`, `summary.json`, `trades.csv`, `orders.csv`, `equity.csv`, `costs.json` and `run.json` (everything needed to reproduce the run).
+  - Net and gross P&L with an exact bridge between them, fees, execution costs, win rate, profit factor, drawdown measured on every tick, exposure, turnover, and Sharpe when there is enough data for it to mean something.
+  - Benchmarks at the same costs: cash and buy-and-hold.
+  - Cash, fees and positions are re-added in exact arithmetic and compared with the engine's totals; a mismatch fails the run.
+- **Robustness commands.** `split` (in-sample against out-of-sample), `walkforward`, `regimes` (bull, bear, sideways; high and low volatility), `sensitivity` (fees, spread, impact, latency, capital, any setting, with an estimated break-even fee) and `compare`.
+- **Plain verdicts from fixed rules.** Every summary opens with what the run can and cannot show: number of trades, length of period, survivorship, fee tier, whether it is in-sample. No single run is described as showing an edge.
+
+### Changed
+- `cmd/backtest` is a new tool with new flags; the old replay of recent Kraken candles is removed. It no longer reads the bot's database or API keys. Settings come from a JSON file (`--settings`) or the built-in defaults.
+- The paper engine accepts its fee, slippage and id generator as options. Paper trading uses the same values as before.
+
+### Safety
+- The backtester cannot place an order. A test inspects everything the backtest binary links and fails if it includes the Kraken execution code, the secrets package, the bot's database, or the dashboard server.
+
+### Limits to know before trusting a result
+- **LLM strategies cannot be backtested** and are refused: there is no archive of past news, the model's answers are not repeatable, and the model has seen the future of any past period. A backtest of `basic_strategy` measures the indicator core, not the bot's default LLM-combined strategy.
+- **The default fee is 0.80% taker**, read from Kraken's fee page. Set `--fees` to your own tier; `--fees paper-default` gives the 0.26% that paper trading assumes.
+- Trade prints cannot show order-book depth, so the size-impact figures are an estimate, not a measurement.
+- A market list you choose today contains only coins that survived. `--universe top:N` reduces that bias but cannot add coins missing from the data.
+- Nothing has been run on real Kraken history yet. The tool is covered by tests and a run on synthetic trades.
+
+---
+
+## [0.10.0] — 2026-11-14
+
+The improvements recommended by the 0.9.2 audit. The largest change is that live trading now tracks its positions.
+
+### Added — live trading
+- **Live positions are tracked.** Orders sent to Kraken are recorded in a live position book, separate from paper positions and kept across restarts. Before this, a signal that persisted placed a new real order every 30 seconds, live holdings had no stop-loss, and live losses never counted toward the daily loss limit.
+  - A position is recorded as soon as the order is written, before it is sent, so a second order cannot go out while the first is unconfirmed, including after a crash or restart.
+  - Stop-loss and trailing stops apply to live positions. A triggered stop sends one market sell for the size actually bought.
+  - A sell signal sells the tracked position. With no tracked position nothing is sent (a spot account cannot short).
+  - Realised live P&L feeds the daily loss limit, the ledger and the learner.
+  - Live positions show in the dashboard with a LIVE badge and their state (entry pending, open, exit pending), and can be closed from there.
+- **Orders cannot be duplicated by a retry.** Each order carries a client order id. A retry happens only when Kraken says the order was not placed; when the outcome is unknown (timeout, 503) the order is kept pending and looked up later by that id.
+- **Partial fills are recorded.** The executed size, average price and fee come from Kraken, including for orders cancelled after a partial fill.
+- **Approvals are re-checked when approved.** The risk check runs again with current cash, positions and the day's losses, and the order is sized from that result. An approval with no price available now stays pending instead of being used up.
+- **Forget a live position.** `POST /api/positions/{id}/forget` and a dashboard button remove a tracked position without sending an order, for holdings sold or moved outside the bot.
+- A per-market **Live** toggle in the markets table, shown in the live environment, with a confirmation that names the market.
+
+### Changed — live trading safeguards
+- Switching from live to paper is refused while live positions are open, and so is turning off a market's live toggle while it holds one. Either would leave a real holding untracked.
+- During an emergency stop the bot still reconciles pending orders and allows a manual close, but automatic stops on live positions stay paused, as they do for paper. The activity feed warns while that is the case.
+- Live positions keep their stops when their market is disabled or drops out of the market list.
+- A rejected live sell is retried after 5 minutes, doubling up to an hour, instead of on every tick. A remainder below Kraken's minimum order size is dropped as dust.
+- A price older than two strategy intervals is refreshed over REST; if that fails, stops and strategies skip that market rather than act on a stale price.
+- Sell sizes are rounded down so a sell can never exceed the holding.
+
+### Added — access control
+- **Login when the dashboard is reachable from other computers.** With `-host` set to anything but a loopback address, the dashboard and API need an access token. It is generated on first start, stored encrypted, and printed to the console at each start. Log in at `/login`, or send `Authorization: Bearer <token>` from scripts. Loopback use is unchanged and needs no login.
+- Requests addressed to an unexpected host name are refused, which closes DNS rebinding. A new setting, Allowed host names, lists extra names.
+- `*` is no longer accepted as an allowed browser origin.
+
+### Changed — settings
+- Stop-loss and trailing stop must be above 0 and at most 0.5; a stop-loss of 0 switched off the per-trade loss check. The per-trade and daily loss limits must be above 0.
+- Timeouts, lookback and concurrency settings have upper limits.
+- A secret entered as blank spaces is refused instead of silently clearing the stored secret.
+- "Max dynamic markets" set to 0 now means none (it meant 10).
+- Dynamic markets use the base currency instead of always EUR. The source is named `coingecko`, which is what the code has always called.
+
+### Fixed — reliability
+- **Start-up waits for Kraken.** If no market could be validated at start (network not up yet), the bot stayed idle until restarted. It now retries.
+- Indicator warm-up no longer sticks when the first market is disabled.
+- A panic in the start-up, candle or equity loops no longer stops the bot.
+- A second Ctrl+C quits at once, and shutdown waits at most 30 seconds.
+
+### Fixed — news and LLM prompts
+- **A failed news feed no longer makes old articles "new".** Its articles stay cached while it is down, so its recovery does not trigger a briefing on stale news. If every feed fails, the previous news is kept.
+- **Headlines can no longer inject instructions into prompts.** Feed text is stripped of HTML, joined onto one line and length-capped, placed in a marked block, and the system prompts say that block is untrusted data.
+- News is matched to coins by whole words: "solution" no longer counts as SOL news, nor "whether" as ETH.
+- Feed dates with US time-zone abbreviations (EST, PDT) are read correctly.
+- Only one market briefing runs at a time.
+
+### Fixed — paper trading and accounting
+- **Paper and live equity are stored separately.** After running live, a restart loaded the Kraken balance as paper cash, and the equity chart mixed the two.
+- **Paper shorts reserve their proceeds**, so cash can no longer go negative when a short loses.
+- Entry fees and short proceeds survive a restart, so P&L for a restored position is exact.
+- A restored position with no stored direction no longer has its P&L sign flipped.
+- Resetting positions can no longer delete one opened during the reset without closing it.
+- The emergency stop keeps its start time across a restart.
+- The risk check refuses new trades when equity is zero instead of producing an invalid number.
+- The learner scores strategies by percentage return, so the score no longer depends on account size.
+
+### Changed — backtest
+- The replay simulates stop-loss and trailing-stop exits, applies the confidence threshold and the daily loss limit, runs on candle time, and fills entries at the next candle's open instead of the signal candle's close.
+
+### Changed — dashboard
+- **Prices of sub-cent coins are shown in full** in the tables, chart headers, candle charts and activity messages, instead of €0.00.
+- **A banner shows when the bot stops answering**, the Live indicator hides, and actions ask for confirmation. The service worker no longer serves stored API data as if it were current.
+- Each poll is applied once; a late response can no longer overwrite a newer one.
+- Charts are created only for visible cards, refreshed in sequence, and removed for markets that drop out.
+- The duplicate Strategy column in the ledger is gone, and the unused htmx script is removed.
+
+### Notes
+- The bot assumes a 0.26% taker fee. Check it against your Kraken fee tier: a higher real fee means paper results understate costs.
+- Known limits of live trading are listed in `docs/12-operations.md`. None of the live-trading code has been run against Kraken; it is covered by tests with a simulated exchange.
+
+---
+
+## [0.9.2] — 2026-11-14
+
+Bug fixes from a full audit of the project. Each backend fix has a new GIVEN/WHEN/THEN test that failed before the change.
+
+### Fixed — trading and risk
+- **Closing a long now sells the whole long.** A short signal that closed a long removed the entire position but credited cash for the signal's own size (a currency amount at today's price). Cash and the recorded P&L disagreed: after a 10% rise the ledger showed a profit while paper cash had fallen. The fill, fee, order record and P&L now all use the size of the long being closed.
+- **Exits are no longer blocked by the loss limits.** A short that closes an open long was refused when the day was at its loss limit, or for "insufficient cash" after the price had fallen, leaving the losing position open until its stop. Exits now skip the cash, per-trade and daily-loss checks; new exposure still passes through all of them.
+- **The emergency stop now covers a tick that is already running.** The stop was only checked when a tick started. A slow evaluation (the LLM over many markets) could finish after the stop was pressed and still place orders or queue approvals. Every signal is now checked against the stop before it is acted on.
+- **Stop-losses no longer depend on database housekeeping.** A failed write of a price tick or equity snapshot ended the tick before the stop check ran. Stops now run first, and the cash from a stop close is saved in the same tick.
+- **Kraken order sizes are exact.** The SDK's float conversion truncated some decimals, so a size of 0.29 was sent as 0.28 (0.57 → 0.56, 1.15 → 1.14, 4.35 → 4.34), and limit prices were shifted the same way. Sizes and prices now reach Kraken unchanged.
+- **Risk settings refuse `NaN` and `Inf`.** `NaN` passed every range check and then made the per-trade and daily loss limits never trigger.
+
+### Fixed — LLM and indicators
+- **Reasoning text is no longer read as the answer.** With a reasoning model, JSON drafted inside `<think>…</think>` was taken as the reply, so a rejected "long" could become a trade. Reasoning blocks are removed before parsing.
+- **A briefing with one missing comma is no longer replaced by a fragment.** The parser returned the first valid inner object instead of repairing the whole reply.
+- **A signal analysis without `confidence_scale` no longer counts as LLM approval.** It was treated as a scale of 1.0; it is now neutral.
+- **Shutting down no longer marks the LLM as unavailable.** A cancelled request opened the circuit breaker and was retried on the fallback endpoint.
+- **RSI of a flat price series is 50, not 100.** Pegged pairs were reported as overbought.
+- **Volatility for sub-cent coins.** `atr_pct` was computed from an ATR already rounded to 6 decimal places, which is 0 for coins priced far below a cent; that switched off the volatility checks for them.
+- The stop-loss percentage in a signal's text was truncated (29% shown as 28%); it is now rounded.
+
+### Fixed — backtest
+- The replay now uses the same momentum formula and the same order sizing as live trading (it ignored the target trade amount and the cash cap).
+- With markets of unequal history length, candles were matched by position, not time, and open positions were closed at a price the replay never reached. Series are now trimmed to their shared most recent candles.
+
+### Security
+- **Other websites can no longer control the bot.** A page open in the same browser could send a plain `POST` to the local API and, for example, switch to live trading or change settings; CORS headers do not prevent that. State-changing requests from a foreign origin are now refused with `403`. The dashboard, the CLI and scripts are unaffected. This is not a login: keep `-host` on a loopback address unless the network is trusted.
+- **News and LLM text can no longer run script in the dashboard.** Headlines, feed names, links, signal theses and approval details were inserted into the page as HTML. A crafted RSS item (or LLM text prompted by one) could run script next to the Approve buttons. All server text is now escaped, news links are only followed when they are `http(s)`, and buttons in generated rows no longer embed server text in inline handlers.
+
+### Fixed — dashboard
+- **Emergency stop reports failure.** The header showed "stopped" before the server answered and stayed that way if the request failed, while the bot kept trading. The stopped state now appears only after the server confirms, and a failure is shown as an alert. Resume asks for confirmation.
+- **Times are shown in the right time zone.** The ledger, closed trades, rejections, news and restored equity points were stored in UTC but read as local time, so they were off by the browser's UTC offset.
+- **Approve, reject, reset and settings actions report what happened.** An approval that did not execute (no price, insufficient funds, emergency stop), a refused position reset ("Cleared undefined position(s)") and failed settings or mode changes were silent.
+- The LLM backend label always read "None"; it now shows LM Studio or Remote.
+- The approvals page no longer stays on "Loading…" after an error, and its hint points to the Trading settings dialog instead of the removed `.env` setting.
+- Chart.js and Alpine.js are pinned to exact versions instead of floating to whatever the CDN serves.
+
+### Changed
+- `run_tests.bat` exits with code 1 when vet or a test fails (it always exited 0).
+- After a dashboard error, the fallback payload is no longer cached under the real `ETag`.
+
+---
+
+## [0.9.1] — 2026-11-14
+
+### Fixed
+- **Signal detail modal centred.** Clicking a signal opened its detail modal at the left edge of the page. The modal's centring was an inline `display:flex`, which Alpine's `x-show` removes when it shows the element. It now uses the shared `.modal-backdrop` / `.modal-panel` classes, like the Settings dialogs.
+- The header's live-updates badge had the same inline-style problem and lost its icon/text spacing when shown; it now uses a `.live-indicator` class.
+
+---
+
 ## [0.9.0] — 2026-11-14
 
 ### Changed

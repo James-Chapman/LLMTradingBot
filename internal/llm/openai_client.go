@@ -209,31 +209,34 @@ func (c *OpenAICompatClient) Probe(ctx context.Context) bool {
 
 // Chat posts messages to /chat/completions. With expectJSON the content is
 // parsed tolerantly into an object; a parse failure returns ErrInvalidJSON
-// without tripping the circuit. Transport and HTTP errors trip the circuit.
+// without tripping the circuit. Transport and HTTP errors trip the circuit,
+// unless the caller's own context ended (that is not the backend's fault).
 func (c *OpenAICompatClient) Chat(ctx context.Context, messages []Message, expectJSON bool) (Reply, error) {
 	if !c.shouldAttempt() || !c.IsConfigured() {
 		return Reply{}, ErrUnavailable
 	}
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	// reqCtx adds the client's own timeout; ctx stays the caller's context so
+	// the two kinds of cancellation can be told apart.
+	reqCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
 	model := c.Model()
 	if model == "" {
-		resolved, err := c.resolveModel(ctx)
+		resolved, err := c.resolveModel(reqCtx)
 		if err != nil {
-			c.markFailed(err.Error())
+			c.markFailedUnlessCallerDone(ctx, err)
 			return Reply{}, err
 		}
 		model = resolved
 	}
 
 	// Only build the prompt transcript when debug logging is enabled.
-	if clientLogger.Enabled(ctx, slog.LevelDebug) {
+	if clientLogger.Enabled(reqCtx, slog.LevelDebug) {
 		clientLogger.Debug("Sending LLM request", "backend", c.backend, "prompt", MessagesToPrompt(messages, false))
 	}
-	data, err := c.postChat(ctx, chatRequest{Model: model, Messages: messages})
+	data, err := c.postChat(reqCtx, chatRequest{Model: model, Messages: messages})
 	if err != nil {
-		c.markFailed(err.Error())
+		c.markFailedUnlessCallerDone(ctx, err)
 		return Reply{}, err
 	}
 	clientLogger.Debug("Received LLM response", "backend", c.backend, "response", data)
@@ -253,6 +256,17 @@ func (c *OpenAICompatClient) Chat(ctx context.Context, messages []Message, expec
 		return Reply{}, fmt.Errorf("%w: %v", ErrInvalidJSON, err)
 	}
 	return Reply{JSON: parsed}, nil
+}
+
+// markFailedUnlessCallerDone trips the circuit for err unless the caller's
+// context was cancelled or passed its deadline, which says nothing about the
+// backend's health. The client's own per-request timeout still counts.
+func (c *OpenAICompatClient) markFailedUnlessCallerDone(callerCtx context.Context, err error) {
+	if callerCtx.Err() != nil {
+		clientLogger.Debug(c.label+" request abandoned by caller", "error", err.Error())
+		return
+	}
+	c.markFailed(err.Error())
 }
 
 // chatRequest is the chat-completions request body. response_format is not

@@ -9,15 +9,15 @@ import (
 // learnedOutcome is one captured learner call.
 type learnedOutcome struct {
 	strategyID, market, direction string
-	pnl                           float64
+	pnl, notional                 float64
 }
 
 // capturingLearner records learner outcomes.
 type capturingLearner struct{ outcomes []learnedOutcome }
 
-// RecordOutcome captures an outcome.
-func (c *capturingLearner) RecordOutcome(strategyID, market, direction string, pnl float64) {
-	c.outcomes = append(c.outcomes, learnedOutcome{strategyID, market, direction, pnl})
+// RecordOutcomeWithNotional captures an outcome.
+func (c *capturingLearner) RecordOutcomeWithNotional(strategyID, market, direction string, pnl, notional float64) {
+	c.outcomes = append(c.outcomes, learnedOutcome{strategyID, market, direction, pnl, notional})
 }
 
 // TestClosePositionsForOperatorReset covers closing every position on operator reset.
@@ -48,6 +48,19 @@ func TestClosePositionsForOperatorReset(t *testing.T) {
 		}
 		if learner.outcomes[0].strategyID != "combined" || len(engine.OpenPositions()) != 0 {
 			t.Fatalf("learner %+v, open %d", learner.outcomes, len(engine.OpenPositions()))
+		}
+	})
+
+	t.Run("GIVEN a restored position with no direction WHEN operator reset closes it THEN the learner gets its derived direction and notional", func(t *testing.T) {
+		repo := &capturingRepo{openRows: []OpenPositionRow{{PositionID: "p1", Market: "BTC/EUR", Size: -2, AvgPrice: 50}}}
+		learner := &capturingLearner{}
+		engine := NewEngine(500, repo, nil)
+		mustRestore(t, engine)
+
+		ClosePositionsForOperatorReset(engine, map[string]float64{"BTC/EUR": 50}, nil, nil, learner)
+
+		if len(learner.outcomes) != 1 || learner.outcomes[0].direction != "short" || !near(learner.outcomes[0].notional, 100) {
+			t.Fatalf("unexpected learner outcome: %+v", learner.outcomes)
 		}
 	})
 

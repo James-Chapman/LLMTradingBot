@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/James-Chapman/LLMTradingBot/internal/domain"
 	"github.com/James-Chapman/LLMTradingBot/internal/kraken"
 	"github.com/James-Chapman/LLMTradingBot/internal/learner"
+	"github.com/James-Chapman/LLMTradingBot/internal/livebook"
 	"github.com/James-Chapman/LLMTradingBot/internal/llm"
 	"github.com/James-Chapman/LLMTradingBot/internal/news"
 	"github.com/James-Chapman/LLMTradingBot/internal/observability"
@@ -33,7 +35,7 @@ import (
 )
 
 // Version is the application version reported by /health and the dashboard.
-const Version = "0.9.0"
+const Version = "0.11.0"
 
 // Name is the application display name.
 const Name = "Kraken Trading Bot"
@@ -78,7 +80,12 @@ type MarketSource interface {
 type LiveEngine interface {
 	Execute(ctx context.Context, intent domain.ExecutionIntent, opts kraken.ExecuteOptions) (domain.OrderRecord, string)
 	GetAccountSnapshot(ctx context.Context, quoteCurrency string) (*kraken.AccountSnapshot, error)
-	ReconcilePendingOrders(ctx context.Context) int
+	// ReconcilePendingOrders returns the live orders that finished since the
+	// last call. tracked are the live book's own pending orders: any of them
+	// that the order ledger does not list as pending is looked up by client order id.
+	ReconcilePendingOrders(ctx context.Context, tracked []kraken.PendingLiveOrder) []kraken.OrderUpdate
+	// MinOrderSize returns Kraken's minimum order volume for market, if known.
+	MinOrderSize(ctx context.Context, market string) (float64, bool)
 }
 
 // LLMClient is the LLM client surface: a chat client plus backend switching.
@@ -104,6 +111,7 @@ type Intervals struct {
 	OHLCIntervalGap time.Duration // 1 s between the 5- and 15-minute fetches
 	OHLCWait        time.Duration // 2 s poll while waiting for active markets
 	Equity          time.Duration // 10 s between equity snapshots
+	BootRetry       time.Duration // 5 s before the first boot retry (doubles up to 5 min)
 }
 
 // withDefaults fills zero intervals with the main.py timings.
@@ -122,6 +130,7 @@ func (iv Intervals) withDefaults() Intervals {
 	def(&iv.OHLCIntervalGap, time.Second)
 	def(&iv.OHLCWait, 2*time.Second)
 	def(&iv.Equity, 10*time.Second)
+	def(&iv.BootRetry, 5*time.Second)
 	return iv
 }
 
@@ -176,7 +185,17 @@ type App struct {
 	control      *control.State
 	newsAdapters []news.Adapter
 
-	tasks sync.WaitGroup // market briefing tasks
+	// liveBook tracks positions opened by real Kraken orders (live_trading.go).
+	liveBook *livebook.Book
+	// liveMu serialises every live-routed decision with the order it sends,
+	// so two paths (tick, approval, stop, manual close) cannot both enter or exit.
+	liveMu sync.Mutex
+	// exitBackoff pauses automatic sells of a live position after Kraken
+	// rejected one, by position ID. Guarded by liveMu.
+	exitBackoff map[string]exitBackoff
+
+	tasks    sync.WaitGroup // market briefing tasks and background alerts
+	briefing briefingGate   // one market briefing at a time (news_cycle.go)
 
 	mu               sync.Mutex
 	strategies       []strategy.Strategy
@@ -192,9 +211,13 @@ type App struct {
 	sessionTick      int
 	priceHistory     map[string][]float64 // oldest first
 	equityHistory    []portfolio.EquityPoint
+	equityHistoryEnv string // trading environment equityHistory belongs to
 	currentEquity    float64
 	currentCash      float64
 	latestNews       []storage.NewsEntry // newest first
+	lossAlertDay     string              // UTC date the daily_loss_limit_hit alert was last sent
+	liveStopWarnedAt time.Time           // last "live positions have no automatic stop" warning
+	staleWarnedAt    map[string]time.Time
 }
 
 // New wires the app from settings with real Kraken, LLM, universe and news clients.
@@ -229,6 +252,8 @@ func NewWithOptions(ctx context.Context, settings config.Settings, repo *storage
 		universe:        opts.Universe,
 		newsAdapters:    opts.NewsAdapters,
 		currentPrices:   map[string]float64{},
+		exitBackoff:     map[string]exitBackoff{},
+		staleWarnedAt:   map[string]time.Time{},
 		latestSnapshots: map[string]domain.MarketSnapshot{},
 		briefedNewsIDs:  map[string]bool{},
 		ohlc5:           map[string]OHLCPayload{},
@@ -246,6 +271,7 @@ func NewWithOptions(ctx context.Context, settings config.Settings, repo *storage
 	a.risk = risk.NewEngine(settings, nil)
 	a.approvals = approval.NewService(approval.DefaultTTL, approvalStore{repo: repo}, nil)
 	a.paper = paper.NewEngine(settings.StartingCapital, paperStore{repo: repo}, nil)
+	a.liveBook = livebook.New(liveBookStore{repo: repo})
 	a.control = control.NewState(nil)
 
 	// Wire the repository into the components that persist state.
@@ -341,10 +367,27 @@ func defaultUniverse(s config.Settings) UniverseSource {
 }
 
 // newUniverse builds the dynamic resolver, applying MAX_ETH_ECOSYSTEM_COINS
-// as the cap on how many dynamic markets are added.
+// as the cap on how many dynamic markets are added (0 = none) and quoting
+// them in BASE_CURRENCY. Kraken symbol validation at boot drops any pair
+// Kraken does not list.
 func newUniverse(s config.Settings, opts universe.Options) *universe.Resolver {
 	opts.MaxCoins = s.MaxEthEcosystemCoins
-	return universe.NewResolver(s.FixedMarkets, s.DynamicUniverseSource, opts)
+	opts.QuoteCurrency = s.BaseCurrency
+	return universe.NewResolver(s.FixedMarkets, "coingecko", opts)
+}
+
+// KnownMarket reports whether market belongs to the bot's universe: an
+// active (validated) market, a configured fixed market, or one with a saved
+// toggle, so a toggle left over from an earlier market list can be undone.
+func (a *App) KnownMarket(market string) bool {
+	if market == "" {
+		return false
+	}
+	if slices.Contains(a.ActiveMarkets(), market) || slices.Contains(a.cfg().FixedMarkets, market) {
+		return true
+	}
+	snap := a.control.Snapshot()
+	return slices.Contains(snap.DisabledMarkets, market) || slices.Contains(snap.LiveMarkets, market)
 }
 
 // restoreState reloads the persisted runtime state main.py restored at import time.
@@ -357,35 +400,53 @@ func (a *App) restoreState(ctx context.Context) error {
 	}
 	a.riskRejections = append(a.riskRejections, rejections...)
 
-	history, err := a.repo.GetEquityHistory(ctx, equityHistoryMax)
+	// Equity snapshots are kept per environment: the chart and the display
+	// values come from the current environment's rows only.
+	environment := a.TradingEnvironment()
+	history, err := a.repo.GetEquityHistoryFor(ctx, environment, equityHistoryMax)
 	if err != nil {
 		return fmt.Errorf("app: load equity history: %w", err)
 	}
+	a.equityHistoryEnv = environment
 	if len(history) > 0 {
 		for _, p := range history {
 			a.equityHistory = append(a.equityHistory, portfolio.EquityPoint{Timestamp: p.Timestamp, Equity: p.Equity})
 		}
-		lastCash, err := a.repo.GetLatestCash(ctx)
-		if err != nil {
-			return fmt.Errorf("app: load latest cash: %w", err)
-		}
-		if lastCash != nil {
-			a.paper.SetCash(*lastCash) // always restore paper engine state from DB
-		}
-		// In live mode the display values come from Kraken, never from a
-		// (possibly depleted) paper balance.
-		if a.TradingEnvironment() == string(domain.EnvPaper) {
-			a.currentEquity = history[len(history)-1].Equity
-			if lastCash != nil {
-				a.currentCash = *lastCash
-			}
-		}
+		a.currentEquity = history[len(history)-1].Equity
 	} else {
 		a.equityHistory = []portfolio.EquityPoint{{Timestamp: portfolio.FormatISO(a.now()), Equity: s.StartingCapital}}
 	}
 
+	// Paper cash is restored only from paper snapshots, whatever the current
+	// environment, so a live Kraken balance never becomes paper cash.
+	paperCash, err := a.repo.GetLatestCashFor(ctx, string(domain.EnvPaper))
+	if err != nil {
+		return fmt.Errorf("app: load latest paper cash: %w", err)
+	}
+	if paperCash != nil {
+		a.paper.SetCash(*paperCash)
+	}
 	if err := a.paper.RestoreFromDB(); err != nil {
 		a.logger.Warn("Could not restore open positions", "error", err.Error())
+	}
+	if environment == string(domain.EnvPaper) {
+		// Free cash: open paper shorts reserve their proceeds as margin.
+		a.currentCash = a.paper.AvailableCash()
+	} else {
+		// Last-known Kraken balance until the first live snapshot.
+		liveCash, err := a.repo.GetLatestCashFor(ctx, environment)
+		if err != nil {
+			return fmt.Errorf("app: load latest %s cash: %w", environment, err)
+		}
+		if liveCash != nil {
+			a.currentCash = *liveCash
+		}
+	}
+	// Live positions must survive a restart: a pending or open one blocks a duplicate entry.
+	if n, err := a.liveBook.Restore(); err != nil {
+		return fmt.Errorf("app: restore live positions: %w", err)
+	} else if n > 0 {
+		a.logger.Info("Live positions restored", "count", n)
 	}
 
 	// Restore the daily loss tracking so the limit survives a restart.
@@ -415,6 +476,10 @@ func (a *App) restoreState(ctx context.Context) error {
 		return fmt.Errorf("app: load signal outcomes: %w", err)
 	}
 	a.learner.LoadFromOutcomes(learnerOutcomes(outcomes))
+
+	// Apply live fills recorded just before a crash; runs last so the risk
+	// state and learner it updates are already restored.
+	a.recoverLiveBook(ctx)
 	return nil
 }
 
@@ -538,13 +603,29 @@ func (a *App) recordTradeResult(pnl float64) {
 	}
 }
 
-// recordClosedOutcome stamps P&L and teaches the learner after a paper close.
-func (a *App) recordClosedOutcome(ctx context.Context, orderID, strategyID, market, direction string, pnl float64) {
-	a.recordTradeResult(pnl)
+// recordClosedOutcome stamps P&L and teaches the learner after a paper or live
+// close. notional is the closed trade's entry price × size, so the learner
+// scores a percentage return; 0 means unknown (the learner then uses the P&L).
+//
+// The P&L is stamped on the order first: the stamp is what start-up recovery
+// reads to know a close was already recorded, so a crash between the two
+// writes can at worst miss this result, never count it twice.
+func (a *App) recordClosedOutcome(ctx context.Context, orderID, strategyID, market, direction string, pnl, notional float64) {
 	if err := a.repo.UpdateOrderPnL(ctx, orderID, pnl); err != nil {
 		a.logger.Warn("Could not stamp order P&L", "order_id", orderID, "error", err.Error())
 	}
-	a.learner.RecordOutcome(strategyID, market, direction, pnl)
+	a.recordTradeResult(pnl)
+	a.learner.RecordOutcomeWithNotional(strategyID, market, direction, pnl, notional)
+}
+
+// paperCloseNotional returns the entry price × size of a closed paper
+// position, or 0 when its close details are unknown.
+func (a *App) paperCloseNotional(positionID string) float64 {
+	meta, ok := a.paper.Meta(positionID)
+	if !ok || !meta.Closed {
+		return 0
+	}
+	return meta.AvgPriceAtClose * abs(meta.SizeAtClose)
 }
 
 // metaStrategyDirection returns a position's strategy and direction with main.py's defaults.
@@ -562,11 +643,12 @@ func (a *App) metaStrategyDirection(positionID string) (string, string) {
 }
 
 // savePaperEquity persists paper cash immediately after a fill so a crash
-// between ticks does not lose the trade.
+// between ticks does not lose the trade. It is always a paper snapshot, even
+// when a paper fill happens in the live environment.
 func (a *App) savePaperEquity(ctx context.Context, prices map[string]float64) {
 	eq := a.paper.TotalEquity(prices)
 	cash := a.paper.Cash()
-	if err := a.repo.SaveEquitySnapshot(ctx, eq, cash, eq-cash); err != nil {
+	if err := a.repo.SaveEquitySnapshotFor(ctx, string(domain.EnvPaper), eq, cash, eq-cash); err != nil {
 		a.logger.Warn("Could not save equity snapshot", "error", err.Error())
 	}
 }

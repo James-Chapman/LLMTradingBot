@@ -30,6 +30,7 @@ type Outcome struct {
 	Market     string
 	Direction  string
 	Pnl        float64
+	Notional   float64 // entry price × size of the trade; 0 when unknown
 }
 
 // key identifies one learner bucket.
@@ -39,21 +40,34 @@ type key struct {
 	direction  string
 }
 
-// stats holds recency-weighted win data and raw P&L history for one key.
+// stats holds the outcome history for one key. The quality score and win
+// rate are derived from it with recency weights; the raw P&L totals feed the
+// dashboard's average win/loss columns.
 type stats struct {
-	weightedWins  float64
-	weightedTotal float64
-	rawCount      int
-	winPnlTotal   float64
-	winCount      int
-	lossPnlTotal  float64
-	lossCount     int
-	pnlHistory    []float64 // oldest first
+	rawCount     int
+	winPnlTotal  float64
+	winCount     int
+	lossPnlTotal float64
+	lossCount    int
+	pnlHistory   []float64 // currency P&L, oldest first
+	returns      []float64 // P&L as a fraction of notional (or currency P&L when unknown), oldest first
 }
 
-// recordPnl records raw P&L for average win/loss calculations.
-func (s *stats) recordPnl(pnl float64) {
+// tradeReturn returns P&L as a fraction of the trade's notional, so outcomes
+// from small and large accounts compare alike. Without a notional the
+// currency P&L is used; the score's normalisation still removes its scale.
+func tradeReturn(pnl, notional float64) float64 {
+	if notional > 0 {
+		return pnl / notional
+	}
+	return pnl
+}
+
+// recordPnl appends one outcome to the history and the raw win/loss totals.
+func (s *stats) recordPnl(pnl, notional float64) {
 	s.pnlHistory = append(s.pnlHistory, pnl)
+	s.returns = append(s.returns, tradeReturn(pnl, notional))
+	s.rawCount++
 	if pnl > 0 {
 		s.winPnlTotal += pnl
 		s.winCount++
@@ -79,16 +93,63 @@ func (s *stats) meanLossPnl() float64 {
 	return s.lossPnlTotal / float64(s.lossCount)
 }
 
-// qualityScore returns a magnitude-aware expectancy score clamped to [-1, 1].
-func (s *stats) qualityScore() float64 {
-	winRate := 0.5
-	if s.weightedTotal != 0 {
-		winRate = s.weightedWins / s.weightedTotal
+// weightedWinRate returns the recency-weighted share of winning trades
+// (newest weight 1.0, each older one Decay times the next), or ok=false when
+// there are no outcomes.
+func (s *stats) weightedWinRate() (float64, bool) {
+	wins, total, weight := 0.0, 0.0, 1.0
+	for i := len(s.pnlHistory) - 1; i >= 0; i-- {
+		total += weight
+		if s.pnlHistory[i] > 0 {
+			wins += weight
+		}
+		weight *= Decay
 	}
-	meanWin := s.meanWinPnl()
-	meanLoss := s.meanLossPnl()
+	if total == 0 {
+		return 0, false
+	}
+	return wins / total, true
+}
+
+// weightedMeanReturns returns the recency-weighted mean return of winning
+// and of losing trades (0 when there are none), using the same weights as
+// weightedWinRate.
+func (s *stats) weightedMeanReturns() (meanWin, meanLoss float64) {
+	winSum, winWeight, lossSum, lossWeight, weight := 0.0, 0.0, 0.0, 0.0, 1.0
+	for i := len(s.returns) - 1; i >= 0; i-- {
+		switch r := s.returns[i]; {
+		case r > 0:
+			winSum += weight * r
+			winWeight += weight
+		case r < 0:
+			lossSum += weight * r
+			lossWeight += weight
+		}
+		weight *= Decay
+	}
+	if winWeight > 0 {
+		meanWin = winSum / winWeight
+	}
+	if lossWeight > 0 {
+		meanLoss = lossSum / lossWeight
+	}
+	return meanWin, meanLoss
+}
+
+// qualityScore returns a magnitude-aware expectancy score in [-1, 1]: the
+// recency-weighted expectancy of a trade's return divided by the larger of
+// the mean win and mean loss, so it does not depend on account or trade size.
+func (s *stats) qualityScore() float64 {
+	winRate, ok := s.weightedWinRate()
+	if !ok {
+		winRate = 0.5
+	}
+	meanWin, meanLoss := s.weightedMeanReturns()
+	normaliser := math.Max(math.Abs(meanWin), math.Abs(meanLoss))
+	if normaliser == 0 {
+		return 0 // only break-even trades
+	}
 	expectancy := winRate*meanWin + (1.0-winRate)*meanLoss
-	normaliser := math.Max(math.Max(math.Abs(meanWin), math.Abs(meanLoss)), 1.0)
 	return math.Max(-1.0, math.Min(1.0, expectancy/normaliser))
 }
 
@@ -148,34 +209,23 @@ func (l *PerformanceLearner) LoadFromOutcomes(outcomes []Outcome) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	// Group by key, keeping first-seen order and newest-first P&L order.
-	grouped := map[key][]float64{}
+	// Group by key, keeping first-seen order and newest-first row order.
+	grouped := map[key][]Outcome{}
 	var groupOrder []key
 	for _, o := range outcomes {
 		k := key{o.StrategyID, o.Market, o.Direction}
 		if _, ok := grouped[k]; !ok {
 			groupOrder = append(groupOrder, k)
 		}
-		grouped[k] = append(grouped[k], o.Pnl)
+		grouped[k] = append(grouped[k], o)
 	}
 
 	for _, k := range groupOrder {
 		s := l.statsFor(k)
-		historyStart := len(s.pnlHistory)
-		weight := 1.0
-		for _, pnl := range grouped[k] {
-			s.weightedTotal += weight
-			if pnl > 0 {
-				s.weightedWins += weight
-			}
-			s.recordPnl(pnl)
-			s.rawCount++
-			weight *= Decay
-		}
-		// Rows arrived newest-first; store the new history oldest-first.
-		added := s.pnlHistory[historyStart:]
-		for i, j := 0, len(added)-1; i < j; i, j = i+1, j-1 {
-			added[i], added[j] = added[j], added[i]
+		// Rows arrived newest-first; the history is kept oldest-first.
+		rows := grouped[k]
+		for i := len(rows) - 1; i >= 0; i-- {
+			s.recordPnl(rows[i].Pnl, rows[i].Notional)
 		}
 	}
 
@@ -184,21 +234,18 @@ func (l *PerformanceLearner) LoadFromOutcomes(outcomes []Outcome) {
 	}
 }
 
-// RecordOutcome records a new outcome incrementally (no DB read needed).
+// RecordOutcome records a new outcome whose trade notional is unknown; prefer
+// RecordOutcomeWithNotional so the score uses percentage returns.
 func (l *PerformanceLearner) RecordOutcome(strategyID, market, direction string, pnl float64) {
+	l.RecordOutcomeWithNotional(strategyID, market, direction, pnl, 0)
+}
+
+// RecordOutcomeWithNotional records a new outcome incrementally (no DB read
+// needed). notional is the trade's entry price × size; 0 means unknown.
+func (l *PerformanceLearner) RecordOutcomeWithNotional(strategyID, market, direction string, pnl, notional float64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-
-	s := l.statsFor(key{strategyID, market, direction})
-	// Decay existing weights before adding the new trade at weight 1.
-	s.weightedWins *= Decay
-	s.weightedTotal *= Decay
-	s.weightedTotal += 1.0
-	if pnl > 0 {
-		s.weightedWins += 1.0
-	}
-	s.recordPnl(pnl)
-	s.rawCount++
+	l.statsFor(key{strategyID, market, direction}).recordPnl(pnl, notional)
 }
 
 // history returns the P&L history for a key, or nil. Caller holds mu.
@@ -323,10 +370,7 @@ func (l *PerformanceLearner) Summary() []SummaryRow {
 		if s.rawCount == 0 {
 			continue
 		}
-		winRate := 0.0
-		if s.weightedTotal != 0 {
-			winRate = s.weightedWins / s.weightedTotal
-		}
+		winRate, _ := s.weightedWinRate()
 		dist, _ := pnlStats(s.pnlHistory)
 		rows = append(rows, SummaryRow{
 			Strategy:         k.strategyID,

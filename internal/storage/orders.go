@@ -401,8 +401,8 @@ func (r *Repository) SaveOrder(ctx context.Context, order domain.OrderRecord, op
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO order_records (
 			id, approval_request_id, market, direction, size, price, fee, status,
-			environment, timestamp, exchange_order_id, position_id, trade_idea_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			environment, timestamp, exchange_order_id, position_id, trade_idea_id, client_order_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			approval_request_id = excluded.approval_request_id,
 			market = excluded.market,
@@ -415,10 +415,12 @@ func (r *Repository) SaveOrder(ctx context.Context, order domain.OrderRecord, op
 			timestamp = excluded.timestamp,
 			exchange_order_id = excluded.exchange_order_id,
 			position_id = excluded.position_id,
-			trade_idea_id = excluded.trade_idea_id`,
+			trade_idea_id = excluded.trade_idea_id,
+			client_order_id = excluded.client_order_id`,
 		order.ID, nullIfEmpty(opts.ApprovalID), order.Market, string(order.Direction), order.Size, order.Price,
 		opts.Fee, order.Status, env, formatDBTime(timeOrNow(order.Timestamp)),
 		nullIfEmpty(order.ExchangeOrderID), nullIfEmpty(order.PositionID), nullIfEmpty(opts.TradeIdeaID),
+		nullIfEmpty(opts.ClientOrderID),
 	)
 	if err != nil {
 		return fmt.Errorf("save order %s: %w", order.ID, err)
@@ -614,11 +616,14 @@ func (r *Repository) UpdateOrderPnL(ctx context.Context, orderID string, pnl flo
 	return nil
 }
 
-// GetPendingLiveOrders returns pending live orders with a Kraken txid awaiting reconciliation.
+// GetPendingLiveOrders returns pending live orders awaiting reconciliation:
+// those with a Kraken txid, and those known only by the client order id they
+// were sent with (their AddOrder reply was lost).
 func (r *Repository) GetPendingLiveOrders(ctx context.Context) ([]PendingLiveOrder, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, exchange_order_id, price FROM order_records
-		WHERE status = 'pending' AND environment = 'live' AND exchange_order_id IS NOT NULL`)
+		SELECT id, exchange_order_id, client_order_id, position_id, direction, size, price, timestamp FROM order_records
+		WHERE status = 'pending' AND environment = 'live'
+			AND (exchange_order_id IS NOT NULL OR client_order_id IS NOT NULL)`)
 	if err != nil {
 		return nil, fmt.Errorf("get pending live orders: %w", err)
 	}
@@ -627,11 +632,16 @@ func (r *Repository) GetPendingLiveOrders(ctx context.Context) ([]PendingLiveOrd
 	result := []PendingLiveOrder{}
 	for rows.Next() {
 		var o PendingLiveOrder
-		var price sql.NullFloat64
-		if err := rows.Scan(&o.ID, &o.ExchangeOrderID, &price); err != nil {
+		var txid, clientID, positionID, direction sql.NullString
+		var size, price sql.NullFloat64
+		var timestamp nullTime
+		if err := rows.Scan(&o.ID, &txid, &clientID, &positionID, &direction, &size, &price, &timestamp); err != nil {
 			return nil, err
 		}
-		o.Price = price.Float64
+		o.ExchangeOrderID, o.ClientOrderID = txid.String, clientID.String
+		o.PositionID, o.Direction = positionID.String, direction.String
+		o.Size, o.Price = size.Float64, price.Float64
+		o.Timestamp = timestamp.orZero()
 		result = append(result, o)
 	}
 	return result, rows.Err()
@@ -643,6 +653,25 @@ func (r *Repository) UpdateOrderStatusAndFill(ctx context.Context, orderID, stat
 		"UPDATE order_records SET status = ?, price = ?, fee = ? WHERE id = ?", status, fillPrice, fee, orderID)
 	if err != nil {
 		return fmt.Errorf("update order fill %s: %w", orderID, err)
+	}
+	return nil
+}
+
+// UpdateOrderExecution records what reconciliation learned about a live
+// order: status, average price and fee, the executed size (kept when 0) and
+// the Kraken txid (kept when empty).
+func (r *Repository) UpdateOrderExecution(ctx context.Context, e OrderExecution) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE order_records SET
+			status = ?,
+			price = ?,
+			fee = ?,
+			size = CASE WHEN ? > 0 THEN ? ELSE size END,
+			exchange_order_id = COALESCE(?, exchange_order_id)
+		WHERE id = ?`,
+		e.Status, e.AvgPrice, e.Fee, e.ExecutedSize, e.ExecutedSize, nullIfEmpty(e.ExchangeOrderID), e.OrderID)
+	if err != nil {
+		return fmt.Errorf("update order execution %s: %w", e.OrderID, err)
 	}
 	return nil
 }

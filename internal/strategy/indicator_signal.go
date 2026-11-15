@@ -150,9 +150,10 @@ func (sig *indicatorSignal) supportingSignals(data MarketData) map[string]any {
 	}
 }
 
-// stopLossPercent returns the configured stop loss as a whole percentage (Python int(pct * 100)).
+// stopLossPercent returns the configured stop loss as a whole percentage.
+// It rounds rather than truncates so float error (0.29*100 = 28.999...) is not lost.
 func stopLossPercent(stopLossPct float64) int {
-	return int(stopLossPct * 100)
+	return int(math.Round(stopLossPct * 100))
 }
 
 // allModes is the mode eligibility every strategy idea carries.

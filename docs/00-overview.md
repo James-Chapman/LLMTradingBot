@@ -68,7 +68,7 @@ Live prices reach the strategy loop through the Kraken WebSocket v2 ticker chann
 | Layer | Technology | Version / Notes |
 |---|---|---|
 | Language | Go | 1.27; single static binary per command |
-| Web server | `net/http` (`http.ServeMux`) | Package `internal/server`; graceful shutdown on Ctrl+C / SIGTERM |
+| Web server | `net/http` (`http.ServeMux`) | Package `internal/server`; Host-header check always on; access token when `-host` is not loopback; graceful shutdown on Ctrl+C / SIGTERM (a second Ctrl+C quits at once) |
 | Concurrency | Goroutines + `context.Context` | One goroutine per background loop; cancellation via the root context |
 | Frontend | Alpine.js + local CSS | No build step; utility styling in `/static/styles.css` |
 | Charts | Lightweight Charts (candles), Chart.js (equity) | CDN-loaded |
@@ -94,13 +94,13 @@ LLMTradingBot/
 |-- cmd/
 |   |-- tradingbot/main.go          Server entry point (flags -db, -host, -port, -log, -frontend)
 |   |-- cli/main.go                 Operator CLI: status, approve, reject, run
-|   `-- backtest/main.go            Historical replay against Kraken OHLC
+|   `-- backtest/                   Backtest CLI: run, split, walkforward, regimes, sensitivity, compare, data
 |-- internal/
 |   |-- analysis/                   Technical indicators (pure Go)
 |   |-- app/                        Wiring, runtime state, background loops, operations, views
 |   |   `-- apptest/                Network-free fakes for tests
 |   |-- approval/service.go         Approval queue with TTL
-|   |-- backtest/replay.go          Historical replay engine
+|   |-- backtest/                   Replay of cached Kraken trades, reports, robustness tests
 |   |-- config/                     Settings struct, defaults, dashboard field registry, currency symbols
 |   |-- control/state.go            Emergency stop, market toggles, strategy selection, trading mode/environment
 |   |-- domain/models.go            Core value types and enums
@@ -118,7 +118,7 @@ LLMTradingBot/
 |   |-- paper/                      Paper trading engine and operator reset
 |   |-- portfolio/equity.go         Mark-to-market equity snapshots
 |   |-- risk/                       Universal risk management and state persistence
-|   |-- server/server.go            HTTP routes and static frontend
+|   |-- server/server.go            HTTP routes, static frontend, Host check and access-token login
 |   |-- storage/                    SQLite schema, migrations and the Repository
 |   |-- strategy/
 |   |   |-- strategy.go             Strategy interface, IDs, registry
@@ -127,10 +127,11 @@ LLMTradingBot/
 |   |   |-- llm_only.go             LLM-led strategy with no indicator gating
 |   |   |-- indicator_signal.go     Shared indicator-gated signal builder
 |   |   `-- calc/                   Shared decision formulas and constants
-|   `-- universe/resolver.go        Tradable market universe builder
+|   `-- universe/resolver.go        Tradable market universe builder (fixed + CoinGecko coins in BASE_CURRENCY)
 `-- frontend/
     |-- index.html                  Main dashboard (Alpine.js SPA)
     |-- approvals.html              Dedicated approval queue page
+    |-- login.html                  Access-token form (only used when -host is not loopback)
     |-- static/styles.css           Local utility styles
     `-- sw.js                       Service Worker
 ```

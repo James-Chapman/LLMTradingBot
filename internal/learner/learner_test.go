@@ -87,6 +87,74 @@ func TestAdjustConfidence(t *testing.T) {
 	})
 }
 
+// TestQualityScoreScale covers a quality score that does not depend on the
+// account or trade size.
+func TestQualityScoreScale(t *testing.T) {
+	// The same sequence of trade returns, as a fraction of the trade's notional.
+	returns := []float64{0.02, -0.01, 0.015, -0.01, 0.02, 0.01}
+
+	// qualityFor records the returns on trades of the given notional and
+	// returns the summary quality score.
+	qualityFor := func(notional float64) float64 {
+		l := New()
+		for _, r := range returns {
+			l.RecordOutcomeWithNotional("s", "BTC/EUR", "long", r*notional, notional)
+		}
+		return l.Summary()[0].QualityScore
+	}
+
+	t.Run("GIVEN the same percentage outcomes WHEN a 100-unit and a 10,000-unit account trade them THEN the quality scores are equal", func(t *testing.T) {
+		small := qualityFor(10)    // 10% of a 100-unit account
+		large := qualityFor(1_000) // 10% of a 10,000-unit account
+		if small != large || small <= 0 {
+			t.Fatalf("quality depends on account size: small=%v large=%v", small, large)
+		}
+	})
+
+	t.Run("GIVEN outcomes seeded from the database WHEN they carry their notional THEN the score matches incremental recording", func(t *testing.T) {
+		rows := make([]Outcome, 0, len(returns))
+		for i := len(returns) - 1; i >= 0; i-- { // newest first, as read from the DB
+			rows = append(rows, Outcome{StrategyID: "s", Market: "BTC/EUR", Direction: "long", Pnl: returns[i] * 50, Notional: 50})
+		}
+		seeded := New()
+		seeded.LoadFromOutcomes(rows)
+
+		if got, want := seeded.Summary()[0].QualityScore, qualityFor(10); got != want {
+			t.Fatalf("seeded quality %v, incremental %v", got, want)
+		}
+	})
+
+	t.Run("GIVEN small currency P&L without a notional WHEN scored THEN the score is not squashed towards zero", func(t *testing.T) {
+		small, large := New(), New()
+		for _, pnl := range []float64{0.3, -0.1, 0.3, -0.1, 0.3} {
+			small.RecordOutcome("s", "BTC/EUR", "long", pnl)
+			large.RecordOutcome("s", "BTC/EUR", "long", pnl*100)
+		}
+		if s, l := small.Summary()[0].QualityScore, large.Summary()[0].QualityScore; s != l {
+			t.Fatalf("quality depends on P&L scale: small=%v large=%v", s, l)
+		}
+	})
+
+	t.Run("GIVEN the same outcomes in a different order WHEN the recent wins are the large ones THEN the score is higher", func(t *testing.T) {
+		// Same win/loss pattern and the same values, only the order of the win
+		// sizes differs, so only recency-weighted magnitudes can tell them apart.
+		recordAlternating := func(winPcts []float64) float64 {
+			l := New()
+			for _, w := range winPcts { // oldest first
+				l.RecordOutcomeWithNotional("s", "BTC/EUR", "long", w, 100)
+				l.RecordOutcomeWithNotional("s", "BTC/EUR", "long", -2, 100)
+			}
+			return l.Summary()[0].QualityScore
+		}
+		recentBig := recordAlternating([]float64{1, 1, 1, 5, 5})
+		oldBig := recordAlternating([]float64{5, 5, 1, 1, 1})
+
+		if recentBig <= oldBig {
+			t.Fatalf("magnitudes are not recency weighted: recent big wins %v, old big wins %v", recentBig, oldBig)
+		}
+	})
+}
+
 // TestRecordAndLoad covers incremental recording and DB seeding.
 func TestRecordAndLoad(t *testing.T) {
 	t.Run("GIVEN a fresh learner WHEN one outcome is recorded THEN its trade count is 1", func(t *testing.T) {

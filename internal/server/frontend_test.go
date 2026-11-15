@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -213,7 +214,7 @@ func TestFrontendLayout(t *testing.T) {
 				"Unrealised P&amp;L", "Strategy", "Source", "Status", "Pos ID", "Signal", "Action"},
 			"closed": {"Date Time Closed", "Date Time Opened", "Duration", "Market", "Direction", "Size",
 				"Price", "Value", "P&amp;L", "Strategy", "Source", "Status", "Pos ID", "Open Signal", "Close Signal"},
-			"ledger": {"Date Time", "Market", "Strategy", "Action", "Direction", "Size", "Price",
+			"ledger": {"Date Time", "Market", "Action", "Direction", "Size", "Price",
 				"Value", "P&amp;L", "Strategy", "Source", "Status", "Pos ID", "Signal"},
 			"rejected-trades": {"Date Time", "Market", "Direction", "Size", "Price", "Value", "Strategy",
 				"Source", "Status", "Reason", "Confidence", "Signal"},
@@ -246,8 +247,9 @@ func TestFrontendLayout(t *testing.T) {
 			`id="approvals-queue"`, `id="ledger-body"`, `id="pnl-day-body"`, `id="pnl-market-body"`, `id="closed-body"`,
 			`id="candle-grid"`, `id="news-grid"`, "activateStop()", "resumeBot()", "toggleMarket(", "selectStrategy(",
 			"resetPositions()", "showSignal(")
-		mustContain(t, "approvals", approvals, `id="count-badge"`, `id="container"`, "decide('${a.id}','approve')",
-			"decide('${a.id}','reject')", "setInterval(load, 3000)")
+		mustContain(t, "approvals", approvals, `id="count-badge"`, `id="container"`, `data-approval-action="approve"`,
+			`data-approval-action="reject"`, "decide(button.dataset.approvalId, button.dataset.approvalAction)",
+			"setInterval(load, 3000)")
 	})
 
 	t.Run("GIVEN execution rejections WHEN markup is inspected THEN the Rejected Trades register is wired", func(t *testing.T) {
@@ -260,6 +262,25 @@ func TestFrontendLayout(t *testing.T) {
 	t.Run("GIVEN strategy context WHEN markup is inspected THEN the header and tables show strategy", func(t *testing.T) {
 		mustContain(t, "index", index, "Active Strategy", "activeStrategyLabel", "_strategyLabel(",
 			`<th style="padding:6px 10px;color:var(--muted);font-weight:600;">Strategy</th>`, "this._strategyLabel(t.strategy)")
+	})
+
+	t.Run("GIVEN a signal is clicked WHEN its detail modal opens THEN the panel is centred like the other dialogs", func(t *testing.T) {
+		modal := between(t, index, "<!-- Signal Detail Modal", `<template x-if="signalModal">`)
+		mustContain(t, "signal modal", modal, `x-show="signalModal" x-cloak class="modal-backdrop"`, `class="modal-panel signal-panel"`)
+		mustContain(t, "css", css, ".modal-backdrop {\n    position: fixed;\n    inset: 0;\n    z-index: 1000;\n    display: flex;\n    align-items: center;\n    justify-content: center;",
+			".signal-panel {")
+	})
+
+	t.Run("GIVEN elements toggled by x-show WHEN shown THEN their layout does not rely on an inline display style", func(t *testing.T) {
+		// Alpine's x-show removes the inline display property when it shows an
+		// element, so an inline display:flex would silently become display:block.
+		tag := regexp.MustCompile(`<[a-z]+\b[^>]*>`)
+		inlineDisplay := regexp.MustCompile(`style="[^"]*display\s*:`)
+		for _, el := range tag.FindAllString(index, -1) {
+			if strings.Contains(el, " x-show=") && inlineDisplay.MatchString(el) {
+				t.Errorf("x-show element with an inline display style: %s", strings.Join(strings.Fields(el), " "))
+			}
+		}
 	})
 
 	t.Run("GIVEN the header LLM indicator WHEN markup is inspected THEN the dot sits in a flex container", func(t *testing.T) {

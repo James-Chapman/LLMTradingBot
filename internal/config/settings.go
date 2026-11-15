@@ -6,16 +6,19 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"slices"
+	"strings"
 )
 
 // Settings holds every tunable value for the bot.
 type Settings struct {
 	// App / server
-	Debug       bool
-	Host        string
-	Port        int
-	CORSOrigins []string
+	Debug        bool
+	Host         string
+	Port         int
+	CORSOrigins  []string
+	AllowedHosts []string // extra Host header names accepted when not bound to loopback
 
 	// Database — SQLite file path (start-up flag -db)
 	DatabasePath string
@@ -76,6 +79,11 @@ type Settings struct {
 // from the dashboard: the biggest pairs on Kraken by 24h traded value.
 const DefaultMarketCount = 50
 
+// PriceHistoryTicks is how many price ticks per market the bot keeps in
+// memory (app.priceHistoryMax). Momentum over N ticks needs N+1 of them, so
+// MOMENTUM_LOOKBACK_TICKS is capped at PriceHistoryTicks-1.
+const PriceHistoryTicks = 200
+
 // defaultMarkets is the fallback when Kraken cannot be asked for its biggest
 // pairs at start-up: the 50 biggest EUR pairs by 24h traded value on
 // 2026-11-14, stablecoins excluded.
@@ -124,7 +132,7 @@ func Defaults() Settings {
 			"NewsBTC::https://www.newsbtc.com/feed/",
 		},
 		FixedMarkets:          slices.Clone(defaultMarkets),
-		DynamicUniverseSource: "coinmarketcap",
+		DynamicUniverseSource: "coingecko",
 		MaxEthEcosystemCoins:  10,
 		LMStudioBaseURL:       "http://localhost:1234/v1",
 		LMStudioTimeout:       60,
@@ -157,6 +165,18 @@ func (s Settings) EffectiveLogLevel() string {
 		return "DEBUG"
 	}
 	return s.LogLevel
+}
+
+// IsLoopbackHost reports whether a listen address only accepts connections
+// from this computer: "localhost" or a loopback IP such as 127.0.0.1 or ::1.
+// An empty host or 0.0.0.0 listens on every interface and is not loopback.
+func IsLoopbackHost(host string) bool {
+	host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]")
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Bootstrap holds the settings needed before the database opens. They come

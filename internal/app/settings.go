@@ -2,11 +2,14 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/James-Chapman/LLMTradingBot/internal/config"
 	"github.com/James-Chapman/LLMTradingBot/internal/secret"
@@ -120,7 +123,7 @@ func (a *App) SettingsView() SettingsView {
 // validated before anything is written, and all are saved in one
 // transaction. Live settings take effect at once (risk engine, strategies,
 // strategy loop); the rest are used after the next restart. An empty value
-// clears a secret.
+// clears a secret; a secret of only spaces is refused.
 func (a *App) UpdateSettings(ctx context.Context, changes map[string]string) (SettingsUpdate, error) {
 	if len(changes) == 0 {
 		return SettingsUpdate{}, statusError(http.StatusBadRequest, "No settings to save")
@@ -141,6 +144,11 @@ func (a *App) UpdateSettings(ctx context.Context, changes map[string]string) (Se
 		f, ok := config.FieldByKey(key)
 		if !ok {
 			return SettingsUpdate{}, statusError(http.StatusBadRequest, fmt.Sprintf("Unknown setting %s", key))
+		}
+		// Apply trims spaces, so a blank secret would silently clear the stored one.
+		if raw := changes[key]; f.Secret && raw != "" && strings.TrimSpace(raw) == "" {
+			return SettingsUpdate{}, statusError(http.StatusBadRequest,
+				fmt.Sprintf("%s: a secret cannot be only spaces; send an empty value to clear it", key))
 		}
 		if err := f.Apply(&next, changes[key]); err != nil {
 			return SettingsUpdate{}, statusError(http.StatusBadRequest, err.Error())
@@ -199,6 +207,82 @@ func without(keys, remove []string) []string {
 		}
 	}
 	return out
+}
+
+// AccessTokenKey is the settings-table key holding the sealed dashboard
+// access token. It is not a dashboard field: it is never listed by
+// GET /api/settings and cannot be set through POST /api/settings.
+const AccessTokenKey = "ACCESS_TOKEN"
+
+// accessTokenBytes is the token's random length: 256 bits.
+const accessTokenBytes = 32
+
+// AccessToken is the dashboard access token required when the bot listens
+// on a non-loopback address. It is stored sealed in the settings table.
+// Safe for concurrent use.
+type AccessToken struct {
+	mu    sync.RWMutex
+	token string
+	repo  *storage.Repository
+	box   secret.Box
+}
+
+// LoadAccessToken returns the stored access token, generating and storing a
+// new one when none is saved (or the saved one cannot be decrypted). created
+// reports whether a new token was generated.
+func LoadAccessToken(ctx context.Context, repo *storage.Repository, box secret.Box) (*AccessToken, bool, error) {
+	t := &AccessToken{repo: repo, box: box}
+	stored, err := repo.LoadSettings(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	if plain, err := secret.Decode(box, stored[AccessTokenKey]); err == nil && plain != "" {
+		t.token = plain
+		return t, false, nil
+	}
+	if _, err := t.Rotate(ctx); err != nil {
+		return nil, false, err
+	}
+	return t, true, nil
+}
+
+// StoredAccessToken returns the access token saved in the database without
+// generating one: "" when none is stored. The CLI uses it to call a bot that
+// requires the token.
+func StoredAccessToken(ctx context.Context, repo *storage.Repository, box secret.Box) (string, error) {
+	stored, err := repo.LoadSettings(ctx)
+	if err != nil {
+		return "", err
+	}
+	return secret.Decode(box, stored[AccessTokenKey])
+}
+
+// Token returns the current access token.
+func (t *AccessToken) Token() string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.token
+}
+
+// Rotate replaces the token with a new random one, stores it sealed and
+// returns it. Sessions using the old token stop working at once.
+func (t *AccessToken) Rotate(ctx context.Context) (string, error) {
+	raw := make([]byte, accessTokenBytes)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate access token: %w", err)
+	}
+	fresh := base64.RawURLEncoding.EncodeToString(raw)
+	sealed, err := secret.Encode(t.box, fresh)
+	if err != nil {
+		return "", fmt.Errorf("seal access token: %w", err)
+	}
+	if err := t.repo.SaveSettings(ctx, map[string]string{AccessTokenKey: sealed}); err != nil {
+		return "", fmt.Errorf("save access token: %w", err)
+	}
+	t.mu.Lock()
+	t.token = fresh
+	t.mu.Unlock()
+	return fresh, nil
 }
 
 // MarketRanker lists the biggest markets quoted in a currency (the Kraken

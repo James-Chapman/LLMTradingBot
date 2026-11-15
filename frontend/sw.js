@@ -4,23 +4,21 @@
  *
  * Strategy
  * ────────
+ * • Dashboard HTML → network-first           (cached copy only when the bot is down)
  * • Static assets  → stale-while-revalidate  (instant load, background refresh)
- * • API endpoints  → network-first           (always fresh; fall back to cache)
+ * • API endpoints  → network only            (never cached: old data must not look live)
  *
- * After every successful API fetch the response data is broadcast to all open
- * window clients via postMessage so the dashboard updates immediately without
- * the page having to wait for its next polling interval.
+ * The page applies the responses of its own requests. When an API request
+ * fails because the bot is unreachable, the service worker answers 503 and
+ * tells only the page that made the request, so it can show its stale banner:
  *
- * Message shape sent to clients
- * ─────────────────────────────
- * { type: 'API_UPDATE',  endpoint: '/api/dashboard', data: {...}, ts: 1234567890 }
- * { type: 'API_OFFLINE', endpoint: '/api/dashboard',              ts: 1234567890 }
+ * { type: 'API_OFFLINE', endpoint: '/api/dashboard', ts: 1234567890 }
  */
 
-const CACHE  = 'trading-bot-v0.9.0';  // update this to invalidate old caches
+const CACHE  = 'trading-bot-v0.11.0';  // update this to invalidate old caches
 
 /**
- * GET endpoints whose responses should be cached AND broadcast to clients.
+ * Polled GET endpoints whose failures are reported to the requesting page.
  * POST/PATCH/DELETE requests are never intercepted.
  */
 const LIVE_ENDPOINTS = new Set([
@@ -69,8 +67,8 @@ self.addEventListener('fetch', event => {
     }
 
     if (LIVE_ENDPOINTS.has(path)) {
-        // Network first → cache → broadcast result to all tabs
-        event.respondWith(networkFirstBroadcast(req, path));
+        // Network only; a failure is reported to the requesting page
+        event.respondWith(networkOnlyApi(req, path, event.clientId));
         return;
     }
 
@@ -83,39 +81,33 @@ self.addEventListener('fetch', event => {
 
 // ── Fetch strategies ───────────────────────────────────────────────────────
 
-async function networkFirstBroadcast(request, path) {
-    const cache = await caches.open(CACHE);
+// Passes an API request to the bot. When the bot is unreachable it answers 503
+// (never a cached copy, which the page would show as current) and tells the
+// requesting page that the connection is lost.
+async function networkOnlyApi(request, path, clientId) {
     try {
-        const response = await fetch(request);
-
-        if (response.ok) {
-            // Persist fresh response
-            cache.put(request, response.clone());
-
-            // Parse JSON and push to all window clients
-            const data = await response.clone().json().catch(() => null);
-            if (data !== null) _broadcast({ type: 'API_UPDATE', endpoint: path, data, ts: Date.now() });
-        }
-
-        return response;
-
+        return await fetch(request);
     } catch (_networkError) {
-        // Backend unreachable — serve stale cache and let clients know
-        const cached = await cache.match(request);
-        _broadcast({ type: 'API_OFFLINE', endpoint: path, ts: Date.now() });
-
-        return cached ?? new Response(JSON.stringify({ error: 'offline' }), {
+        _notifyClient(clientId, { type: 'API_OFFLINE', endpoint: path, ts: Date.now() });
+        return new Response(JSON.stringify({ detail: 'The bot could not be reached.' }), {
             status: 503,
             headers: { 'Content-Type': 'application/json' },
         });
     }
 }
 
+// A response may be cached only when it is the resource itself. A request that
+// was redirected (to the login form, when a session is needed) must not be:
+// the login page would later be served in place of the dashboard.
+function cacheable(response) {
+    return response.ok && !response.redirected;
+}
+
 async function networkFirst(request) {
     const cache = await caches.open(CACHE);
     try {
         const response = await fetch(request);
-        if (response.ok) cache.put(request, response.clone());
+        if (cacheable(response)) cache.put(request, response.clone());
         return response;
     } catch (_networkError) {
         return await cache.match(request) ?? Response.error();
@@ -128,7 +120,7 @@ async function staleWhileRevalidate(request) {
 
     // Kick off network fetch in background regardless of cache hit
     const fresh = fetch(request).then(res => {
-        if (res.ok) cache.put(request, res.clone());
+        if (cacheable(res)) cache.put(request, res.clone());
         return res;
     }).catch(() => null);
 
@@ -138,7 +130,9 @@ async function staleWhileRevalidate(request) {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-async function _broadcast(payload) {
-    const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-    all.forEach(c => c.postMessage(payload));
+// Sends a message to the one page that made a request (other tabs are not told).
+async function _notifyClient(clientId, payload) {
+    if (!clientId) return;
+    const client = await self.clients.get(clientId);
+    if (client) client.postMessage(payload);
 }

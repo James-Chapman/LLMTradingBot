@@ -170,6 +170,16 @@ func fmtMoney(v float64) string {
 	return sign + b.String() + "." + frac
 }
 
+// fmtPrice formats a market price for activity text: like fmtMoney (2
+// decimals, thousands separators) at or above 1, and like formatPrice below 1
+// so coins priced far below a cent never show as 0.00.
+func fmtPrice(v float64) string {
+	if math.Abs(v) < 1 {
+		return formatPrice(v)
+	}
+	return fmtMoney(v)
+}
+
 // fmtSignedMoney formats v like Python's "{v:+,.2f}".
 func fmtSignedMoney(v float64) string {
 	s := fmtMoney(v)

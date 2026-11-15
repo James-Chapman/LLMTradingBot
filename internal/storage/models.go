@@ -60,6 +60,9 @@ type SaveOrderOptions struct {
 	Fee         float64 // order fee
 	Environment string  // "paper" (default) or "live"
 	TradeIdeaID string  // signal that triggered the order
+	// ClientOrderID is the cl_ord_id a live order was sent with, so an order
+	// whose Kraken reply was lost can be found again; empty for paper orders.
+	ClientOrderID string
 }
 
 // OpenPositionInput is the data written by UpsertOpenPosition.
@@ -72,6 +75,8 @@ type OpenPositionInput struct {
 	StrategyID       string
 	SignalConfidence *float64
 	TradeIdeaID      string
+	EntryFee         float64  // fee paid when the position was opened
+	ShortProceeds    *float64 // locked sale value of a paper short; nil for longs
 }
 
 // SignalOutcomeInput describes a closed position to record for learning.
@@ -148,6 +153,8 @@ type OpenPosition struct {
 	UnrealizedPnL    float64   `json:"unrealized_pnl"`
 	OpenedAt         time.Time `json:"opened_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
+	EntryFee         float64   `json:"entry_fee"`      // 0 for rows saved before it was recorded
+	ShortProceeds    *float64  `json:"short_proceeds"` // nil for longs and older rows
 }
 
 // SignalOutcome is one row of signal_outcomes (a closed trade).
@@ -220,9 +227,26 @@ type LedgerEntry struct {
 
 // PendingLiveOrder is a live order awaiting Kraken reconciliation.
 type PendingLiveOrder struct {
-	ID              string  `json:"id"`
-	ExchangeOrderID string  `json:"exchange_order_id"`
-	Price           float64 `json:"price"`
+	ID              string    `json:"id"`
+	ExchangeOrderID string    `json:"exchange_order_id"` // empty when only the client order id is known
+	ClientOrderID   string    `json:"client_order_id"`   // empty for orders sent before client ids were used
+	PositionID      string    `json:"position_id"`       // live position the order belongs to, if any
+	Direction       string    `json:"direction"`         // "long" (buy) or "short" (sell)
+	Size            float64   `json:"size"`
+	Price           float64   `json:"price"`
+	Timestamp       time.Time `json:"timestamp"`
+}
+
+// OrderExecution is a reconciled live order: its final (or still pending)
+// status and what Kraken executed. ExecutedSize 0 keeps the requested size;
+// an empty ExchangeOrderID keeps the stored txid.
+type OrderExecution struct {
+	OrderID         string
+	ExchangeOrderID string
+	Status          string
+	ExecutedSize    float64
+	AvgPrice        float64
+	Fee             float64
 }
 
 // NewsEntry is a recent news item for the dashboard.
@@ -305,6 +329,9 @@ type ControlState struct {
 	// interface; empty means never chosen, so the default applies.
 	TradingMode        string `json:"trading_mode"`
 	TradingEnvironment string `json:"trading_environment"`
+	// EmergencyStopSince is when the active emergency stop was pressed; nil
+	// when not stopped or for rows saved before it was recorded.
+	EmergencyStopSince *time.Time `json:"emergency_stop_since"`
 }
 
 // LLMBriefing is a stored LLM market briefing.

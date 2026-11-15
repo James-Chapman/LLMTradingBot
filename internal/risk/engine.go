@@ -176,22 +176,28 @@ func (e *Engine) EvaluateTrade(idea domain.TradeIdea, opts EvaluateOptions) doma
 		}
 	}
 
-	// A short that fully closes an existing long sells holdings, so needs no cash.
-	totalClosableLong := 0.0
-	for _, p := range marketPositions {
-		if p.Size > 0 {
-			totalClosableLong += p.Size
+	// A short on a market with an open long is an exit: execution sells the
+	// whole long whatever size the signal proposes. It needs no cash and adds
+	// no exposure, so the cash and loss gates below do not apply to it.
+	closesLong := false
+	if idea.Direction == domain.Short {
+		for _, p := range marketPositions {
+			if p.Size > 0 {
+				closesLong = true
+			}
 		}
 	}
 	hasPrice := opts.MarketPrice != nil && *opts.MarketPrice > 0
-	proposedBaseSize := 0.0
-	if hasPrice {
-		proposedBaseSize = proposedSize / *opts.MarketPrice
-	}
-	shortFullyClosesLong := idea.Direction == domain.Short && proposedBaseSize > 0 && totalClosableLong >= proposedBaseSize
-	requiresCash := idea.Direction == domain.Long || (idea.Direction == domain.Short && !shortFullyClosesLong)
 
-	if opts.AvailableCash != nil && hasPrice && requiresCash {
+	// Every limit below is a share of equity. With no positive equity (an
+	// empty live account, or NaN) new exposure cannot be sized; an exit still
+	// passes because it only reduces exposure. The !(x > 0) form also catches NaN.
+	if !(e.currentEquity > 0) && !closesLong {
+		return e.reject(idea, fmt.Sprintf("Account equity is %s%.2f - no new trades until equity is positive",
+			symbol, e.currentEquity))
+	}
+
+	if opts.AvailableCash != nil && hasPrice && !closesLong {
 		cash := *opts.AvailableCash
 		if cash < proposedSize*feeFactor {
 			cashSized := cash / feeFactor
@@ -204,18 +210,20 @@ func (e *Engine) EvaluateTrade(idea domain.TradeIdea, opts EvaluateOptions) doma
 		}
 	}
 
-	maxLoss := e.currentEquity * s.MaxLossPerTradePercent / 100
-	estimatedLoss := proposedSize * s.StopLossPct
-	if estimatedLoss > maxLoss {
-		return e.reject(idea, fmt.Sprintf("Estimated loss %s%.2f exceeds per-trade limit %s%.2f",
-			symbol, estimatedLoss, symbol, maxLoss))
-	}
+	if !closesLong {
+		maxLoss := e.currentEquity * s.MaxLossPerTradePercent / 100
+		estimatedLoss := proposedSize * s.StopLossPct
+		if estimatedLoss > maxLoss {
+			return e.reject(idea, fmt.Sprintf("Estimated loss %s%.2f exceeds per-trade limit %s%.2f",
+				symbol, estimatedLoss, symbol, maxLoss))
+		}
 
-	dailyLimit := e.currentEquity * s.MaxDailyLossPercent / 100
-	if e.dailyLoss+estimatedLoss >= dailyLimit {
-		return e.reject(idea, fmt.Sprintf(
-			"Daily loss limit reached: %s%.2f accumulated + %s%.2f estimated = %s%.2f of %s%.2f",
-			symbol, e.dailyLoss, symbol, estimatedLoss, symbol, e.dailyLoss+estimatedLoss, symbol, dailyLimit))
+		dailyLimit := e.currentEquity * s.MaxDailyLossPercent / 100
+		if e.dailyLoss+estimatedLoss >= dailyLimit {
+			return e.reject(idea, fmt.Sprintf(
+				"Daily loss limit reached: %s%.2f accumulated + %s%.2f estimated = %s%.2f of %s%.2f",
+				symbol, e.dailyLoss, symbol, estimatedLoss, symbol, e.dailyLoss+estimatedLoss, symbol, dailyLimit))
+		}
 	}
 
 	decision := domain.RiskDecision{
@@ -225,7 +233,9 @@ func (e *Engine) EvaluateTrade(idea domain.TradeIdea, opts EvaluateOptions) doma
 		ProposedSize: domain.Float(proposedSize),
 		Timestamp:    e.now().UTC(),
 	}
-	if adjusted {
+	// The sizing ratio is undefined without positive equity (only an exit gets
+	// here then); leaving it nil keeps NaN and Inf out of the JSON.
+	if adjusted && e.currentEquity > 0 {
 		decision.AdjustedSizing = domain.Float(proposedSize / e.currentEquity)
 	}
 	return decision

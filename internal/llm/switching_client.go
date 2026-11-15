@@ -89,13 +89,17 @@ func (s *SwitchingClient) Probe(ctx context.Context) bool {
 }
 
 // Chat prefers LM Studio and silently falls back to the remote endpoint for
-// any individual call that LM Studio cannot answer.
+// any individual call that LM Studio cannot answer. When the caller's context
+// has ended there is no point retrying on the fallback, so the error returns.
 func (s *SwitchingClient) Chat(ctx context.Context, messages []Message, expectJSON bool) (Reply, error) {
 	var primaryErr error
 	if usable(s.primary) {
 		reply, err := s.primary.Chat(ctx, messages, expectJSON)
 		if err == nil {
 			return reply, nil
+		}
+		if ctx.Err() != nil {
+			return Reply{}, err
 		}
 		primaryErr = err
 	}

@@ -50,13 +50,18 @@ func MessagesToPrompt(messages []Message, appendJSONInstruction bool) string {
 // errNotObject reports model output that parsed but was not a JSON object.
 var errNotObject = errors.New("LLM JSON response was not an object")
 
-// LoadsModelJSON parses model output as a JSON object, tolerating Markdown
-// code fences, surrounding prose and missing commas between fields.
+// LoadsModelJSON parses model output as a JSON object, tolerating reasoning
+// <think> blocks, Markdown code fences, surrounding prose and missing commas
+// between fields.
 func LoadsModelJSON(content string) (map[string]any, error) {
-	var firstErr error
+	content = StripThinkBlocks(content)
 	stripped := StripJSONCodeFence(content)
-	attempts := []string{content, stripped, RepairMissingFieldCommas(stripped)}
-	for _, candidate := range attempts {
+	repaired := RepairMissingFieldCommas(stripped)
+
+	// Strict parses of the whole reply come first, so a nested reply that only
+	// needed a comma is returned whole rather than as one of its inner objects.
+	var firstErr error
+	for _, candidate := range []string{content, stripped, repaired} {
 		var loaded any
 		if err := json.Unmarshal([]byte(candidate), &loaded); err == nil {
 			if obj, ok := loaded.(map[string]any); ok {
@@ -65,6 +70,11 @@ func LoadsModelJSON(content string) (map[string]any, error) {
 		} else if firstErr == nil {
 			firstErr = err
 		}
+	}
+
+	// Only then extract an object embedded in prose. The repaired text goes
+	// first so a fixable outer object beats an object nested inside it.
+	for _, candidate := range []string{repaired, stripped, content} {
 		if extracted, ok := ExtractFirstJSONObject(candidate); ok {
 			return extracted, nil
 		}
@@ -73,6 +83,30 @@ func LoadsModelJSON(content string) (map[string]any, error) {
 		return nil, firstErr
 	}
 	return nil, errNotObject
+}
+
+// thinkBlock matches a complete <think>…</think> reasoning block.
+var thinkBlock = regexp.MustCompile(`(?is)<think>.*?</think>`)
+
+// thinkOpen and thinkClose match a lone opening or closing think tag.
+var (
+	thinkOpen  = regexp.MustCompile(`(?i)<think>`)
+	thinkClose = regexp.MustCompile(`(?i)</think>`)
+)
+
+// StripThinkBlocks removes reasoning-model deliberation from content so JSON
+// written while "thinking" is never mistaken for the answer. Complete blocks
+// are removed; text before a lone closing tag is reasoning whose opening tag
+// was in the prompt; everything after an unclosed opening tag is reasoning.
+func StripThinkBlocks(content string) string {
+	content = thinkBlock.ReplaceAllString(content, "")
+	if locs := thinkClose.FindAllStringIndex(content, -1); len(locs) > 0 {
+		content = content[locs[len(locs)-1][1]:]
+	}
+	if loc := thinkOpen.FindStringIndex(content); loc != nil {
+		content = content[:loc[0]]
+	}
+	return strings.TrimSpace(content)
 }
 
 // StripJSONCodeFence removes a surrounding Markdown code fence from content.

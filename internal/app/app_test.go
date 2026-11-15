@@ -309,6 +309,26 @@ func TestStrategyTickTradingModes(t *testing.T) {
 		}
 	})
 
+	t.Run("GIVEN a tick already evaluating WHEN the emergency stop is pressed THEN that tick's signals are not traded or queued", func(t *testing.T) {
+		// A slow strategy (the LLM over many markets) can still be evaluating
+		// when the operator presses the stop.
+		for _, mode := range []string{"fully_automated", "semi_automated"} {
+			env := newEnv(t, func(s *config.Settings) { s.TradingMode = mode }, seedPrices(40))
+			env.strategy.Ideas = func(in strategy.Input) []domain.TradeIdea {
+				env.app.ActivateEmergencyStop(context.Background())
+				return longIdea(in)
+			}
+			env.boot(t)
+			env.tick(t)
+			if n := len(env.app.Dashboard().Positions); n != 0 {
+				t.Errorf("%s: a stopped bot must not open positions, got %d", mode, n)
+			}
+			if n := len(env.app.PendingApprovals()); n != 0 {
+				t.Errorf("%s: a stopped bot must not queue approvals, got %d", mode, n)
+			}
+		}
+	})
+
 	t.Run("GIVEN the live environment and a live market WHEN a signal fires THEN the order routes to Kraken", func(t *testing.T) {
 		env := newEnv(t, func(s *config.Settings) {
 			s.TradingMode = "fully_automated"
@@ -321,8 +341,10 @@ func TestStrategyTickTradingModes(t *testing.T) {
 		if env.live.ExecutedCount() != 1 {
 			t.Errorf("expected one live order, got %d", env.live.ExecutedCount())
 		}
-		if len(env.app.Dashboard().Positions) != 0 {
-			t.Errorf("live orders must not create paper positions")
+		for _, p := range env.app.Dashboard().Positions {
+			if p.Environment == string(domain.EnvPaper) {
+				t.Errorf("live orders must not create paper positions, got %+v", p)
+			}
 		}
 	})
 
@@ -407,6 +429,32 @@ func TestStopLoss(t *testing.T) {
 		closed, _ := env.repo.GetClosedTrades(context.Background(), 10)
 		if len(closed) != 1 || closed[0].PnL >= 0 {
 			t.Errorf("expected one losing closed trade, got %+v", closed)
+		}
+	})
+
+	t.Run("GIVEN an open long past its stop WHEN the tick's database writes fail THEN the stop still closes it", func(t *testing.T) {
+		env := newEnv(t, func(s *config.Settings) { s.TradingMode = "fully_automated" }, seedPrices(40))
+		fired := false
+		env.strategy.Ideas = func(strategy.Input) []domain.TradeIdea {
+			if fired {
+				return nil
+			}
+			fired = true
+			return []domain.TradeIdea{apptest.Idea(strategy.BasicID, "BTC/EUR", domain.Long, 0.9)}
+		}
+		env.boot(t)
+		env.tick(t)
+		env.market.SetPrice("BTC/EUR", 40000)
+
+		// A cancelled context makes every write of this tick fail.
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := env.app.strategyTick(ctx); err == nil {
+			t.Fatalf("expected the tick to report the failed writes")
+		}
+
+		if n := len(env.app.paper.OpenPositions()); n != 0 {
+			t.Errorf("the stop-loss must not depend on housekeeping writes, %d position(s) still open", n)
 		}
 	})
 }

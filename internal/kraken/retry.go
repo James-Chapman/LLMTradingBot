@@ -18,6 +18,33 @@ var rateLimitMarkers = []string{
 	"too many requests",
 }
 
+// notPlacedMarkers are the lower-case substrings of errors Kraken returns
+// before an order reaches the matching engine (rate limits and lockouts), so
+// re-sending the order cannot create a duplicate. "service unavailable" is
+// deliberately absent: the order may have been placed.
+var notPlacedMarkers = []string{
+	"rate limit",
+	"temporary lockout",
+	"too many requests",
+}
+
+// IsOrderNotPlacedError reports whether an AddOrder error means the order was
+// certainly not placed, so it is safe to retry.
+func IsOrderNotPlacedError(err error) bool {
+	return err != nil && containsAnyFold(err.Error(), notPlacedMarkers)
+}
+
+// containsAnyFold reports whether text contains any of the lower-case markers, ignoring case.
+func containsAnyFold(text string, markers []string) bool {
+	lower := strings.ToLower(text)
+	for _, marker := range markers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 const (
 	defaultMaxAttempts  = 3
 	defaultInitialDelay = 500 * time.Millisecond
@@ -37,6 +64,8 @@ type BackoffOptions struct {
 	Jitter       JitterFunc    // default: DefaultJitter
 	Logger       *slog.Logger  // optional warning logger
 	Operation    string        // name used in log records
+	// Retryable decides which errors are retried (default IsRetryableError).
+	Retryable func(error) bool
 }
 
 // DefaultJitter returns random jitter of up to ten percent of delay.
@@ -100,10 +129,14 @@ func CallWithBackoff[T any](ctx context.Context, opts BackoffOptions, op func(co
 	if operation == "" {
 		operation = "Kraken API call"
 	}
+	retryable := opts.Retryable
+	if retryable == nil {
+		retryable = IsRetryableError
+	}
 
 	for attempt := 1; ; attempt++ {
 		result, err := op(ctx)
-		if err == nil || attempt >= maxAttempts || !IsRetryableError(err) {
+		if err == nil || attempt >= maxAttempts || !retryable(err) {
 			return result, err
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {

@@ -5,9 +5,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LLM Trading Bot</title>
-    <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
-    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://unpkg.com/alpinejs@3.14.1/dist/cdn.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
     <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
     <link rel="stylesheet" href="/static/styles.css">
 </head>
@@ -19,7 +18,7 @@
         <div class="app-shell dashboard-shell header-bar">
             <div class="header-brand">
                 <span class="brand-title">⚡ LLM Trading Bot</span>
-                <span class="version-label" x-text="appVersion ? 'v' + appVersion : ''">v0.9.0</span>
+                <span class="version-label" x-text="appVersion ? 'v' + appVersion : ''">v0.11.0</span>
                 <!-- Emergency stop banner -->
                 <span x-show="emergencyStop" class="pill pill-red"
                     style="font-size:12px;font-weight:700;letter-spacing:.04em;">■ EMERGENCY STOP</span>
@@ -73,6 +72,18 @@
         </div>
     </header>
 
+    <!-- ── Connection lost: everything below is old data ──────────────────── -->
+    <div x-show="connectionLost" x-cloak class="offline-banner" role="alert">
+        <span>
+            ⚠ Connection to the bot lost —
+            <span x-text="lastDashboardAt
+                ? 'showing data from ' + lastDashboardAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                : 'no data has been received yet'"></span>.
+            Equity, positions and the emergency-stop state may be out of date. Actions ask for confirmation until the
+            connection returns.
+        </span>
+    </div>
+
     <!-- ── Emergency stop overlay ─────────────────────────────────────────── -->
     <div x-show="emergencyStop" class="emergency-banner">
         <span>
@@ -95,7 +106,7 @@
     </div>
 
     <!-- ── Main ───────────────────────────────────────────────────────────── -->
-    <main class="app-shell dashboard-shell dashboard-grid">
+    <main class="app-shell dashboard-shell dashboard-grid" :class="connectionLost ? 'is-stale' : ''">
 
         <!-- Market Briefing banner — only shown when a briefing is available -->
         <div x-show="llmBriefing" class="panel area-briefing briefing-banner">
@@ -115,7 +126,7 @@
                     </span>
                     <!-- Age + article count -->
                     <span style="font-size:11px;color:var(--muted);margin-left:auto;"
-                        x-text="llmBriefing ? timeAgo(new Date(llmBriefing.generated_at)) + ' · ' + llmBriefing.article_count + ' article' + (llmBriefing.article_count !== 1 ? 's' : '') : ''">
+                        x-text="llmBriefing ? timeAgo(parseUtc(llmBriefing.generated_at)) + ' · ' + llmBriefing.article_count + ' article' + (llmBriefing.article_count !== 1 ? 's' : '') : ''">
                     </span>
                 </div>
                 <!-- Key insight — the only content shown here -->
@@ -148,9 +159,8 @@
             <div class="panel-header" @click="panels.equity = !panels.equity">
                 <div class="flex items-center gap-3">
                     <span class="label">Equity Graph</span>
-                    <!-- Live indicator: pulses green when SW is active and updates are arriving -->
-                    <span x-show="_swActive"
-                        style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--green);">
+                    <!-- Live indicator: pulses green while dashboard updates are arriving; hidden when stale -->
+                    <span x-show="!connectionLost && lastDashboardAt" class="live-indicator">
                         <span
                             style="width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 0 0 rgba(63,185,80,.6);animation:live-pulse 2s infinite;display:inline-block;flex-shrink:0;"></span>
                         Live
@@ -541,12 +551,10 @@
         </div>
         <!-- /settings-dialog -->
 
-        <!-- Signal Detail Modal -->
-        <div x-show="signalModal" x-cloak
-            style="position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.75);"
+        <!-- Signal Detail Modal: layout comes from CSS classes, because x-show drops an inline display style -->
+        <div x-show="signalModal" x-cloak class="modal-backdrop"
             @click.self="signalModal=null;signalBreakdown=null;signalVoteRows=[]">
-            <div
-                style="background:var(--surface);border:1px solid var(--border);border-radius:12px;width:min(820px,96vw);max-height:92vh;overflow-y:auto;padding:28px;">
+            <div class="modal-panel signal-panel">
                 <template x-if="signalModal">
                     <div>
                         <!-- ── Header ──────────────────────────────────────────────── -->
@@ -569,7 +577,7 @@
                                     x-text="signalModal.market + ' ' + (signalModal.direction==='long' ? '▲ LONG' : '▼ SHORT')">
                                 </div>
                                 <div style="font-size:12px;color:var(--muted);margin-top:3px;"
-                                    x-text="signalModal.created_at ? new Date(signalModal.created_at+'Z').toLocaleString() : ''">
+                                    x-text="signalModal.created_at ? parseUtc(signalModal.created_at).toLocaleString() : ''">
                                 </div>
                             </div>
                             <div class="flex items-center gap-4">
@@ -940,7 +948,6 @@
                                     <th style="padding:6px 10px;color:var(--muted);font-weight:600;white-space:nowrap;">
                                         Date Time</th>
                                     <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Market</th>
-                                    <th style="padding:6px 10px;color:var(--muted);font-weight:600;">Strategy</th>
                                     <th style="padding:6px 10px;color:var(--muted);font-weight:600;"
                                         title="Buy = bought asset · Sell = sold asset · badge shows whether this trade opened or closed a position">
                                         Action</th>
@@ -964,7 +971,7 @@
                             </thead>
                             <tbody id="ledger-body">
                                 <tr>
-                                    <td colspan="14" style="padding:20px 10px;color:var(--muted);text-align:center;">
+                                    <td colspan="13" style="padding:20px 10px;color:var(--muted);text-align:center;">
                                         Loading…</td>
                                 </tr>
                             </tbody>
@@ -1030,7 +1037,7 @@
                                                        ''">
                             <div class="llm-row">
                                 <span style="color:var(--muted);font-size:11px;white-space:nowrap;flex-shrink:0;"
-                                    x-text="new Date(e.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})"></span>
+                                    x-text="parseUtc(e.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})"></span>
                                 <span style="font-size:12px;" :style="e.level==='error'   ? 'color:var(--red)'    :
                                           e.level==='warn'    ? 'color:var(--gold)'   :
                                           e.level==='success' ? 'color:var(--green)'  :
@@ -1056,7 +1063,7 @@
                         <div class="llm-row">
                             <span class="llm-key">Backend</span>
                             <span style="font-size:12px;color:var(--muted);"
-                                x-text="llmBackend === 'openai' ? 'OpenAI' : llmBackend === 'transformers' ? 'Local' : 'None'"></span>
+                                x-text="llmBackend === 'lmstudio' ? 'LM Studio' : llmBackend === 'remote' ? 'Remote' : 'None'"></span>
                         </div>
                         <div class="llm-row">
                             <span class="llm-key">Model</span>
@@ -1078,7 +1085,7 @@
                         <div class="llm-row">
                             <span class="llm-card-title">Market Briefing</span>
                             <span style="font-size:10px;color:var(--muted);"
-                                x-text="llmBriefing ? timeAgo(new Date(llmBriefing.generated_at)) : ''"></span>
+                                x-text="llmBriefing ? timeAgo(parseUtc(llmBriefing.generated_at)) : ''"></span>
                         </div>
                         <div class="llm-row">
                             <span class="llm-key">Articles</span>
@@ -1167,7 +1174,7 @@
                         </div>
                         <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">
                             <span style="font-size:11px;color:var(--muted);white-space:nowrap;"
-                                x-text="timeAgo(new Date(r.timestamp))"></span>
+                                x-text="timeAgo(parseUtc(r.timestamp))"></span>
                             <button x-show="r.trade_idea_id" @click="showSignal(r.trade_idea_id)"
                                 style="font-size:10px;padding:3px 9px;border-radius:4px;background:rgba(139,148,158,.12);border:1px solid rgba(139,148,158,.25);color:var(--muted);cursor:pointer;white-space:nowrap;">
                                 📊 Detail
@@ -1211,7 +1218,7 @@
                         <template x-for="(r, i) in rejectedTrades" :key="r.id || i">
                             <tr style="border-bottom:1px solid var(--subtle);">
                                 <td style="padding:7px 10px;color:var(--muted);font-size:11px;white-space:nowrap;"
-                                    x-text="new Date(r.timestamp).toLocaleDateString('en-GB', {day:'2-digit',month:'short'}) + ' ' + new Date(r.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})">
+                                    x-text="parseUtc(r.timestamp).toLocaleDateString('en-GB', {day:'2-digit',month:'short'}) + ' ' + parseUtc(r.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})">
                                 </td>
                                 <td style="padding:7px 10px;font-weight:600;" x-text="r.market"></td>
                                 <td style="padding:7px 10px;">
@@ -1221,7 +1228,7 @@
                                 <td style="padding:7px 10px;text-align:right;font-family:monospace;"
                                     x-text="parseFloat(r.size).toFixed(6)"></td>
                                 <td style="padding:7px 10px;text-align:right;font-family:monospace;"
-                                    x-text="parseFloat(r.price).toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2})">
+                                    x-text="fmtPrice(r.price)">
                                 </td>
                                 <td style="padding:7px 10px;text-align:right;font-family:monospace;"
                                     x-text="(parseFloat(r.size) * parseFloat(r.price)).toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2})">
@@ -1253,6 +1260,74 @@
     </main>
 
     <script>
+        // Sends the browser to the login form when the bot answers 401. That only happens
+        // when the bot listens beyond this computer and the session is missing or the
+        // access token was changed; every API call on the page goes through this wrapper.
+        const plainFetch = window.fetch.bind(window);
+        window.fetch = async (...args) => {
+            const response = await plainFetch(...args);
+            if (response.status === 401) window.location.assign('/login');
+            return response;
+        };
+
+        // Escapes a server, LLM or news string for safe use inside innerHTML (text and quoted attributes).
+        function esc(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        // Returns the URL when it is a plain http(s) link, otherwise '#' (blocks javascript: and data: links).
+        function safeUrl(url) {
+            return /^https?:\/\//i.test(url || '') ? url : '#';
+        }
+
+        // Parses an API timestamp. Storage timestamps are naive UTC ("2026-11-14T10:00:00"),
+        // so a 'Z' is appended when the string carries no zone or offset.
+        function parseUtc(value) {
+            const text = String(value ?? '');
+            const hasZone = /(Z|[+-]\d{2}:?\d{2})$/i.test(text);
+            return new Date(hasZone ? text : text + 'Z');
+        }
+
+        // Decimals to show for a price: 2 at or above 1, otherwise enough for 4 significant
+        // digits, so coins priced far below a cent never show as 0.00 (e.g. 0.0000085 → 9).
+        function priceDecimals(value) {
+            const v = Math.abs(Number(value));
+            if (!Number.isFinite(v) || v === 0 || v >= 1) return 2;
+            return Math.min(12, 3 - Math.floor(Math.log10(v)));
+        }
+
+        // Formats a market price with adaptive precision. Money amounts (equity, P&L, value) use 2 decimals instead.
+        function fmtPrice(value) {
+            const v = Number(value);
+            if (value === null || value === undefined || value === '' || !Number.isFinite(v)) return '—';
+            const decimals = priceDecimals(v);
+            return v.toLocaleString('en-GB', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+        }
+
+        // Converts API candles to Lightweight Charts data. The library rejects unsorted or
+        // repeated timestamps, so the last candle per time wins and the result is sorted.
+        function toCandleSeries(candles) {
+            const byTime = new Map();
+            for (const c of candles) byTime.set(c.t, { time: c.t, open: c.o, high: c.h, low: c.l, close: c.c });
+            return [...byTime.values()].sort((a, b) => a.time - b.time);
+        }
+
+        // The dashboard counts as stale when no dashboard response has arrived for this long.
+        const STALE_AFTER_MS = 20000;
+
+        // Gap between the OHLC requests of consecutive chart cards during a refresh.
+        const CHART_REFRESH_GAP_MS = 250;
+
+        // Candle chart state lives outside Alpine so the chart objects are not wrapped in reactive proxies.
+        const candleCharts = new Map();   // market → { card, visible, chart5, series5, chart15, series15, resizers }
+        const chartRequests = new Map();  // market → in-flight _fetchAndRender promise
+        let chartObserver = null;         // IntersectionObserver that marks chart cards visible / hidden
+
         function dashboard() {
             return {
                 mode: 'manual',
@@ -1316,13 +1391,17 @@
                 pnlStatus: 'Loading...',
                 _chart: null,
                 _equityTimestamps: [],
-                _candleCharts: {},   // market → { chart5, series5, chart15, series15 }
-                _chartMarkets: [],   // markets rendered so far
+                _chartMarkets: [],   // markets in the dashboard's current market list, in order
+                _chartRefreshRunning: false, // true while refreshCharts is working through the visible cards
                 _openPositionIds: new Set(),
+                _liveMarkets: new Set(),     // markets toggled live (real orders in the live environment)
                 _seenSignalIds: new Set(),   // IDs of signals already shown — avoids re-notifying on poll
                 _notifyReady: false,         // true after first render; prevents burst on page load
-                _swActive: false,
-                _lastUpdate: null,
+                // Connection state: the page shows a banner when the bot stops answering
+                connectionLost: false,
+                lastDashboardAt: null,       // Date of the last dashboard response that was applied
+                _dashboardRequestSeq: 0,     // incremented for every dashboard request
+                _dashboardAppliedSeq: 0,     // sequence number of the response currently shown
                 // Collapsible panel state — Risk Rejections and Rejected Trades collapsed by default
                 panels: {
                     equity: true, markets: true, signals: true, positions: true,
@@ -1335,15 +1414,10 @@
                     if ('Notification' in window && Notification.permission === 'default') {
                         Notification.requestPermission();
                     }
-                    this.loadDashboard();
-                    this.loadSettings();
-                    this.loadNews();
-                    this.loadLedger();
-                    this.loadClosedTrades();
-                    this.loadPnlSummary();
-                    this.loadRejectedTrades();
-                    // Fallback polling — SW broadcasts keep things live; these fire if SW is unavailable
+                    this._initialLoad();
+                    // Polling: each page fetches and applies its own data
                     setInterval(() => this.loadDashboard(), 5000);
+                    setInterval(() => this._checkStale(), 5000);
                     setInterval(() => this.loadNews(), 300000);
                     setInterval(() => this.loadLedger(), 15000);
                     setInterval(() => this.loadClosedTrades(), 30000);
@@ -1354,6 +1428,25 @@
                     document.addEventListener('click', e => {
                         const btn = e.target.closest('.sig-btn');
                         if (btn) this.showSignal(btn.dataset.signalId);
+                    });
+                    // Buttons rendered inside innerHTML carry their target in data attributes, never in
+                    // inline script, so a server string can't break out of an onclick handler.
+                    document.addEventListener('click', e => {
+                        const chip = e.target.closest('[data-filter-event]');
+                        if (chip) {
+                            document.dispatchEvent(new CustomEvent(chip.dataset.filterEvent, { detail: chip.dataset.filterDetail }));
+                            return;
+                        }
+                        const toggle = e.target.closest('[data-toggle-market]');
+                        if (toggle) { this.toggleMarket(toggle.dataset.toggleMarket); return; }
+                        const liveToggle = e.target.closest('[data-toggle-live]');
+                        if (liveToggle) { this.toggleMarketLive(liveToggle.dataset.toggleLive); return; }
+                        const close = e.target.closest('[data-close-position]');
+                        if (close) { this.closePosition(close.dataset.closePosition); return; }
+                        const forget = e.target.closest('[data-forget-position]');
+                        if (forget) { this.forgetPosition(forget.dataset.forgetPosition); return; }
+                        const decision = e.target.closest('[data-approval-action]');
+                        if (decision) this.decideApproval(decision.dataset.approvalId, decision.dataset.approvalAction);
                     });
                     // Trade ledger filters
                     document.addEventListener('ledger-market-toggle', e => {
@@ -1422,61 +1515,62 @@
                         this._renderNewsFilterStrip();
                         this._applyNewsFilter();
                     });
-                    // Register Service Worker for network-first caching + live broadcast updates
+                    // Service worker: caches the page shell and tells this page when the bot is unreachable
                     if ('serviceWorker' in navigator) {
                         navigator.serviceWorker.register('/sw.js')
-                            .then(reg => {
-                                console.log('[SW] Registered — scope:', reg.scope);
-                                this._swActive = true;
-                            })
+                            .then(reg => console.log('[SW] Registered — scope:', reg.scope))
                             .catch(err => console.warn('[SW] Registration failed:', err));
-                        // Receive pushed updates from the SW
                         navigator.serviceWorker.addEventListener('message', event => {
                             this._handleSwMessage(event.data);
                         });
                     }
                 },
 
-                // ── Service Worker message handler ─────────────────────────────────────
+                // Loads the dashboard first so the currency symbol is known before the
+                // ledger, closed trades and P&L render, then loads everything else.
+                async _initialLoad() {
+                    await this.loadDashboard();
+                    this.loadSettings().catch(e => console.error('Settings:', e));
+                    this.loadNews();
+                    this.loadLedger();
+                    this.loadClosedTrades();
+                    this.loadPnlSummary();
+                    this.loadRejectedTrades();
+                },
 
+                // ── Connection state ───────────────────────────────────────────────────
+
+                // The service worker only sends API_OFFLINE, and only to the page whose request failed.
                 _handleSwMessage(msg) {
-                    if (!msg) return;
-                    if (msg.type === 'API_OFFLINE') {
-                        console.warn('[SW] Backend offline for', msg.endpoint);
-                        return;
-                    }
-                    if (msg.type !== 'API_UPDATE' || !msg.data) return;
-
-                    this._lastUpdate = new Date();
-                    const d = msg.data;
-
-                    switch (msg.endpoint) {
-                        case '/api/dashboard':
-                            this._applyDashboard(d);
-                            break;
-                        case '/api/trades':
-                            this.renderLedger(d);
-                            this.ledgerStatus = d.length
-                                ? `${d.length} orders · updated ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
-                                : 'No trades yet';
-                            break;
-                        case '/api/closed-trades':
-                            this.renderClosedTrades(d);
-                            this.closedStatus = d.length
-                                ? `${d.length} closed · updated ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
-                                : 'No closed trades yet';
-                            break;
-                        case '/api/news':
-                            this.renderNews(d);
-                            this.newsStatus = `${d.length} article${d.length !== 1 ? 's' : ''} · ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-                            break;
-                        case '/api/rejected-trades':
-                            this.rejectedTrades = d;
-                            break;
+                    if (msg && msg.type === 'API_OFFLINE' && msg.endpoint === '/api/dashboard') {
+                        this._markConnectionLost();
                     }
                 },
 
-                // ── Dashboard data application (shared by fetch path + SW message path) ─
+                // Shows the stale banner when no dashboard response has arrived recently
+                // (also covers a request that hangs, and pages without a service worker).
+                _checkStale() {
+                    if (!this.lastDashboardAt || Date.now() - this.lastDashboardAt.getTime() > STALE_AFTER_MS) {
+                        this._markConnectionLost();
+                    }
+                },
+
+                _markConnectionLost() {
+                    this.connectionLost = true;
+                },
+
+                _markConnected() {
+                    this.connectionLost = false;
+                    this.lastDashboardAt = new Date();
+                },
+
+                // Returns true when an action may go ahead; while the data is stale the operator confirms first.
+                _actionAllowedWhileStale() {
+                    if (!this.connectionLost) return true;
+                    return confirm('The connection to the bot is lost and this page shows old data.\n\nSend the request anyway?');
+                },
+
+                // ── Dashboard data application ─────────────────────────────────────────
 
                 _applyDashboard(d) {
                     this.mode = d.mode;
@@ -1506,23 +1600,27 @@
                     this.renderPositions(d.positions || []);
                     this.renderApprovals(d.approvals || []);
                     this.renderChart(d.equity_history || []);
-                    // Load candle charts for any newly-seen markets
-                    const symbols = (d.markets || []).map(m => m.symbol).filter(s => s);
-                    const newMarkets = symbols.filter(s => !this._chartMarkets.includes(s));
-                    if (newMarkets.length) {
-                        this._chartMarkets = symbols;
-                        this.loadCharts(symbols);
-                    }
+                    // Add chart cards for new markets and remove those that dropped out
+                    this._syncChartCards((d.markets || []).map(m => m.symbol).filter(s => s));
                 },
 
+                // Fetches and applies the dashboard. Polls and post-action refreshes can overlap,
+                // so each request is numbered and a response older than the one shown is dropped.
                 async loadDashboard() {
+                    const seq = ++this._dashboardRequestSeq;
                     try {
                         const r = await fetch('/api/dashboard');
-                        if (!r.ok) return;
-                        // SW broadcasts the same data via postMessage; apply here too as
-                        // a fallback for the first load before the SW has taken control
-                        this._applyDashboard(await r.json());
-                    } catch (e) { console.error('Dashboard:', e); }
+                        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                        const data = await r.json();
+                        if (seq < this._dashboardAppliedSeq) return;
+                        this._dashboardAppliedSeq = seq;
+                        this._applyDashboard(data);
+                        this._markConnected();
+                    } catch (e) {
+                        console.error('Dashboard:', e);
+                        // A failure of an old request does not hide a newer success
+                        if (seq > this._dashboardAppliedSeq) this._markConnectionLost();
+                    }
                 },
 
                 async loadNews() {
@@ -1535,11 +1633,22 @@
                     } catch (e) { console.error('News:', e); }
                 },
 
+                // Activates the emergency stop; the stopped state is shown only once the server confirms it.
                 async activateStop() {
                     if (!confirm('Activate emergency stop? This will halt all trading and clear the approval queue.')) return;
-                    this.emergencyStop = true;
-                    await fetch('/api/control/emergency-stop', { method: 'POST' });
-                    this.loadDashboard();
+                    try {
+                        const response = await fetch('/api/control/emergency-stop', { method: 'POST' });
+                        if (!response.ok) {
+                            alert(`EMERGENCY STOP FAILED — the bot may still be trading.\n\n${await this._refusalDetail(response)}`);
+                            return;
+                        }
+                        this.emergencyStop = true;
+                    } catch (e) {
+                        alert(`EMERGENCY STOP FAILED — the server could not be reached, the bot may still be trading.\n\n${e.message}`);
+                        return;
+                    } finally {
+                        this.loadDashboard();
+                    }
                 },
 
                 // ── Trading settings (mode and paper / live) ──────────────────────────
@@ -1565,17 +1674,23 @@
 
                 async setTradingMode(mode) {
                     if (mode === this.mode) return;
+                    if (!this._actionAllowedWhileStale()) return;
                     const option = this.tradingModes.find(m => m.id === mode);
                     // Every mode change is confirmed so a stray click changes nothing.
                     if (!confirm(`Change trading mode to ${option ? option.label : mode}?\n\n${option ? option.description : ''}`)) return;
                     this.tradingSettingsError = '';
-                    const response = await fetch('/api/control/trading-mode', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ mode }),
-                    });
-                    if (!response.ok) {
-                        this.tradingSettingsError = await this._refusalDetail(response);
+                    try {
+                        const response = await fetch('/api/control/trading-mode', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ mode }),
+                        });
+                        if (!response.ok) {
+                            this.tradingSettingsError = await this._refusalDetail(response);
+                            return;
+                        }
+                    } catch (e) {
+                        this.tradingSettingsError = `Trading mode not changed — the server could not be reached (${e.message}).`;
                         return;
                     }
                     this.mode = mode;
@@ -1584,17 +1699,23 @@
 
                 async setTradingEnvironment(environment) {
                     if (environment === this.environment) return;
+                    if (!this._actionAllowedWhileStale()) return;
                     // Back to paper: a plain confirm. To live: the typed LIVE in the dialog is the confirmation.
                     if (environment === 'paper' && !confirm('Switch to PAPER trading?\n\nOrders will be simulated and nothing will be sent to Kraken.')) return;
                     if (environment === 'live' && this.liveConfirmText !== 'LIVE') return;
                     this.tradingSettingsError = '';
-                    const response = await fetch('/api/control/trading-environment', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ environment, confirmation: this.liveConfirmText }),
-                    });
-                    if (!response.ok) {
-                        this.tradingSettingsError = await this._refusalDetail(response);
+                    try {
+                        const response = await fetch('/api/control/trading-environment', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ environment, confirmation: this.liveConfirmText }),
+                        });
+                        if (!response.ok) {
+                            this.tradingSettingsError = await this._refusalDetail(response);
+                            return;
+                        }
+                    } catch (e) {
+                        this.tradingSettingsError = `Trading environment not changed — the server could not be reached (${e.message}).`;
                         return;
                     }
                     this.environment = environment;
@@ -1616,9 +1737,10 @@
                     return groups;
                 },
 
+                // Fetches the settings fields; throws with the server's detail when the request fails.
                 async loadSettings() {
                     const response = await fetch('/api/settings');
-                    if (!response.ok) return;
+                    if (!response.ok) throw new Error(await this._refusalDetail(response));
                     const data = await response.json();
                     // Fill the draft first: the dialog's list templates read it as soon as the fields arrive.
                     this.resetSettingsDraft(data.fields);
@@ -1629,7 +1751,12 @@
                 async openSettings() {
                     this.settingsError = '';
                     this.settingsNotice = '';
-                    await this.loadSettings();
+                    try {
+                        await this.loadSettings();
+                    } catch (e) {
+                        // Still open the dialog so the operator sees why the settings are missing or stale.
+                        this.settingsError = `Could not load settings: ${e.message}`;
+                    }
                     this.resetSettingsDraft();
                     if (!this.settingsGroups.some(g => g.name === this.settingsGroup)) {
                         this.settingsGroup = this.settingsGroups[0]?.name || '';
@@ -1750,27 +1877,50 @@
                         await this.loadSettings();
                         this.resetSettingsDraft();
                         this.loadDashboard();
+                    } catch (e) {
+                        this.settingsError = this.settingsNotice
+                            ? `Saved, but reloading the settings failed: ${e.message}`
+                            : `Settings not saved: ${e.message}`;
                     } finally {
                         this.settingsSaving = false;
                     }
                 },
 
+                // Lifts the emergency stop after confirmation; the running state is shown only once the server confirms it.
                 async resumeBot() {
-                    this.emergencyStop = false;
-                    await fetch('/api/control/resume', { method: 'POST' });
-                    this.loadDashboard();
+                    if (!this._actionAllowedWhileStale()) return;
+                    if (!confirm('Resume trading? The bot will start opening and closing positions again.')) return;
+                    try {
+                        const response = await fetch('/api/control/resume', { method: 'POST' });
+                        if (!response.ok) {
+                            alert(`RESUME FAILED — the emergency stop is still active.\n\n${await this._refusalDetail(response)}`);
+                            return;
+                        }
+                        this.emergencyStop = false;
+                    } catch (e) {
+                        alert(`RESUME FAILED — the server could not be reached.\n\n${e.message}`);
+                        return;
+                    } finally {
+                        this.loadDashboard();
+                    }
                 },
 
                 async selectStrategy(id) {
                     const selected = this.strategies.find(s => s.id === id);
                     if (!selected || selected.selected) return;
+                    if (!this._actionAllowedWhileStale()) return;
                     // Every strategy change is confirmed so a stray click changes nothing.
                     const parts = this._strategyLabelParts(selected);
                     if (!confirm(`Change strategy to ${parts.title}?\n\n${parts.text}`)) return;
                     this.tradingSettingsError = '';
-                    const response = await fetch(`/api/control/strategies/${encodeURIComponent(id)}/select`, { method: 'POST' });
-                    if (!response.ok) {
-                        this.tradingSettingsError = await this._refusalDetail(response);
+                    try {
+                        const response = await fetch(`/api/control/strategies/${encodeURIComponent(id)}/select`, { method: 'POST' });
+                        if (!response.ok) {
+                            this.tradingSettingsError = await this._refusalDetail(response);
+                            return;
+                        }
+                    } catch (e) {
+                        this.tradingSettingsError = `Strategy not changed — the server could not be reached (${e.message}).`;
                         return;
                     }
                     this.strategies = this.strategies.map(s => ({ ...s, selected: s.id === id }));
@@ -1786,8 +1936,32 @@
                     return match ? { title: match[1], text: match[2] } : { title: label, text: '' };
                 },
 
+                // Enables or disables trading on one market; a refusal or network error is reported.
                 async toggleMarket(market) {
-                    await fetch(`/api/control/markets/${encodeURIComponent(market)}/toggle`, { method: 'POST' });
+                    if (!this._actionAllowedWhileStale()) return;
+                    try {
+                        const response = await fetch(`/api/control/markets/${encodeURIComponent(market)}/toggle`, { method: 'POST' });
+                        if (!response.ok) alert(`Could not toggle ${market}: ${await this._refusalDetail(response)}`);
+                    } catch (e) {
+                        alert(`Could not toggle ${market} — the server could not be reached (${e.message}).`);
+                    }
+                    this.loadDashboard();
+                },
+
+                // Switches one market between live (real Kraken orders) and paper execution, after confirmation.
+                async toggleMarketLive(market) {
+                    if (!this._actionAllowedWhileStale()) return;
+                    const goingLive = !this._liveMarkets.has(market);
+                    const question = goingLive
+                        ? `Turn LIVE trading on for ${market}?\n\nThe bot will send real orders with real money to Kraken for ${market}.`
+                        : `Turn live trading off for ${market}?\n\nOrders for ${market} will be simulated on paper again.`;
+                    if (!confirm(question)) return;
+                    try {
+                        const response = await fetch(`/api/control/markets/${encodeURIComponent(market)}/live-toggle`, { method: 'POST' });
+                        if (!response.ok) alert(`Could not change live trading for ${market}: ${await this._refusalDetail(response)}`);
+                    } catch (e) {
+                        alert(`Could not change live trading for ${market} — the server could not be reached (${e.message}).`);
+                    }
                     this.loadDashboard();
                 },
 
@@ -1797,23 +1971,36 @@
                         el.innerHTML = '<div style="color:var(--muted);font-size:13px;">No data</div>';
                         return;
                     }
+                    this._liveMarkets = new Set(markets.filter(m => m.live).map(m => m.symbol));
+                    // The per-market live switch only matters (and is only shown) in the live environment
+                    const showLive = this.environment === 'live';
                     el.innerHTML = markets.map(m => {
                         const disabled = !m.enabled;
                         const priceStyle = disabled ? 'color:var(--muted);text-decoration:line-through;' : 'font-weight:600;';
+                        // price_value is the raw number (null until priced); price is the server's text fallback
+                        const price = m.price_value != null ? fmtPrice(m.price_value) : esc(m.price);
+                        const liveBadge = m.live ? '<span class="pill pill-red market-live-badge">LIVE</span>' : '';
+                        const liveButton = showLive
+                            ? `<button class="toggle-btn ${m.live ? 'toggle-live' : 'toggle-off'}"
+                                data-toggle-live="${esc(m.symbol)}"
+                                title="${m.live ? 'Real orders are sent to Kraken — click to trade on paper' : 'Simulated on paper — click to send real orders'}"
+                                >${m.live ? 'Live' : 'Paper'}</button>`
+                            : '';
                         return `
                 <div class="row-sep flex items-center justify-between" style="padding:8px 0;">
                     <div class="flex items-center gap-2">
-                        <span style="font-size:13px;font-weight:600;${disabled ? 'color:var(--muted);' : ''}">${m.symbol}</span>
+                        <span style="font-size:13px;font-weight:600;${disabled ? 'color:var(--muted);' : ''}">${esc(m.symbol)}</span>
+                        ${showLive ? liveBadge : ''}
                     </div>
                     <div class="flex items-center gap-2">
-                        <span class="mono" style="font-size:13px;${priceStyle}">${this.currencySymbol}${m.price}</span>
+                        <span class="mono" style="font-size:13px;${priceStyle}">${this.currencySymbol}${price}</span>
+                        ${liveButton}
                         <button class="toggle-btn ${disabled ? 'toggle-off' : 'toggle-on'}"
-                                onclick="Alpine.store && false; window._toggleMarket('${m.symbol}')"
+                                data-toggle-market="${esc(m.symbol)}"
                                 >${disabled ? 'Off' : 'On'}</button>
                     </div>
                 </div>`;
                     }).join('');
-                    window._toggleMarket = (market) => this.toggleMarket(market);
                 },
 
                 renderSignals(signals) {
@@ -1856,13 +2043,13 @@
                         const riskCol = s.risk_approved ? 'var(--green)' : 'var(--red)';
                         const riskLbl = s.risk_approved ? '✓ Risk OK' : '✗ Risk blocked';
                         const clickable = s.trade_idea_id
-                            ? `class="sig-btn ${long ? 'signal-long' : 'signal-short'}" data-signal-id="${s.trade_idea_id}" title="Click to review signal" style="cursor:pointer;`
+                            ? `class="sig-btn ${long ? 'signal-long' : 'signal-short'}" data-signal-id="${esc(s.trade_idea_id)}" title="Click to review signal" style="cursor:pointer;`
                             : `class="${long ? 'signal-long' : 'signal-short'}" style="`;
                         return `
                 <div ${clickable}background:${bg};border-radius:0 6px 6px 0;padding:10px 12px;transition:filter .15s;" onmouseover="if(this.dataset.signalId)this.style.filter='brightness(1.15)'" onmouseout="this.style.filter=''">
                     <div class="flex items-center justify-between" style="margin-bottom:6px;">
-                        <span style="font-size:13px;font-weight:700;">${s.market}</span>
-                        <span style="font-size:11px;font-weight:700;color:${col};">${long ? '▲' : '▼'} ${s.direction.toUpperCase()}</span>
+                        <span style="font-size:13px;font-weight:700;">${esc(s.market)}</span>
+                        <span style="font-size:11px;font-weight:700;color:${col};">${long ? '▲' : '▼'} ${esc(s.direction.toUpperCase())}</span>
                     </div>
                     <div class="flex items-center gap-2" style="margin-bottom:6px;">
                         <div style="flex:1;height:4px;background:var(--subtle);border-radius:2px;">
@@ -1870,8 +2057,8 @@
                         </div>
                         <span style="font-size:11px;color:var(--muted);">${pct}%</span>
                     </div>
-                    <div style="font-size:11px;color:var(--muted);line-height:1.4;margin-bottom:4px;">${s.thesis}</div>
-                    <div style="font-size:10px;font-weight:600;color:${riskCol};">${riskLbl}${!s.risk_approved && s.risk_reason ? ': ' + s.risk_reason : ''}</div>
+                    <div style="font-size:11px;color:var(--muted);line-height:1.4;margin-bottom:4px;">${esc(s.thesis)}</div>
+                    <div style="font-size:10px;font-weight:600;color:${riskCol};">${riskLbl}${!s.risk_approved && s.risk_reason ? ': ' + esc(s.risk_reason) : ''}</div>
                 </div>`;
                     }).join('');
                 },
@@ -1948,7 +2135,7 @@
                         : '—';
                     tbody.innerHTML = positions.map(p => {
                         const pnl = parseFloat(p.unrealized_pnl);
-                        const cost = (parseFloat(p.size) * parseFloat(p.avg_price));
+                        const cost = parseFloat(p.size) * parseFloat(p.avg_price_value ?? p.avg_price);
                         const pnlCol = pnl >= 0 ? 'var(--green)' : 'var(--red)';
                         const long = p.direction === 'long';
                         const dirCol = long ? 'var(--green)' : 'var(--red)';
@@ -1956,43 +2143,54 @@
                         const fmt2 = v => parseFloat(v).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
                         const fmt6 = v => parseFloat(v).toFixed(6);
                         const openedRaw = this._positionOpenedAt(p);
-                        const openedDt = openedRaw ? new Date(openedRaw) : null;
+                        const openedDt = openedRaw ? parseUtc(openedRaw) : null;
                         const openedAge = openedDt && !Number.isNaN(openedDt.getTime()) ? fmtDuration(Date.now() - openedDt) : '--';
                         const strategyLabel = this._strategyLabel(this._positionStrategy(p));
                         const sourceLabel = (this._positionSource(p) || 'system').replace(/_/g, ' ');
-                        const statusLabel = this._positionStatus(p);
-                        const statusBadge = `<span style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;color:var(--green);background:rgba(63,185,80,.10);border:1px solid rgba(63,185,80,.25);">${statusLabel}</span>`;
+                        // Live positions are real Kraken holdings; while their buy or sell
+                        // order is pending ("entry_pending" / "exit_pending") they cannot be closed.
+                        const isLive = p.environment === 'live';
+                        const closable = !isLive || p.status === 'open';
+                        const statusLabel = this._positionStatus(p).replace(/_/g, ' ');
+                        const statusColour = closable ? 'var(--green)' : 'var(--gold)';
+                        const statusBadge = `<span style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;color:${statusColour};background:rgba(139,148,158,.10);border:1px solid rgba(139,148,158,.25);">${esc(statusLabel)}</span>`;
+                        const liveBadge = isLive ? ' <span class="pill pill-blue" title="Real position on Kraken">LIVE</span>' : '';
                         const posId = p.position_id
-                            ? `<span style="font-family:monospace;font-size:10px;color:var(--muted);">#${p.position_id}</span>`
+                            ? `<span style="font-family:monospace;font-size:10px;color:var(--muted);">#${esc(p.position_id)}</span>`
                             : '—';
                         const signalBtn = p.trade_idea_id
-                            ? `<button class="sig-btn" data-signal-id="${p.trade_idea_id}"
+                            ? `<button class="sig-btn" data-signal-id="${esc(p.trade_idea_id)}"
                                        style="font-size:10px;padding:2px 8px;border-radius:4px;background:rgba(139,148,158,.12);border:1px solid rgba(139,148,158,.25);color:var(--muted);cursor:pointer;white-space:nowrap;"
                                        title="View the signal that opened this position">📊 Signal</button>`
                             : `<span style="font-size:11px;color:var(--muted);">—</span>`;
                         return `<tr style="border-bottom:1px solid var(--subtle);">
                     <td style="padding:7px 10px;color:var(--muted);white-space:nowrap;font-size:11px;">${fmtTime(openedDt)}</td>
                     <td style="padding:7px 10px;color:var(--muted);white-space:nowrap;font-size:11px;">${openedAge}</td>
-                    <td style="padding:7px 10px;font-weight:700;">${p.market}</td>
+                    <td style="padding:7px 10px;font-weight:700;white-space:nowrap;">${esc(p.market)}${liveBadge}</td>
                     <td style="padding:7px 10px;font-weight:700;color:${dirCol};font-size:11px;">${dirLbl}</td>
                     <td style="padding:7px 10px;text-align:right;font-family:monospace;">${fmt6(p.size)}</td>
-                    <td style="padding:7px 10px;text-align:right;font-family:monospace;">${this.currencySymbol}${fmt2(p.avg_price)}</td>
+                    <td style="padding:7px 10px;text-align:right;font-family:monospace;">${this.currencySymbol}${fmtPrice(p.avg_price_value ?? p.avg_price)}</td>
                     <td style="padding:7px 10px;text-align:right;font-family:monospace;">${this.currencySymbol}${fmt2(cost)}</td>
                     <td style="padding:7px 10px;text-align:right;font-family:monospace;font-weight:700;color:${pnlCol};">${pnl >= 0 ? '+' : ''}${this.currencySymbol}${fmt2(Math.abs(pnl))}</td>
-                    <td style="padding:7px 10px;color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap;">${strategyLabel}</td>
-                    <td style="padding:7px 10px;color:var(--muted);font-size:11px;font-weight:600;">${sourceLabel}</td>
+                    <td style="padding:7px 10px;color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap;">${esc(strategyLabel)}</td>
+                    <td style="padding:7px 10px;color:var(--muted);font-size:11px;font-weight:600;">${esc(sourceLabel)}</td>
                     <td style="padding:7px 10px;">${statusBadge}</td>
                     <td style="padding:7px 10px;">${posId}</td>
                     <td style="padding:7px 10px;">${signalBtn}</td>
                     <td style="padding:7px 10px;text-align:right;">
-                        <button onclick="window._closePos('${p.position_id_full}')"
-                                style="font-size:10px;font-weight:600;padding:3px 10px;border-radius:4px;cursor:pointer;color:var(--red);background:rgba(248,81,73,.1);border:1px solid rgba(248,81,73,.3);white-space:nowrap;">
+                        <button data-close-position="${esc(p.position_id_full)}" ${closable ? '' : 'disabled'}
+                                title="${closable ? 'Close this position' : 'A Kraken order for this position is still pending'}"
+                                style="font-size:10px;font-weight:600;padding:3px 10px;border-radius:4px;cursor:${closable ? 'pointer' : 'not-allowed'};opacity:${closable ? '1' : '.4'};color:var(--red);background:rgba(248,81,73,.1);border:1px solid rgba(248,81,73,.3);white-space:nowrap;">
                             ✕ Close
                         </button>
+                        ${isLive ? `<button data-forget-position="${esc(p.position_id_full)}"
+                                title="Remove this position from the bot without sending an order (use when it was already sold on Kraken)"
+                                style="font-size:10px;font-weight:600;padding:3px 10px;margin-left:4px;border-radius:4px;cursor:pointer;color:var(--muted);background:rgba(139,148,158,.10);border:1px solid rgba(139,148,158,.25);white-space:nowrap;">
+                            Forget
+                        </button>` : ''}
                     </td>
                 </tr>`;
                     }).join('');
-                    window._closePos = (id) => this.closePosition(id);
                 },
 
                 renderApprovals(approvals) {
@@ -2006,36 +2204,51 @@
                 <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:14px;">
                     <div class="flex items-center justify-between" style="margin-bottom:8px;">
                         <div class="flex items-center gap-2">
-                            <span style="font-size:14px;font-weight:700;">${a.market}</span>
-                            <span class="pill ${long ? 'pill-green' : 'pill-red'}">${long ? '▲' : '▼'} ${a.direction.toUpperCase()}</span>
+                            <span style="font-size:14px;font-weight:700;">${esc(a.market)}</span>
+                            <span class="pill ${long ? 'pill-green' : 'pill-red'}">${long ? '▲' : '▼'} ${esc(a.direction.toUpperCase())}</span>
                         </div>
                         <span style="font-size:12px;color:var(--muted);">${pct}% confidence</span>
                     </div>
-                    <div style="font-size:12px;color:var(--muted);margin-bottom:12px;">${a.thesis}</div>
+                    <div style="font-size:12px;color:var(--muted);margin-bottom:12px;">${esc(a.thesis)}</div>
                     <div style="font-size:11px;color:var(--muted);margin-bottom:10px;">
-                        <b style="color:var(--text);">Entry:</b> ${a.entry_plan} &nbsp;·&nbsp;
-                        <b style="color:var(--text);">Exit:</b> ${a.exit_plan}
+                        <b style="color:var(--text);">Entry:</b> ${esc(a.entry_plan)} &nbsp;·&nbsp;
+                        <b style="color:var(--text);">Exit:</b> ${esc(a.exit_plan)}
                     </div>
                     <div class="flex gap-2">
-                        <button onclick="window._approveTrade('${a.id}')"
+                        <button data-approval-id="${esc(a.id)}" data-approval-action="approve"
                             style="padding:6px 14px;font-size:12px;font-weight:600;border-radius:6px;cursor:pointer;color:var(--green);background:rgba(63,185,80,.12);border:1px solid rgba(63,185,80,.3);">
                             ✓ Approve
                         </button>
-                        <button onclick="window._rejectTrade('${a.id}')"
+                        <button data-approval-id="${esc(a.id)}" data-approval-action="reject"
                             style="padding:6px 14px;font-size:12px;font-weight:600;border-radius:6px;cursor:pointer;color:var(--red);background:rgba(248,81,73,.12);border:1px solid rgba(248,81,73,.3);">
                             ✗ Reject
                         </button>
                     </div>
                 </div>`;
                     }).join('');
-                    window._approveTrade = async (id) => {
-                        await fetch(`/api/approvals/${id}/approve`, { method: 'POST' });
-                        this.loadDashboard();
-                    };
-                    window._rejectTrade = async (id) => {
-                        await fetch(`/api/approvals/${id}/reject`, { method: 'POST' });
-                        this.loadDashboard();
-                    };
+                },
+
+                // Approves or rejects a pending trade and tells the operator when no real order was executed.
+                async decideApproval(id, action) {
+                    if (!this._actionAllowedWhileStale()) return;
+                    try {
+                        const r = await fetch(`/api/approvals/${encodeURIComponent(id)}/${action}`, { method: 'POST' });
+                        const d = await r.json().catch(() => ({}));
+                        if (action === 'approve' && r.status === 503) {
+                            // No live price (or the emergency stop): nothing was sent and the approval stays queued.
+                            alert(`Trade NOT executed - the approval is still pending: ${d.detail || 'try again shortly'}`);
+                        } else if (action === 'approve' && r.status === 409) {
+                            // The risk checks refused it at approval time (the detail says whether it was removed).
+                            alert(`Trade NOT executed: ${d.detail || 'refused by the risk check'}`);
+                        } else if (!r.ok) {
+                            alert(`Could not ${action} the trade: ${d.detail || `HTTP ${r.status}`}`);
+                        } else if (action === 'approve' && d.order_status === 'rejected') {
+                            alert(`Trade approved but the ${d.environment || 'paper'} order was REJECTED (e.g. insufficient funds).`);
+                        }
+                    } catch (e) {
+                        alert(`Could not ${action} the trade — the server could not be reached (${e.message}).`);
+                    }
+                    this.loadDashboard();
                 },
 
                 renderChart(history) {
@@ -2118,14 +2331,14 @@
                 },
 
                 _formatEquityTick(timestamp) {
-                    const date = new Date(timestamp);
+                    const date = parseUtc(timestamp);
                     if (Number.isNaN(date.getTime())) return '';
                     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                 },
 
                 _formatEquityTimestamp(index) {
                     const timestamp = this._equityTimestamps[index];
-                    const date = new Date(timestamp);
+                    const date = parseUtc(timestamp);
                     if (Number.isNaN(date.getTime())) return '';
                     return date.toLocaleString([], {
                         day: '2-digit',
@@ -2217,19 +2430,18 @@
                     const chips = sources.map(s => {
                         const { col, bg } = this._sourceBadge(s);
                         const active = this.newsSourceFilter.has(s);
-                        const esc = s.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
                         const style = active
                             ? `color:${col};background:${bg};border-color:${col};`
                             : `color:var(--muted);background:transparent;border-color:var(--border);opacity:.55;`;
                         return `<button class="news-filter-chip" style="${style}"
-                    onclick="document.dispatchEvent(new CustomEvent('news-filter-toggle',{detail:'${esc}'}))"
-                    >${s}</button>`;
+                    data-filter-event="news-filter-toggle" data-filter-detail="${esc(s)}"
+                    >${esc(s)}</button>`;
                     }).join('');
 
                     el.innerHTML = `<div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:10px 0 8px;border-bottom:1px solid var(--border);margin-bottom:10px;">
                 <span style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-right:2px;">Sources</span>
                 <button class="news-filter-chip" style="${allStyle}"
-                    onclick="document.dispatchEvent(new CustomEvent('news-filter-clear'))">All</button>
+                    data-filter-event="news-filter-clear">All</button>
                 ${chips}
             </div>`;
                 },
@@ -2246,26 +2458,139 @@
                     }
                     el.innerHTML = items.map(n => {
                         const { col: srcCol, bg: srcBg } = this._sourceBadge(n.source);
-                        const ago = this.timeAgo(new Date(n.published_at));
+                        const ago = this.timeAgo(parseUtc(n.published_at));
                         return `
-                <a href="${n.url || '#'}" target="_blank" rel="noopener noreferrer"
+                <a href="${esc(safeUrl(n.url))}" target="_blank" rel="noopener noreferrer"
                     style="display:block;text-decoration:none;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;transition:border-color .15s;"
                     onmouseover="this.style.borderColor='var(--muted)'" onmouseout="this.style.borderColor='var(--border)'">
                     <div class="flex items-center gap-2" style="margin-bottom:8px;">
-                        <span style="font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;color:${srcCol};background:${srcBg};">${n.source}</span>
+                        <span style="font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;color:${srcCol};background:${srcBg};">${esc(n.source)}</span>
                         <span style="font-size:11px;color:var(--muted);">${ago}</span>
                     </div>
-                    <p style="margin:0;font-size:12px;line-height:1.5;color:var(--text);display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;">${n.title}</p>
+                    <p style="margin:0;font-size:12px;line-height:1.5;color:var(--text);display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;">${esc(n.title)}</p>
                 </a>`;
                     }).join('');
                 },
 
-                async loadCharts(markets) {
-                    await Promise.all(markets.map(m => this._fetchAndRender(m)));
+                // ── Candle charts ──────────────────────────────────────────────────────
+                // One card per market in the dashboard's market list. A card's charts are
+                // created the first time it scrolls into view, only visible cards are
+                // refreshed, and cards of markets that leave the list are removed.
+
+                // Adds a card for each new market and removes the cards of markets that dropped out.
+                _syncChartCards(symbols) {
+                    if (!chartObserver) {
+                        chartObserver = new IntersectionObserver(entries => {
+                            for (const seen of entries) {
+                                const market = seen.target.dataset.chartMarket;
+                                const entry = candleCharts.get(market);
+                                if (!entry) continue;
+                                entry.visible = seen.isIntersecting;
+                                // First time on screen: fetch the candles and build the charts
+                                if (entry.visible && !entry.chart5) this._loadChart(market);
+                            }
+                        }, { rootMargin: '200px 0px' });
+                    }
+                    for (const market of [...candleCharts.keys()]) {
+                        if (!symbols.includes(market)) this._removeChartCard(market);
+                    }
+                    for (const market of symbols) {
+                        if (!candleCharts.has(market)) this._createChartCard(market);
+                    }
+                    this._chartMarkets = symbols;
                 },
 
+                // Builds an empty card for market; its charts are created once it is visible.
+                _createChartCard(market) {
+                    const card = document.createElement('div');
+                    card.className = 'card chart-card';
+                    card.dataset.chartMarket = market;
+                    card.innerHTML = `
+                    <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px;">
+                        <span style="font-size:14px;font-weight:700;">${esc(market)}</span>
+                        <span class="mono chart-price" style="font-size:13px;font-weight:600;color:var(--muted);">Loading…</span>
+                    </div>
+                    <div class="chart-pair-grid">
+                        <div>
+                            <div style="font-size:10px;color:var(--muted);margin-bottom:6px;text-align:center;letter-spacing:.05em;">5 MIN</div>
+                            <div class="chart-pane chart-pane-5"></div>
+                        </div>
+                        <div>
+                            <div style="font-size:10px;color:var(--muted);margin-bottom:6px;text-align:center;letter-spacing:.05em;">15 MIN</div>
+                            <div class="chart-pane chart-pane-15"></div>
+                        </div>
+                    </div>`;
+                    document.getElementById('candle-grid').appendChild(card);
+                    candleCharts.set(market, {
+                        card, visible: false, resizers: [],
+                        chart5: null, series5: null, chart15: null, series15: null,
+                    });
+                    chartObserver.observe(card);
+                },
+
+                // Destroys a market's charts and removes its card.
+                _removeChartCard(market) {
+                    const entry = candleCharts.get(market);
+                    if (!entry) return;
+                    chartObserver?.unobserve(entry.card);
+                    entry.resizers.forEach(observer => observer.disconnect());
+                    if (entry.chart5) entry.chart5.remove();
+                    if (entry.chart15) entry.chart15.remove();
+                    entry.card.remove();
+                    candleCharts.delete(market);
+                    chartRequests.delete(market);
+                },
+
+                // Creates the two Lightweight Charts instances inside a card.
+                _createCandleCharts(entry) {
+                    const makeChart = el => {
+                        const chart = LightweightCharts.createChart(el, {
+                            width: el.clientWidth,
+                            height: 210,
+                            layout: { background: { color: '#161b22' }, textColor: '#8b949e' },
+                            grid: { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
+                            crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+                            rightPriceScale: { borderColor: '#30363d' },
+                            timeScale: { borderColor: '#30363d', timeVisible: true, secondsVisible: false },
+                        });
+                        const series = chart.addCandlestickSeries({
+                            upColor: '#3fb950', downColor: '#f85149',
+                            borderUpColor: '#3fb950', borderDownColor: '#f85149',
+                            wickUpColor: '#3fb950', wickDownColor: '#f85149',
+                        });
+                        // Resize the chart when its container width changes (window resize, panel open)
+                        const resizer = new ResizeObserver(() => chart.applyOptions({ width: el.clientWidth }));
+                        resizer.observe(el);
+                        entry.resizers.push(resizer);
+                        return { chart, series };
+                    };
+                    ({ chart: entry.chart5, series: entry.series5 } = makeChart(entry.card.querySelector('.chart-pane-5')));
+                    ({ chart: entry.chart15, series: entry.series15 } = makeChart(entry.card.querySelector('.chart-pane-15')));
+                },
+
+                // Refreshes the visible cards one after another, a short gap apart, instead of in one burst.
                 async refreshCharts() {
-                    await Promise.all(this._chartMarkets.map(m => this._fetchAndRender(m)));
+                    if (this._chartRefreshRunning) return;
+                    this._chartRefreshRunning = true;
+                    try {
+                        const visible = this._chartMarkets.filter(market => candleCharts.get(market)?.visible);
+                        for (const market of visible) {
+                            this._loadChart(market);
+                            await new Promise(resolve => setTimeout(resolve, CHART_REFRESH_GAP_MS));
+                        }
+                    } finally {
+                        this._chartRefreshRunning = false;
+                    }
+                },
+
+                // Fetches and renders one market, sharing the request already in flight for it (if any).
+                _loadChart(market) {
+                    if (chartRequests.has(market)) return chartRequests.get(market);
+                    const request = this._fetchAndRender(market).finally(() => {
+                        if (chartRequests.get(market) === request) chartRequests.delete(market);
+                    });
+                    chartRequests.set(market, request);
+                    return request;
                 },
 
                 async _fetchAndRender(market) {
@@ -2276,98 +2601,42 @@
                             fetch(`/api/ohlc/${enc}?interval=5`),
                             fetch(`/api/ohlc/${enc}?interval=15`),
                         ]);
+                        if (!r5.ok || !r15.ok) throw new Error(`OHLC HTTP ${r5.status} / ${r15.status}`);
                         const [d5, d15] = await Promise.all([r5.json(), r15.json()]);
-                        const c5 = d5.candles || [];
-                        const c15 = d15.candles || [];
+                        const entry = candleCharts.get(market);
+                        if (!entry) return;   // the market left the list while the request was running
+                        const c5 = toCandleSeries(d5.candles || []);
+                        const c15 = toCandleSeries(d15.candles || []);
                         if (!c5.length && !c15.length) return;
 
-                        // Helper: convert raw candle array to Lightweight Charts format
-                        const toSeries = c => c.map(x => ({ time: x.t, open: x.o, high: x.h, low: x.l, close: x.c }));
-
-                        // Derive price/change from 5-min (fall back to 15-min)
+                        // Price and change from the 5-min candles (fall back to 15-min)
                         const ref = c5.length ? c5 : c15;
                         const last = ref[ref.length - 1];
                         const prev = ref[ref.length - 2];
-                        const chg = prev ? ((last.c - prev.c) / prev.c * 100) : 0;
+                        const chg = prev ? ((last.close - prev.close) / prev.close * 100) : 0;
                         const chgColor = chg >= 0 ? 'var(--green)' : 'var(--red)';
-                        const priceFmt = v => v.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+                        if (!entry.chart5) this._createCandleCharts(entry);
+
+                        // The price scale's precision follows the price, so sub-cent candles are not flattened
+                        const precision = priceDecimals(last.close);
+                        const minMove = 10 ** -precision;
+                        for (const series of [entry.series5, entry.series15]) {
+                            series.applyOptions({ priceFormat: { type: 'price', precision, minMove } });
+                        }
 
                         // Pin a chart's visible range to the last N hours from now
                         const pinToWindow = (chart, hours) => {
                             const now = Math.floor(Date.now() / 1000);
                             chart.timeScale().setVisibleRange({ from: now - hours * 3600, to: now });
                         };
+                        if (c5.length) { entry.series5.setData(c5); pinToWindow(entry.chart5, 6); }
+                        if (c15.length) { entry.series15.setData(c15); pinToWindow(entry.chart15, 24); }
 
-                        if (this._candleCharts[market]) {
-                            // Refresh data on existing charts and re-pin the visible window
-                            const { chart5, series5, chart15, series15 } = this._candleCharts[market];
-                            if (c5.length) { series5.setData(toSeries(c5)); pinToWindow(chart5, 6); }
-                            if (c15.length) { series15.setData(toSeries(c15)); pinToWindow(chart15, 24); }
-                            const priceEl = document.getElementById(`chart-price-${market}`);
-                            if (priceEl) priceEl.innerHTML =
-                                `${this.currencySymbol}${priceFmt(last.c)} <span style="font-size:11px;color:${chgColor}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span>`;
-                            return;
-                        }
-
-                        // ── First render: build the market card ───────────────────────────
-                        const grid = document.getElementById('candle-grid');
-                        const safeId = market.replace(/[^a-z0-9]/gi, '_');
-                        const id5 = `candle5-${safeId}`;
-                        const id15 = `candle15-${safeId}`;
-
-                        const card = document.createElement('div');
-                        card.className = 'card chart-card';
-                        card.innerHTML = `
-                    <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px;">
-                        <span style="font-size:14px;font-weight:700;">${market}</span>
-                        <span id="chart-price-${market}" class="mono" style="font-size:13px;font-weight:600;">
-                            ${this.currencySymbol}${priceFmt(last.c)}
-                            <span style="font-size:11px;color:${chgColor}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span>
-                        </span>
-                    </div>
-                    <div class="chart-pair-grid">
-                        <div>
-                            <div style="font-size:10px;color:var(--muted);margin-bottom:6px;text-align:center;letter-spacing:.05em;">5 MIN</div>
-                            <div id="${id5}" class="chart-pane"></div>
-                        </div>
-                        <div>
-                            <div style="font-size:10px;color:var(--muted);margin-bottom:6px;text-align:center;letter-spacing:.05em;">15 MIN</div>
-                            <div id="${id15}" class="chart-pane"></div>
-                        </div>
-                    </div>`;
-                        grid.appendChild(card);
-
-                        // Shared chart factory — creates a Lightweight Charts instance in the given container
-                        const makeChart = (elId) => {
-                            const el = document.getElementById(elId);
-                            const chart = LightweightCharts.createChart(el, {
-                                width: el.clientWidth,
-                                height: 210,
-                                layout: { background: { color: '#161b22' }, textColor: '#8b949e' },
-                                grid: { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
-                                crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-                                rightPriceScale: { borderColor: '#30363d' },
-                                timeScale: { borderColor: '#30363d', timeVisible: true, secondsVisible: false },
-                            });
-                            const series = chart.addCandlestickSeries({
-                                upColor: '#3fb950', downColor: '#f85149',
-                                borderUpColor: '#3fb950', borderDownColor: '#f85149',
-                                wickUpColor: '#3fb950', wickDownColor: '#f85149',
-                            });
-                            // Resize chart when the container width changes (e.g. window resize, panel open)
-                            new ResizeObserver(() => chart.applyOptions({ width: el.clientWidth })).observe(el);
-                            return { chart, series };
-                        };
-
-                        const { chart: chart5, series: series5 } = makeChart(id5);
-                        const { chart: chart15, series: series15 } = makeChart(id15);
-
-                        if (c5.length) { series5.setData(toSeries(c5)); pinToWindow(chart5, 6); }
-                        if (c15.length) { series15.setData(toSeries(c15)); pinToWindow(chart15, 24); }
-
-                        this._candleCharts[market] = { chart5, series5, chart15, series15 };
-                        if (!this._chartMarkets.includes(market)) this._chartMarkets.push(market);
-
+                        const priceEl = entry.card.querySelector('.chart-price');
+                        priceEl.style.color = '';
+                        priceEl.innerHTML = `${esc(this.currencySymbol)}${fmtPrice(last.close)}
+                            <span style="font-size:11px;color:${chgColor}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span>`;
                     } catch (e) { console.error('Chart error', market, e); }
                 },
 
@@ -2407,13 +2676,12 @@
 
                     const mktChips = markets.map(m => {
                         const active = mktFilter.has(m);
-                        const esc = m.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
                         const style = active
                             ? `color:var(--blue);background:rgba(88,166,255,.13);border-color:var(--blue);`
                             : `color:var(--muted);background:transparent;border-color:var(--border);opacity:.55;`;
                         return `<button class="news-filter-chip" style="${style}"
-                    onclick="document.dispatchEvent(new CustomEvent('${panel}-market-toggle',{detail:'${esc}'}))">
-                    ${m}</button>`;
+                    data-filter-event="${panel}-market-toggle" data-filter-detail="${esc(m)}">
+                    ${esc(m)}</button>`;
                     }).join('');
 
                     const dirDefs = [
@@ -2427,14 +2695,14 @@
                             ? `color:${d.col};background:${d.bg};border-color:${d.bdr};`
                             : `color:var(--muted);background:transparent;border-color:var(--border);opacity:.55;`;
                         return `<button class="news-filter-chip" style="${style}"
-                    onclick="document.dispatchEvent(new CustomEvent('${panel}-dir-set',{detail:'${d.val}'}))">
+                    data-filter-event="${panel}-dir-set" data-filter-detail="${d.val}">
                     ${d.label}</button>`;
                     }).join('');
 
                     el.innerHTML = `<div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:10px 0 8px;border-bottom:1px solid var(--border);margin-bottom:6px;">
                 <span style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-right:2px;">Market</span>
                 <button class="news-filter-chip" style="${allMktStyle}"
-                    onclick="document.dispatchEvent(new CustomEvent('${panel}-market-clear'))">All</button>
+                    data-filter-event="${panel}-market-clear">All</button>
                 ${mktChips}
                 <span style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-left:8px;margin-right:2px;">Direction</span>
                 ${dirBtns}
@@ -2445,7 +2713,7 @@
                     const tbody = document.getElementById('ledger-body');
                     if (!tbody) return;
                     if (!this._allLedgerTrades.length) {
-                        tbody.innerHTML = '<tr><td colspan="14" style="padding:20px 10px;color:var(--muted);text-align:center;">No trades recorded yet</td></tr>';
+                        tbody.innerHTML = '<tr><td colspan="13" style="padding:20px 10px;color:var(--muted);text-align:center;">No trades recorded yet</td></tr>';
                         return;
                     }
                     let trades = this._allLedgerTrades;
@@ -2482,7 +2750,7 @@
                     const tbody = document.getElementById('ledger-body');
                     if (!tbody) return;
                     if (!trades.length) {
-                        tbody.innerHTML = '<tr><td colspan="14" style="padding:20px 10px;color:var(--muted);text-align:center;">No trades match the current filter</td></tr>';
+                        tbody.innerHTML = '<tr><td colspan="13" style="padding:20px 10px;color:var(--muted);text-align:center;">No trades match the current filter</td></tr>';
                         return;
                     }
                     const fmt2 = v => parseFloat(v).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -2510,18 +2778,18 @@
                                     : 'var(--muted)';
                         const statusCell = filled
                             ? `<span style="color:var(--green);font-weight:600;">filled</span>`
-                            : `<span style="color:var(--red);font-weight:600;">${t.status}</span>`;
-                        const ts = t.timestamp ? new Date(t.timestamp) : null;
+                            : `<span style="color:var(--red);font-weight:600;">${esc(t.status)}</span>`;
+                        const ts = t.timestamp ? parseUtc(t.timestamp) : null;
                         const timeStr = ts
                             ? ts.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) + ' ' +
                             ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
                             : '—';
                         const posId = t.position_id
-                            ? `<span style="font-family:monospace;font-size:10px;color:var(--muted);">#${t.position_id}</span>`
+                            ? `<span style="font-family:monospace;font-size:10px;color:var(--muted);">#${esc(t.position_id)}</span>`
                             : '—';
-                        const strategyLabel = this._strategyLabel(t.strategy);
+                        const strategyLabel = esc(this._strategyLabel(t.strategy));
                         const sigBtn = t.trade_idea_id
-                            ? `<button class="sig-btn" data-signal-id="${t.trade_idea_id}"
+                            ? `<button class="sig-btn" data-signal-id="${esc(t.trade_idea_id)}"
                                style="font-size:10px;padding:2px 8px;border-radius:4px;background:rgba(139,148,158,.12);border:1px solid rgba(139,148,158,.25);color:var(--muted);cursor:pointer;white-space:nowrap;"
                                title="View the signal that triggered this trade">📊 Signal</button>`
                             : `<span style="font-size:11px;color:var(--muted);">—</span>`;
@@ -2543,16 +2811,15 @@
                         }
                         return `<tr style="border-bottom:1px solid var(--subtle);${rowBg}">
                     <td style="padding:7px 10px;color:var(--muted);white-space:nowrap;font-size:11px;">${timeStr}</td>
-                    <td style="padding:7px 10px;font-weight:700;">${t.market}</td>
-                    <td style="padding:7px 10px;color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap;">${strategyLabel}</td>
+                    <td style="padding:7px 10px;font-weight:700;">${esc(t.market)}</td>
                     <td style="padding:7px 10px;font-weight:600;color:${actionCol};">${actionLabel}${posBadge}</td>
                     <td style="padding:7px 10px;font-weight:700;color:${dirCol};font-size:11px;">${dirLabel}</td>
                     <td style="padding:7px 10px;text-align:right;font-family:monospace;">${fmt6(t.size)}</td>
-                    <td style="padding:7px 10px;text-align:right;font-family:monospace;">${this.currencySymbol}${fmt2(t.price)}</td>
+                    <td style="padding:7px 10px;text-align:right;font-family:monospace;">${this.currencySymbol}${fmtPrice(t.price)}</td>
                     <td style="padding:7px 10px;text-align:right;font-family:monospace;">${this.currencySymbol}${fmt2(t.value)}</td>
                     ${pnlCell}
                     <td style="padding:7px 10px;color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap;">${strategyLabel}</td>
-                    <td style="padding:7px 10px;font-weight:600;color:${srcCol};">${t.source}</td>
+                    <td style="padding:7px 10px;font-weight:600;color:${srcCol};">${esc(t.source)}</td>
                     <td style="padding:7px 10px;">${statusCell}</td>
                     <td style="padding:7px 10px;">${posId}</td>
                     <td style="padding:7px 10px;">${sigBtn}</td>
@@ -2604,7 +2871,7 @@
                             const pnl = parseFloat(value || 0);
                             const col = pnl >= 0 ? 'var(--green)' : 'var(--red)';
                             return `<tr style="border-bottom:1px solid var(--border);">
-                        <td style="padding:7px 6px;">${label}</td>
+                        <td style="padding:7px 6px;">${esc(label)}</td>
                         <td style="padding:7px 6px;text-align:right;color:${col};font-family:monospace;">${pnl >= 0 ? '+' : ''}${this.currencySymbol}${fmt2(Math.abs(pnl))}</td>
                     </tr>`;
                         }).join('');
@@ -2651,10 +2918,10 @@
                         const pnlCol = pnl >= 0 ? 'var(--green)' : 'var(--red)';
                         const dirCol = t.direction === 'long' ? 'var(--green)' : 'var(--red)';
                         const dirLbl = t.direction === 'long' ? '▲ Long' : '▼ Short';
-                        const strategyLabel = this._strategyLabel(t.strategy);
+                        const strategyLabel = esc(this._strategyLabel(t.strategy));
                         // Duration: time between entry and exit
-                        const exitDt = t.exit_at ? new Date(t.exit_at) : null;
-                        const entryDt = t.entry_at ? new Date(t.entry_at) : null;
+                        const exitDt = t.exit_at ? parseUtc(t.exit_at) : null;
+                        const entryDt = t.entry_at ? parseUtc(t.entry_at) : null;
                         const durStr = (exitDt && entryDt) ? fmtDuration(exitDt - entryDt) : '—';
                         // Size × entry price = position value at open
                         const posValue = parseFloat(t.size) * parseFloat(t.entry_price);
@@ -2663,22 +2930,22 @@
                             stop_loss: 'Stop Loss', auto: 'Auto', manual_approve: 'Manual',
                             operator_reset: 'Reset', manual_reject: 'Rejected'
                         };
-                        const srcLabel = srcMap[t.exit_reason] || t.exit_reason.replace(/_/g, ' ');
+                        const srcLabel = srcMap[t.exit_reason] || (t.exit_reason || '').replace(/_/g, ' ') || '—';
                         const srcCol = t.exit_reason === 'stop_loss' ? 'var(--orange)'
                             : t.exit_reason === 'auto' ? 'var(--green)'
                                 : t.exit_reason === 'operator_reset' ? 'var(--red)'
                                     : 'var(--blue)';
                         const statusBadge = `<span style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;color:var(--muted);background:rgba(139,148,158,.12);border:1px solid rgba(139,148,158,.25);">Closed</span>`;
                         const posId = t.position_id
-                            ? `<span style="font-family:monospace;font-size:10px;color:var(--muted);">#${t.position_id}</span>`
+                            ? `<span style="font-family:monospace;font-size:10px;color:var(--muted);">#${esc(t.position_id)}</span>`
                             : '—';
                         const openBtn = t.trade_idea_id
-                            ? `<button class="sig-btn" data-signal-id="${t.trade_idea_id}"
+                            ? `<button class="sig-btn" data-signal-id="${esc(t.trade_idea_id)}"
                                style="font-size:10px;padding:2px 8px;border-radius:4px;background:rgba(139,148,158,.12);border:1px solid rgba(139,148,158,.25);color:var(--muted);cursor:pointer;white-space:nowrap;"
                                title="View the signal that opened this position">📊 Open</button>`
                             : `<span style="font-size:11px;color:var(--muted);">—</span>`;
                         const closeBtn = t.closing_trade_idea_id
-                            ? `<button class="sig-btn" data-signal-id="${t.closing_trade_idea_id}"
+                            ? `<button class="sig-btn" data-signal-id="${esc(t.closing_trade_idea_id)}"
                                style="font-size:10px;padding:2px 8px;border-radius:4px;background:rgba(99,179,237,.10);border:1px solid rgba(99,179,237,.25);color:var(--blue);cursor:pointer;white-space:nowrap;"
                                title="View the signal that closed this position">📊 Close</button>`
                             : `<span style="font-size:11px;color:var(--muted);" title="Closed by stop-loss or manual action — no signal">—</span>`;
@@ -2686,17 +2953,17 @@
                     <td style="padding:7px 10px;color:var(--muted);white-space:nowrap;font-size:11px;">${fmtTime(exitDt)}</td>
                     <td style="padding:7px 10px;color:var(--muted);white-space:nowrap;font-size:11px;">${fmtTime(entryDt)}</td>
                     <td style="padding:7px 10px;color:var(--muted);font-size:11px;white-space:nowrap;">${durStr}</td>
-                    <td style="padding:7px 10px;font-weight:700;">${t.market}</td>
+                    <td style="padding:7px 10px;font-weight:700;">${esc(t.market)}</td>
                     <td style="padding:7px 10px;font-weight:700;color:${dirCol};font-size:11px;">${dirLbl}</td>
                     <td style="padding:7px 10px;text-align:right;font-family:monospace;">${fmt6(t.size)}</td>
-                    <td style="padding:7px 10px;text-align:right;font-family:monospace;">${this.currencySymbol}${fmt2(t.entry_price)}</td>
+                    <td style="padding:7px 10px;text-align:right;font-family:monospace;">${this.currencySymbol}${fmtPrice(t.entry_price)}</td>
                     <td style="padding:7px 10px;text-align:right;font-family:monospace;">${this.currencySymbol}${fmt2(posValue)}</td>
                     <td style="padding:7px 10px;text-align:right;font-family:monospace;font-weight:700;color:${pnlCol};">
                         ${pnl >= 0 ? '+' : ''}${this.currencySymbol}${fmt2(Math.abs(pnl))}
                         <span style="font-size:10px;font-weight:400;margin-left:3px;">(${pnl >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%)</span>
                     </td>
                     <td style="padding:7px 10px;color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap;">${strategyLabel}</td>
-                    <td style="padding:7px 10px;font-size:11px;font-weight:600;color:${srcCol};">${srcLabel}</td>
+                    <td style="padding:7px 10px;font-size:11px;font-weight:600;color:${srcCol};">${esc(srcLabel)}</td>
                     <td style="padding:7px 10px;">${statusBadge}</td>
                     <td style="padding:7px 10px;">${posId}</td>
                     <td style="padding:7px 10px;">${openBtn}</td>
@@ -2930,6 +3197,7 @@
 
                 async closePosition(positionIdFull) {
                     if (!positionIdFull) return;
+                    if (!this._actionAllowedWhileStale()) return;
                     if (!confirm('Close this position at the current market price?')) return;
                     try {
                         const r = await fetch(`/api/positions/${positionIdFull}/close`, { method: 'POST' });
@@ -2939,21 +3207,52 @@
                             return;
                         }
                         const d = await r.json();
-                        alert(`Position closed at ${this.currencySymbol}${parseFloat(d.fill_price).toLocaleString('en-GB', { minimumFractionDigits: 2 })}. Cash now ${this.currencySymbol}${parseFloat(d.cash).toLocaleString('en-GB', { minimumFractionDigits: 2 })}.`);
+                        if (d.status === 'closing') {
+                            // A live position: a real market sell was sent to Kraken; its fill and P&L arrive later.
+                            alert(`The sell order was sent to Kraken (reference price ${this.currencySymbol}${fmtPrice(d.fill_price)}). The P&L will appear once Kraken confirms the fill.`);
+                        } else {
+                            alert(`Position closed at ${this.currencySymbol}${fmtPrice(d.fill_price)}. Cash now ${this.currencySymbol}${parseFloat(d.cash).toLocaleString('en-GB', { minimumFractionDigits: 2 })}.`);
+                        }
                         this.loadDashboard();
                         this.loadLedger();
                         this.loadClosedTrades();
                     } catch (e) { console.error('Close position:', e); }
                 },
 
+                // Removes a live position from the bot's book only. Used when the holding
+                // was already sold on Kraken (or is dust) and the bot can no longer close it.
+                async forgetPosition(positionIdFull) {
+                    if (!positionIdFull) return;
+                    if (!this._actionAllowedWhileStale()) return;
+                    if (!confirm('Forget this live position?\n\nNo order is sent: the holding on Kraken is not touched. ' +
+                        'Only do this if it was already sold on Kraken or is too small to sell.')) return;
+                    try {
+                        const r = await fetch(`/api/positions/${encodeURIComponent(positionIdFull)}/forget`, { method: 'POST' });
+                        if (!r.ok) {
+                            const err = await r.json().catch(() => ({}));
+                            alert(`Could not forget position: ${err.detail || r.statusText}`);
+                            return;
+                        }
+                        this.loadDashboard();
+                    } catch (e) { console.error('Forget position:', e); }
+                },
+
                 async resetPositions() {
+                    if (!this._actionAllowedWhileStale()) return;
                     if (!confirm('Clear ALL open positions? This removes stale positions from before the one-position-per-pair rule was enforced. Only use this in paper mode to clean up.')) return;
                     try {
                         const r = await fetch('/api/positions/reset', { method: 'POST' });
-                        const d = await r.json();
+                        const d = await r.json().catch(() => ({}));
+                        if (!r.ok) {
+                            alert(`Could not reset positions: ${d.detail || `HTTP ${r.status}`}`);
+                            return;
+                        }
                         alert(`Cleared ${d.cleared} position(s).`);
                         this.loadDashboard();
-                    } catch (e) { console.error('Reset:', e); }
+                    } catch (e) {
+                        console.error('Reset:', e);
+                        alert(`Could not reset positions — the server could not be reached (${e.message}).`);
+                    }
                 },
 
                 timeAgo(date) {

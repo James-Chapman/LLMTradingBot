@@ -1,11 +1,16 @@
 package app
 
 import (
+	"fmt"
+	"math"
+	"strconv"
+
 	"github.com/James-Chapman/LLMTradingBot/internal/control"
 	"github.com/James-Chapman/LLMTradingBot/internal/domain"
 	"github.com/James-Chapman/LLMTradingBot/internal/learner"
 	"github.com/James-Chapman/LLMTradingBot/internal/llm"
 	"github.com/James-Chapman/LLMTradingBot/internal/observability"
+	"github.com/James-Chapman/LLMTradingBot/internal/paper"
 	"github.com/James-Chapman/LLMTradingBot/internal/portfolio"
 	"github.com/James-Chapman/LLMTradingBot/internal/storage"
 )
@@ -27,26 +32,29 @@ type SignalView struct {
 
 // MarketView is one row of the dashboard market list.
 type MarketView struct {
-	Symbol  string `json:"symbol"`
-	Price   string `json:"price"` // "%.2f" or "-" when not yet priced
-	Enabled bool   `json:"enabled"`
-	Live    bool   `json:"live"`
+	Symbol     string   `json:"symbol"`
+	Price      string   `json:"price"`       // formatPrice text, or "-" when not yet priced
+	PriceValue *float64 `json:"price_value"` // raw price; null when not yet priced
+	Enabled    bool     `json:"enabled"`
+	Live       bool     `json:"live"` // orders on this market go to Kraken in the live environment
 }
 
 // PositionView is one open position on the dashboard.
 type PositionView struct {
-	PositionID     string `json:"position_id"`      // short form for display
-	PositionIDFull string `json:"position_id_full"` // full UUID for API calls
-	Market         string `json:"market"`
-	Direction      string `json:"direction"`
-	OpenedAt       string `json:"opened_at"`
-	Size           string `json:"size"`
-	AvgPrice       string `json:"avg_price"`
-	UnrealizedPnL  string `json:"unrealized_pnl"`
-	Strategy       string `json:"strategy"`
-	Source         string `json:"source"`
-	Status         string `json:"status"`
-	TradeIdeaID    string `json:"trade_idea_id"`
+	PositionID     string  `json:"position_id"`      // short form for display
+	PositionIDFull string  `json:"position_id_full"` // full UUID for API calls
+	Market         string  `json:"market"`
+	Direction      string  `json:"direction"`
+	OpenedAt       string  `json:"opened_at"`
+	Size           string  `json:"size"`
+	AvgPrice       string  `json:"avg_price"`       // formatPrice text
+	AvgPriceValue  float64 `json:"avg_price_value"` // raw average entry price
+	UnrealizedPnL  string  `json:"unrealized_pnl"`  // money: always 2 decimals
+	Strategy       string  `json:"strategy"`
+	Source         string  `json:"source"`
+	Status         string  `json:"status"`      // open; live rows also entry_pending | exit_pending
+	Environment    string  `json:"environment"` // paper | live
+	TradeIdeaID    string  `json:"trade_idea_id"`
 }
 
 // ApprovalView is a pending approval as shown on the dashboard and approvals page.
@@ -138,6 +146,86 @@ type LLMHealth struct {
 	LLMAvailable bool   `json:"llm_available"`
 	LLMBackend   string `json:"llm_backend"`
 	LLMModel     string `json:"llm_model"`
+}
+
+// priceSignificantDigits is how many significant digits a price below 1 keeps,
+// so coins priced far below a cent never show as 0.00.
+const priceSignificantDigits = 4
+
+// formatPrice formats a market price: 2 decimals at or above 1, otherwise
+// enough decimals for priceSignificantDigits significant digits. Money amounts
+// (equity, cash, P&L, order value) are not prices and keep "%.2f".
+func formatPrice(price float64) string {
+	magnitude := math.Abs(price)
+	if magnitude >= 1 || magnitude == 0 || math.IsNaN(magnitude) || math.IsInf(magnitude, 0) {
+		return fmt.Sprintf("%.2f", price)
+	}
+	// e.g. 0.0000085: floor(log10) = -6, so 3 + 6 = 9 decimals -> 0.000008500
+	decimals := priceSignificantDigits - 1 - int(math.Floor(math.Log10(magnitude)))
+	return strconv.FormatFloat(price, 'f', min(decimals, 12), 64)
+}
+
+// marketView builds one market row; ok is false while the market has no price yet.
+func marketView(symbol string, price float64, ok, enabled, live bool) MarketView {
+	view := MarketView{Symbol: symbol, Price: "-", Enabled: enabled, Live: live}
+	if ok {
+		view.Price = formatPrice(price)
+		view.PriceValue = &price
+	}
+	return view
+}
+
+// positionView converts an open paper position and its metadata to its API view.
+func positionView(pos domain.PositionRecord, meta paper.PositionMeta) PositionView {
+	direction := "short"
+	if pos.Size > 0 {
+		direction = "long"
+	}
+	openedAt := ""
+	if !pos.Timestamp.IsZero() {
+		openedAt = portfolio.FormatISO(pos.Timestamp)
+	}
+	return PositionView{
+		PositionID:     short8(pos.PositionID),
+		PositionIDFull: pos.PositionID,
+		Market:         pos.Market,
+		Direction:      direction,
+		OpenedAt:       openedAt,
+		Size:           fmt.Sprintf("%.6f", abs(pos.Size)),
+		AvgPrice:       formatPrice(pos.AvgPrice),
+		AvgPriceValue:  pos.AvgPrice,
+		UnrealizedPnL:  fmt.Sprintf("%.2f", pos.UnrealizedPnL),
+		Strategy:       meta.StrategyID,
+		Source:         "", // the paper engine never records a source
+		Status:         "open",
+		Environment:    string(domain.EnvPaper),
+		TradeIdeaID:    meta.TradeIdeaID,
+	}
+}
+
+// livePositionView converts a live position to its API view. Live positions
+// are spot longs; Status is entry_pending, open or exit_pending.
+func livePositionView(pos LivePositionRecord) PositionView {
+	openedAt := ""
+	if !pos.Timestamp.IsZero() {
+		openedAt = portfolio.FormatISO(pos.Timestamp)
+	}
+	return PositionView{
+		PositionID:     short8(pos.PositionID),
+		PositionIDFull: pos.PositionID,
+		Market:         pos.Market,
+		Direction:      string(domain.Long),
+		OpenedAt:       openedAt,
+		Size:           fmt.Sprintf("%.6f", abs(pos.Size)),
+		AvgPrice:       formatPrice(pos.AvgPrice),
+		AvgPriceValue:  pos.AvgPrice,
+		UnrealizedPnL:  fmt.Sprintf("%.2f", pos.UnrealizedPnL),
+		Strategy:       pos.StrategyID,
+		Source:         "",
+		Status:         pos.Status,
+		Environment:    pos.Environment,
+		TradeIdeaID:    pos.TradeIdeaID,
+	}
 }
 
 // approvalView converts an approval request to its API view.

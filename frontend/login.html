@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Log in — Kraken Bot</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<!-- Shown when the bot listens on a network address (-host is not loopback). -->
+<main class="app-shell page-stack" style="max-width:420px;padding-top:12vh;">
+    <form id="login-form" class="card" autocomplete="off">
+        <div class="settings-title" style="margin-bottom:8px;">Kraken Trading Bot</div>
+        <p class="setting-help" style="margin-bottom:16px;">
+            Enter the access token printed in the bot's console at start-up.
+        </p>
+        <label class="setting-label" for="token">Access token</label>
+        <input id="token" name="token" type="password" class="setting-input mono"
+               style="width:100%;margin:6px 0 12px;" required autofocus>
+        <div id="error" class="settings-error" style="display:none;margin-bottom:12px;"></div>
+        <button type="submit" class="btn btn-approve" style="width:100%;">Log in</button>
+    </form>
+</main>
+
+<script>
+    const form = document.getElementById('login-form');
+    const errorBox = document.getElementById('error');
+
+    // Show a message under the token field (textContent: never parsed as HTML).
+    function showError(message) {
+        errorBox.textContent = message;
+        errorBox.style.display = 'block';
+    }
+
+    form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        errorBox.style.display = 'none';
+        const token = document.getElementById('token').value.trim();
+        try {
+            const response = await fetch('/api/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ token }),
+            });
+            if (response.ok) {
+                // The server set the session cookie; open the dashboard.
+                window.location.replace('/');
+                return;
+            }
+            const body = await response.json().catch(() => ({}));
+            showError(body.detail || `Login failed (${response.status})`);
+        } catch (err) {
+            showError('Cannot reach the bot: ' + err.message);
+        }
+    });
+</script>
+</body>
+</html>

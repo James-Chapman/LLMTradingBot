@@ -114,6 +114,10 @@ func RSI(prices []float64, period int) (float64, bool) {
 	}
 
 	if avgLoss == 0 {
+		// No losses: overbought if there were gains, neutral if nothing moved.
+		if avgGain == 0 {
+			return 50.0, true
+		}
 		return 100.0, true
 	}
 	rs := avgGain / avgLoss
@@ -205,9 +209,15 @@ func MACD(prices []float64, fast, slow, signal int) map[string]any {
 	}
 }
 
-// ATR returns the Average True Range approximated from close-to-close moves.
-// It is unavailable when there are fewer than period+1 prices.
+// ATR returns the Average True Range approximated from close-to-close moves,
+// rounded to 6dp. It is unavailable when there are fewer than period+1 prices.
 func ATR(prices []float64, period int) (float64, bool) {
+	atr, ok := atrClose(prices, period)
+	return roundTo(atr, 6), ok
+}
+
+// atrClose returns the unrounded close-to-close ATR used by ATR.
+func atrClose(prices []float64, period int) (float64, bool) {
 	if period <= 0 || len(prices) < period+1 {
 		return 0, false
 	}
@@ -216,12 +226,18 @@ func ATR(prices []float64, period int) (float64, bool) {
 	for i := 1; i < len(window); i++ {
 		total += math.Abs(window[i] - window[i-1])
 	}
-	return roundTo(total/float64(period), 6), true
+	return total / float64(period), true
 }
 
-// ATROHLC returns the Average True Range from real OHLC candles.
-// True Range = max(h-l, |h-prevC|, |l-prevC|). Needs period+1 candles.
+// ATROHLC returns the Average True Range from real OHLC candles, rounded to
+// 6dp. True Range = max(h-l, |h-prevC|, |l-prevC|). Needs period+1 candles.
 func ATROHLC(candles []domain.Candle, period int) (float64, bool) {
+	atr, ok := atrOHLC(candles, period)
+	return roundTo(atr, 6), ok
+}
+
+// atrOHLC returns the unrounded OHLC ATR used by ATROHLC.
+func atrOHLC(candles []domain.Candle, period int) (float64, bool) {
 	if period <= 0 || len(candles) < period+1 {
 		return 0, false
 	}
@@ -232,7 +248,7 @@ func ATROHLC(candles []domain.Candle, period int) (float64, bool) {
 		h, l := window[i].H, window[i].L
 		total += math.Max(h-l, math.Max(math.Abs(h-prevClose), math.Abs(l-prevClose)))
 	}
-	return roundTo(total/float64(period), 6), true
+	return total / float64(period), true
 }
 
 // stochasticK returns %K rounded to 1dp, or 50 when the range is flat.
@@ -385,15 +401,16 @@ func ComputeAll(prices []float64, tickSeconds int, ohlcCandles []domain.Candle) 
 	}
 
 	// ATR: real OHLC when available, else the close-to-close approximation.
+	// atr_pct uses the unrounded ATR: on sub-cent coins the 6dp value is 0.
 	var atr float64
 	var okATR bool
 	if len(ohlcCandles) > 0 {
-		atr, okATR = ATROHLC(ohlcCandles, ATRPeriod)
+		atr, okATR = atrOHLC(ohlcCandles, ATRPeriod)
 	} else {
-		atr, okATR = ATR(prices, ATRPeriod)
+		atr, okATR = atrClose(prices, ATRPeriod)
 	}
 	if okATR {
-		out["atr"] = atr
+		out["atr"] = roundTo(atr, 6)
 		if last > 0 {
 			out["atr_pct"] = roundTo(atr/last*100, 3)
 		} else {

@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,6 +29,19 @@ import (
 
 // shutdownTimeout bounds how long in-flight HTTP requests may take on exit.
 const shutdownTimeout = 10 * time.Second
+
+// loopsStopTimeout bounds how long shutdown waits for the background loops.
+const loopsStopTimeout = 30 * time.Second
+
+// HTTP server timeouts. Every response is small (the CSV export is capped at
+// 10,000 rows) and nothing streams; the write timeout leaves room for an
+// approval that places a live Kraken order.
+const (
+	readHeaderTimeout = 10 * time.Second
+	readTimeout       = 30 * time.Second
+	writeTimeout      = 2 * time.Minute
+	idleTimeout       = 2 * time.Minute
+)
 
 // main runs the bot and exits non-zero on a startup or serve failure.
 func main() {
@@ -105,7 +119,8 @@ func run(boot config.Bootstrap, frontendDir string) error {
 	}
 	defer repo.Close()
 
-	settings, warnings, err := app.LoadSettings(context.Background(), repo, secret.Default(), boot)
+	box := secret.Default()
+	settings, warnings, err := app.LoadSettings(context.Background(), repo, box, boot)
 	if err != nil {
 		return fmt.Errorf("load settings: %w", err)
 	}
@@ -126,10 +141,17 @@ func run(boot config.Bootstrap, frontendDir string) error {
 		return fmt.Errorf("start app: %w", err)
 	}
 
+	access, err := setupAccess(ctx, settings, repo, box, os.Stdout, logger)
+	if err != nil {
+		return err
+	}
 	srv := &http.Server{
 		Addr:              net.JoinHostPort(settings.Host, strconv.Itoa(settings.Port)),
-		Handler:           server.New(bot, server.Options{FrontendDir: frontendDir}),
-		ReadHeaderTimeout: 10 * time.Second,
+		Handler:           server.New(bot, server.Options{FrontendDir: frontendDir, Access: access}),
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
 	}
 
 	loopsDone := make(chan struct{})
@@ -152,18 +174,68 @@ func run(boot config.Bootstrap, frontendDir string) error {
 	var failure error
 	select {
 	case <-ctx.Done():
-		logger.Info("Shutdown requested")
+		logger.Info("Shutdown requested; press Ctrl+C again to quit at once")
 	case err := <-serveErr:
 		failure = fmt.Errorf("serve http: %w", err)
-		stop() // stop the background loops too
 	}
+	// Stop the loops (after a serve failure) and restore the default signal
+	// handling, so a second Ctrl+C ends the process immediately.
+	stop()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Warn("HTTP shutdown did not complete cleanly", "error", err.Error())
 	}
-	<-loopsDone
+	if !waitFor(loopsDone, loopsStopTimeout) {
+		logger.Warn("Background loops did not stop in time; exiting anyway", "timeout", loopsStopTimeout.String())
+		return failure
+	}
 	logger.Info("Trading bot stopped")
 	return failure
+}
+
+// waitFor waits until done is closed or timeout passes; it reports whether
+// done closed in time.
+func waitFor(done <-chan struct{}, timeout time.Duration) bool {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+// setupAccess returns the access token when the dashboard listens on a
+// non-loopback address (nil on loopback, where no login is needed). The
+// token is generated and stored sealed on the first such start and printed
+// to out at every start; it is never written to the log file.
+func setupAccess(ctx context.Context, settings config.Settings, repo *storage.Repository, box secret.Box, out io.Writer, logger *slog.Logger) (server.TokenSource, error) {
+	if config.IsLoopbackHost(settings.Host) {
+		return nil, nil
+	}
+	logger.Warn("The dashboard is reachable from other computers: every request needs the access token",
+		"host", settings.Host, "port", settings.Port)
+	token, created, err := app.LoadAccessToken(ctx, repo, box)
+	if err != nil {
+		return nil, fmt.Errorf("load access token: %w", err)
+	}
+	if created {
+		logger.Info("New dashboard access token generated")
+	}
+	printAccessToken(out, token.Token(), settings.Port)
+	return token, nil
+}
+
+// printAccessToken writes the access token in a clearly marked block.
+func printAccessToken(out io.Writer, token string, port int) {
+	line := strings.Repeat("=", 72)
+	fmt.Fprintln(out, line)
+	fmt.Fprintln(out, "DASHBOARD ACCESS TOKEN (keep it secret):")
+	fmt.Fprintln(out, "  "+token)
+	fmt.Fprintf(out, "Open http://<this computer>:%d/login and paste it, or send\n", port)
+	fmt.Fprintln(out, "  Authorization: Bearer <token>   from scripts.")
+	fmt.Fprintln(out, line)
 }

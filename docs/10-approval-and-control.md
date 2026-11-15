@@ -150,9 +150,12 @@ Strategy generates TradeIdea (semi_automated mode)
               └── User action:
                     ├── APPROVE → POST /api/approvals/{id}/approve
                     │               │
-                    │               ├── validate emergency stop
-                    │               ├── validate approval exists and is not expired
-                    │               ├── validate live price available
+                    │               ├── emergency stop active? → 503
+                    │               ├── approval missing or expired? → 404
+                    │               ├── no live price? → 503, approval stays pending
+                    │               ├── live SHORT with no open live long? → 409
+                    │               ├── re-run risk with current positions and cash
+                    │               │     └── refused? → 409, approval removed
                     │               ├── execute on Kraken (live market) or paper engine
                     │               ├── RecordClosedTrade (if paper SHORT closed a position)
                     │               └── activity.Success(...)
@@ -162,6 +165,16 @@ Strategy generates TradeIdea (semi_automated mode)
 ```
 
 If neither action is taken within 30 minutes, the approval expires and is removed the next time the queue is read.
+
+#### Risk re-check at approval time
+
+An approval can wait up to 30 minutes, and the account may change in that time (other trades, the daily loss limit, a position on the same market). `App.ApproveTrade()` therefore does not trust the risk decision made when the approval was queued:
+
+1. **Price first.** With no live price for the market it returns `503` ("the approval is still pending; try again when a price is available"). The approval is not consumed and can be approved again later. (Earlier versions consumed the approval and returned `approved_no_price`.)
+2. **Route once.** It decides once whether the trade goes to Kraken or to paper, reading mode and environment one time, and holds `App.liveMu` for a live trade until the order is sent.
+3. **Live shorts.** A SELL on a live market needs an open live long to sell. If the long's entry or exit is still pending, it returns `409` and the approval stays. If there is no live position at all, it returns `409` and the approval is rejected and removed. No order is sent.
+4. **Risk.** It takes a fresh account snapshot and runs `risk.EvaluateTrade` again with the positions and cash of that route and the current price. If risk refuses, the approval is rejected and removed, and the call returns `409` "Risk check failed at approval time: …". The trade size comes from this fresh decision, not the queued one.
+5. Only then is the approval marked approved and the order sent. The response has an extra `environment` key (`"live"` or `"paper"`).
 
 ---
 
@@ -219,16 +232,19 @@ func (s *State) Resume()       // clears emergencyStop and stopTimestamp
 
 `Resume()` does not touch the approval queue. Clearing pending approvals is done by `App.ActivateEmergencyStop()` when the stop is engaged.
 
-When the emergency stop is active, the strategy loop checks it at the top of every tick, logs "Emergency stop active - tick skipped" to the activity feed, and waits a full interval:
+When the emergency stop is active, the strategy loop checks it at the top of every tick, tends the live book, logs "Emergency stop active - tick skipped" to the activity feed, and waits a full interval:
 
 ```go
 if a.control.EmergencyStop() {
+	a.tendLiveBookDuringStop(ctx) // price, reconcile, trailing highs; no automatic sell
 	a.activity.Warn("Emergency stop active - tick skipped", "")
 	return true, nil // skipped
 }
 ```
 
-The approve and manual-close handlers also refuse with `503` while the emergency stop is active.
+**Live positions during the stop.** No strategy runs and no automatic order is sent — stop-losses and trailing stops on live positions are **paused** (a sell already decided re-checks the stop under `liveMu` and is not sent). The live book is still looked after: its markets are priced, pending Kraken orders reconcile (so a fill that happens during the stop is recorded), and trailing highs follow the price. While any live position is held, the activity feed warns "Emergency stop: N live position(s) have no automatic stop" at most once every 10 minutes.
+
+The approve handler refuses with `503` while the emergency stop is active. A **manual close** from the dashboard is allowed during the stop, for paper and live positions alike: it is the operator's way to get out while automation is halted.
 
 ---
 
@@ -253,9 +269,11 @@ for _, m := range a.activeMarkets {
 }
 ```
 
-Disabling a market removes it from the tick's price fetch and strategy evaluation, and the OHLC loop stops refreshing its candles. Any existing open position for that market is **not** automatically closed.
+Disabling a market removes it from strategy evaluation, and the OHLC loop stops refreshing its candles. Any existing open position for that market is **not** automatically closed. A market that holds a **live** position is still priced every tick and its live stops still run, as they do for a market that has left the active universe.
 
 `IsMarketLive()` decides whether an approved or automated order for that market goes to the Kraken live engine or the paper engine. The live flag only takes effect when the trading environment is `live`; in the paper environment the order is executed on paper and a warning is logged.
+
+`App.ToggleMarketLive()` refuses with `409` to turn the live flag **off** for a market that holds a live position (any status); the message names the position. Close it first, or use **Forget** if it was already sold on Kraken. Turning the flag on is always allowed. The check runs under `App.liveMu`, so no live entry can land between the check and the change.
 
 ---
 
@@ -279,7 +297,7 @@ The trading mode and paper/live environment live in control state (`internal/con
 |---|---|
 | Any mode change | Valid mode. The dashboard shows a confirm dialog first. |
 | Paper → live | `confirmation == "LIVE"` (`app.LiveConfirmation`) **and** Kraken API key + secret in use. Keys saved in Settings but not loaded yet (no restart since) are refused with a message to restart first. |
-| Live → paper | None server-side. The dashboard shows a confirm dialog first. |
+| Live → paper | No live position may be open (any status): otherwise `409` "Cannot switch to paper while N live position(s) are open: …". The check runs under `App.liveMu`. The dashboard shows a confirm dialog first. |
 
 Each change writes a `warn` activity entry ("Trading mode changed: manual → semi_automated") and bumps the dashboard version. Changing mode does not clear pending approvals; approvals queued in semi-automated mode can still be approved or rejected.
 

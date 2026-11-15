@@ -41,7 +41,9 @@ type harness struct {
 type harnessConfig struct {
 	mutate func(*config.Settings)
 	ideas  func(strategy.Input) []domain.TradeIdea
-	run    bool // start the background loops and wait for the first tick
+	run    bool                                  // start the background loops and wait for the first tick
+	access func(*storage.Repository) TokenSource // builds the access token for a non-loopback harness
+	seed   func(*storage.Repository)             // runs on the database before the app starts
 }
 
 // newHarness builds an app over a temp DB with network-free fakes.
@@ -68,6 +70,9 @@ func newHarness(t *testing.T, cfg harnessConfig) *harness {
 		_ = repo.SavePriceTick(context.Background(), "BTC/EUR", 50000, nil)
 		_ = repo.SavePriceTick(context.Background(), "ETH/EUR", 3000, nil)
 	}
+	if cfg.seed != nil {
+		cfg.seed(repo)
+	}
 
 	h := &harness{
 		market:   apptest.NewMarket(map[string]float64{"BTC/EUR": 50000, "ETH/EUR": 3000}),
@@ -91,7 +96,17 @@ func newHarness(t *testing.T, cfg harnessConfig) *harness {
 		t.Fatalf("NewWithOptions: %v", err)
 	}
 	h.app = a
-	h.handler = New(a, Options{FrontendDir: frontendDir})
+	var access TokenSource
+	if cfg.access != nil {
+		access = cfg.access(repo)
+	}
+	// httptest requests carry Host example.com; accept it as the bot's own name.
+	h.handler = New(a, Options{
+		FrontendDir:      frontendDir,
+		AllowedHosts:     []string{"example.com"},
+		Access:           access,
+		FailedLoginDelay: time.Millisecond,
+	})
 	if _, err := a.SelectStrategy(strategy.BasicID); err != nil {
 		t.Fatalf("SelectStrategy: %v", err)
 	}
@@ -357,9 +372,11 @@ func TestControlEndpoints(t *testing.T) {
 		if decodeObject(t, h.do(http.MethodGet, "/api/control", nil))["emergency_stop"] != true {
 			t.Errorf("stop not reflected in control state")
 		}
+		// A manual close reduces exposure and is allowed during the stop: an
+		// unknown position is "not found", not "stopped".
 		rec := h.do(http.MethodPost, "/api/positions/whatever/close", nil)
-		if rec.Code != http.StatusServiceUnavailable {
-			t.Errorf("closing during a stop must be refused, got %d", rec.Code)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("closing during a stop must not be refused for the stop, got %d", rec.Code)
 		}
 		if decodeObject(t, h.do(http.MethodPost, "/api/control/resume", nil))["status"] != "resumed" {
 			t.Errorf("resume failed")
@@ -367,7 +384,7 @@ func TestControlEndpoints(t *testing.T) {
 	})
 }
 
-// TestApprovalWorkflow ports the integration workflow: signal → approval → execution.
+// TestApprovalWorkflow ports the integration workflow: signal â†’ approval â†’ execution.
 func TestApprovalWorkflow(t *testing.T) {
 	h := newHarness(t, harnessConfig{run: true, ideas: longBTC, mutate: func(s *config.Settings) { s.TradingMode = "semi_automated" }})
 
@@ -502,6 +519,52 @@ func TestResetRefusedInLive(t *testing.T) {
 	})
 }
 
+// TestLivePositionEndpoints covers the guards and the forget action for live positions.
+func TestLivePositionEndpoints(t *testing.T) {
+	const positionID = "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+	h := newHarness(t, harnessConfig{
+		mutate: func(s *config.Settings) { s.TradingEnvironment = "live" },
+		seed: func(repo *storage.Repository) {
+			_ = repo.SaveLivePosition(context.Background(), storage.LivePosition{
+				PositionID: positionID, Market: "BTC/EUR", Status: "open", Size: 0.002, AvgPrice: 50_000, OpenedAt: time.Now().UTC(),
+			})
+		},
+	})
+
+	t.Run("GIVEN a live position WHEN its market's live flag is turned off THEN 409 names the position", func(t *testing.T) {
+		if rec := h.do(http.MethodPost, "/api/control/markets/BTC%2FEUR/live-toggle", nil); rec.Code != http.StatusOK {
+			t.Fatalf("turning live on must be allowed, got %d %s", rec.Code, rec.Body.String())
+		}
+		rec := h.do(http.MethodPost, "/api/control/markets/BTC%2FEUR/live-toggle", nil)
+		if rec.Code != http.StatusConflict || !strings.Contains(decodeObject(t, rec)["detail"].(string), "3fa85f64") {
+			t.Errorf("unexpected response %d %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("GIVEN a live position WHEN switching to paper THEN 409 names the position", func(t *testing.T) {
+		rec := h.doJSON(http.MethodPost, "/api/control/trading-environment", `{"environment":"paper"}`)
+		if rec.Code != http.StatusConflict || !strings.Contains(decodeObject(t, rec)["detail"].(string), "BTC/EUR") {
+			t.Errorf("unexpected response %d %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("GIVEN a live position WHEN it is forgotten THEN it is removed without an order and the switch to paper is allowed", func(t *testing.T) {
+		body := decodeObject(t, h.do(http.MethodPost, "/api/positions/"+positionID[:8]+"/forget", nil))
+		if body["status"] != "forgotten" || body["position_id"] != positionID {
+			t.Fatalf("unexpected forget response %v", body)
+		}
+		if n := h.live.ExecutedCount(); n != 0 {
+			t.Errorf("forget must not send an order, got %d", n)
+		}
+		if rec := h.do(http.MethodPost, "/api/positions/"+positionID+"/forget", nil); rec.Code != http.StatusNotFound {
+			t.Errorf("a second forget must be 404, got %d", rec.Code)
+		}
+		if rec := h.doJSON(http.MethodPost, "/api/control/trading-environment", `{"environment":"paper"}`); rec.Code != http.StatusOK {
+			t.Errorf("with no live position the switch to paper is allowed, got %d %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
 // TestOHLCEndpoint covers cached candles with slash-containing markets.
 func TestOHLCEndpoint(t *testing.T) {
 	h := newHarness(t, harnessConfig{})
@@ -553,6 +616,41 @@ func TestCORS(t *testing.T) {
 		rec = h.do(http.MethodOptions, "/health", map[string]string{"Origin": "http://evil.example", "Access-Control-Request-Method": "GET"})
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("foreign preflight should be refused, got %d", rec.Code)
+		}
+	})
+
+	t.Run("GIVEN a page on a foreign origin WHEN it posts a state change THEN it is refused and nothing changes", func(t *testing.T) {
+		// A plain cross-site POST needs no preflight, so the server must refuse it itself.
+		rec := h.do(http.MethodPost, "/api/control/emergency-stop", map[string]string{"Origin": "http://evil.example"})
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("foreign-origin POST should be 403, got %d", rec.Code)
+		}
+		if h.app.ControlSnapshot().EmergencyStop {
+			t.Errorf("a refused request must not change the control state")
+		}
+	})
+
+	t.Run("GIVEN the dashboard's own origin, an allowed origin or no origin WHEN a state change is posted THEN it is accepted", func(t *testing.T) {
+		origins := map[string]string{
+			"same origin as the Host header": "http://example.com", // httptest's default Host
+			"allowed origin":                 "http://localhost:8000",
+			"no origin (CLI or script)":      "",
+		}
+		for name, origin := range origins {
+			headers := map[string]string{}
+			if origin != "" {
+				headers["Origin"] = origin
+			}
+			if rec := h.do(http.MethodPost, "/api/control/resume", headers); rec.Code != http.StatusOK {
+				t.Errorf("%s: expected 200, got %d", name, rec.Code)
+			}
+		}
+	})
+
+	t.Run("GIVEN a foreign origin WHEN it reads data THEN the read still works without a CORS grant", func(t *testing.T) {
+		rec := h.do(http.MethodGet, "/health", map[string]string{"Origin": "http://evil.example"})
+		if rec.Code != http.StatusOK {
+			t.Errorf("reads are not blocked server-side, got %d", rec.Code)
 		}
 	})
 }

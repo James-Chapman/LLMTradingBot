@@ -42,8 +42,19 @@ func (a *App) SetTradingMode(mode string) (map[string]any, error) {
 
 // SetTradingEnvironment switches between paper and live trading from the web
 // interface. Going live needs the typed confirmation and Kraken API keys;
-// going back to paper never does. The choice is saved and survives restarts.
+// going back to paper needs no confirmation but is refused (409) while live
+// positions are open. The choice is saved and survives restarts.
 func (a *App) SetTradingEnvironment(environment, confirmation string) (map[string]any, error) {
+	// Held so no live entry can be placed between the check and the switch.
+	a.liveMu.Lock()
+	defer a.liveMu.Unlock()
+	if environment == string(domain.EnvPaper) {
+		if summary, n := a.liveBookSummary(""); n > 0 {
+			return nil, statusError(http.StatusConflict, fmt.Sprintf(
+				"Cannot switch to paper while %d live position(s) are open: %s. Close them first, or use Forget for any sold on Kraken.",
+				n, summary))
+		}
+	}
 	if environment == string(domain.EnvLive) {
 		if confirmation != LiveConfirmation {
 			return nil, statusError(http.StatusBadRequest,

@@ -544,6 +544,31 @@ func TestRepositoryPositions(t *testing.T) {
 		}
 	})
 
+	t.Run("GIVEN a paper long and a paper short with fees WHEN they are saved and read back THEN the entry fee and short proceeds survive", func(t *testing.T) {
+		repo := newTestRepo(t)
+		mustNoErr(t, repo.UpsertOpenPosition(ctx, OpenPositionInput{
+			PositionID: "long-1", Market: "BTC/EUR", Size: 1, AvgPrice: 100, Direction: "long", EntryFee: 0.26,
+		}))
+		mustNoErr(t, repo.UpsertOpenPosition(ctx, OpenPositionInput{
+			PositionID: "short-1", Market: "ETH/EUR", Size: -2, AvgPrice: 50, Direction: "short",
+			EntryFee: 0.26, ShortProceeds: domain.Float(100),
+		}))
+
+		positions, err := repo.GetOpenPositions(ctx)
+		mustNoErr(t, err)
+		byID := map[string]OpenPosition{}
+		for _, p := range positions {
+			byID[p.PositionID] = p
+		}
+		long, short := byID["long-1"], byID["short-1"]
+		if long.EntryFee != 0.26 || long.ShortProceeds != nil {
+			t.Errorf("long must keep its entry fee and have no short proceeds: %+v", long)
+		}
+		if short.EntryFee != 0.26 || short.ShortProceeds == nil || *short.ShortProceeds != 100 {
+			t.Errorf("short must keep its entry fee and proceeds: %+v", short)
+		}
+	})
+
 	t.Run("GIVEN open positions WHEN one is deleted and then all are cleared THEN the table empties", func(t *testing.T) {
 		repo := newTestRepo(t)
 		for _, id := range []string{"p1", "p2", "p3"} {

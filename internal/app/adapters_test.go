@@ -144,6 +144,18 @@ func TestControlRepositoryAdapter(t *testing.T) {
 			t.Errorf("control state not round-tripped: %+v", out)
 		}
 	})
+
+	t.Run("GIVEN an active emergency stop with its start time WHEN saved and loaded THEN the start time survives", func(t *testing.T) {
+		store := controlStore{repo: newTestRepo(t)}
+		since := time.Date(2026, 11, 14, 9, 30, 15, 123456000, time.UTC)
+		if err := store.SaveControlState(control.PersistedState{EmergencyStop: true, StopSince: &since}); err != nil {
+			t.Fatalf("SaveControlState: %v", err)
+		}
+		out, _, err := store.LoadControlState()
+		if err != nil || out.StopSince == nil || !out.StopSince.Equal(since) {
+			t.Errorf("stop time not round-tripped: %+v / %v", out.StopSince, err)
+		}
+	})
 }
 
 // TestPaperRepositoryAdapter covers the paper.Repository and OrderPnLStore adapters.
@@ -176,6 +188,24 @@ func TestPaperRepositoryAdapter(t *testing.T) {
 		rows, _ = store.GetOpenPositions()
 		if len(rows) != 0 {
 			t.Errorf("deleted position still present: %v", rows)
+		}
+	})
+
+	t.Run("GIVEN a paper short with its entry fee and proceeds WHEN upserted and reloaded THEN both are kept", func(t *testing.T) {
+		store := paperStore{repo: newTestRepo(t)}
+		row := paper.OpenPositionRow{
+			PositionID: domain.NewID(), Market: "ETH/EUR", Size: -0.5, AvgPrice: 3000, Direction: "short",
+			EntryFee: 3.9, ShortProceeds: domain.Float(1500),
+		}
+		if err := store.UpsertOpenPosition(row); err != nil {
+			t.Fatalf("UpsertOpenPosition: %v", err)
+		}
+		rows, err := store.GetOpenPositions()
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("expected one open position, got %v / %v", rows, err)
+		}
+		if got := rows[0]; got.EntryFee != 3.9 || got.ShortProceeds == nil || *got.ShortProceeds != 1500 {
+			t.Errorf("entry fee or short proceeds lost: %+v", got)
 		}
 	})
 
@@ -237,15 +267,15 @@ func TestKrakenOrderRepositoryAdapter(t *testing.T) {
 			ID: domain.NewID(), Market: "BTC/EUR", Direction: domain.Long, Size: 0.01, Price: 50000,
 			Status: "pending", Timestamp: time.Now().UTC(), ExchangeOrderID: "TXID-1",
 		}
-		if err := store.SaveOrder(order, "auto", 0, "live", ""); err != nil {
+		if err := store.SaveOrder(order, kraken.OrderMeta{ApprovalID: "auto", Environment: "live", ClientOrderID: order.ID}); err != nil {
 			t.Fatalf("SaveOrder: %v", err)
 		}
 		pending, err := store.GetPendingLiveOrders()
 		if err != nil || len(pending) != 1 || pending[0].ExchangeOrderID != "TXID-1" {
 			t.Fatalf("expected one pending live order, got %v / %v", pending, err)
 		}
-		if err := store.UpdateOrderStatusAndFill(order.ID, "filled", 50100, 1.2); err != nil {
-			t.Fatalf("UpdateOrderStatusAndFill: %v", err)
+		if err := store.UpdateOrderExecution(kraken.OrderUpdate{OrderID: order.ID, Status: "filled", ExecutedSize: 0.01, AvgPrice: 50100, Fee: 1.2}); err != nil {
+			t.Fatalf("UpdateOrderExecution: %v", err)
 		}
 		pending, _ = store.GetPendingLiveOrders()
 		if len(pending) != 0 {
@@ -328,6 +358,17 @@ func TestLearnerOutcomeConversion(t *testing.T) {
 		out := learnerOutcomes(rows)
 		if len(out) != 2 || out[0].StrategyID != "basic_strategy" || out[1].Pnl != -2 || out[1].Direction != "short" {
 			t.Errorf("unexpected conversion: %+v", out)
+		}
+	})
+
+	t.Run("GIVEN stored outcomes of a long and a short WHEN converted THEN each carries its entry notional", func(t *testing.T) {
+		rows := []storage.SignalOutcome{
+			{StrategyID: "s", Market: "BTC/EUR", Direction: "long", EntryPrice: 50000, Size: 0.002, PnL: 5},
+			{StrategyID: "s", Market: "ETH/EUR", Direction: "short", EntryPrice: 3000, Size: -0.5, PnL: -2},
+		}
+		out := learnerOutcomes(rows)
+		if len(out) != 2 || out[0].Notional != 100 || out[1].Notional != 1500 {
+			t.Errorf("expected notionals 100 and 1500, got %+v", out)
 		}
 	})
 }

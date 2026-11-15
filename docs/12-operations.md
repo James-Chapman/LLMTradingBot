@@ -84,10 +84,10 @@ Flags:
 | Flag | Default | Purpose |
 |------|---------|---------|
 | `-db` | `./trading_bot.db` | SQLite database (trades, control state and every dashboard setting) |
-| `-host` | `127.0.0.1` | Bind address (`0.0.0.0` for LAN access) |
+| `-host` | `127.0.0.1` | Bind address (`0.0.0.0` for LAN access, which turns on the access token; see **Access from other computers** below) |
 | `-port` | `8000` | HTTP port (1–65535) |
 | `-log` | `trading_bot.log` | Log file; `llm.log` is written beside it |
-| `-frontend` | `frontend` | Directory holding `index.html`, `approvals.html`, `sw.js` and `static/` |
+| `-frontend` | `frontend` | Directory holding `index.html`, `approvals.html`, `login.html`, `sw.js` and `static/` |
 
 The defaults are relative to the working directory, so start the bot from the repository root (`launch.bat` does this). `-h` prints the flags. No environment variables are read.
 
@@ -96,27 +96,41 @@ The operator CLI can also start the bot. It looks for `tradingbot.exe` next to i
 ```powershell
 .\bin\tradingbot-cli.exe run
 .\bin\tradingbot-cli.exe -db data\bot.db -port 9000 run
+.\bin\tradingbot-cli.exe status -port 9000
 ```
 
-The CLI takes `-host`, `-port`, `-log` and `-db`; `run` passes them through to `tradingbot`. The other commands talk to the running bot at `-host`/`-port`: `status` prints its version, mode, environment, equity and cash (from `/api/dashboard`), and `approve ID` / `reject ID` call the approval API. If the bot is not running they print *Cannot reach bot at …* and exit 1. The trading mode and environment are changed in the dashboard only.
+The CLI takes `-host`, `-port`, `-log`, `-db` and `-token`, before or after the command (`cli status -port 9000` works); `run` passes the first four through to `tradingbot`. The other commands talk to the running bot at `-host`/`-port`: `status` prints its version, mode, environment, equity and cash (from `/api/dashboard`), and `approve ID` / `reject ID` call the approval API. When the database at `-db` holds an access token, it is sent as `Authorization: Bearer <token>` (`-token` overrides it); the CLI never creates a database. If the bot is not running they print *Cannot reach bot at …* and exit 1; a `401` says the token is needed. An unknown or missing command prints the usage and exits 2. The trading mode and environment are changed in the dashboard only.
 
-Stop the bot with Ctrl+C. It shuts down gracefully: HTTP requests get up to 10 seconds to finish, and the background loops and any in-flight briefing are waited for.
+Stop the bot with Ctrl+C. It shuts down gracefully: HTTP requests get up to 10 seconds to finish, and the background loops and any in-flight briefing get up to 30 seconds (then `Background loops did not stop in time; exiting anyway` is logged and the bot exits). A second Ctrl+C during shutdown quits at once.
+
+In the live environment, a Kraken order that is already being sent when shutdown starts is not abandoned: the `AddOrder` call runs detached from shutdown with its own 30-second timeout, and the order row and live position are written whatever the shutdown state (reconciliation writes are detached the same way), so the order is recorded and reconciled after the next start. An order not yet sent when shutdown starts is not sent. A second Ctrl+C skips this.
 
 **What happens on startup:**
 
 1. Logging is set up at INFO (stdout, the `-log` file, and `llm.log`).
 2. The database is opened (SQLite file created if absent; schema migrations applied).
-3. Settings are loaded: built-in defaults, then the values saved from the dashboard, then the start-up flags. A saved value that no longer parses (or a secret that cannot be decrypted) is skipped with a `Saved setting ignored` warning. The log level then switches to `LOG_LEVEL`. If no markets were saved, the 50 biggest pairs are fetched from Kraken (`Default markets picked from Kraken by 24h volume`), or the built-in list is used with a warning if Kraken is unreachable.
+3. Settings are loaded: built-in defaults, then the values saved from the dashboard, then the start-up flags. A saved value that no longer parses or is out of range (or a secret that cannot be decrypted) is skipped with a `Saved setting ignored` warning. The log level then switches to `LOG_LEVEL`. If no markets were saved, the 50 biggest pairs are fetched from Kraken (`Default markets picked from Kraken by 24h volume`), or the built-in list is used with a warning if Kraken is unreachable.
 4. Pending approvals, risk rejections, equity history and the latest cash balance are restored.
 5. Open positions and the daily risk counters are restored from the database.
 6. The news cache is seeded from the database (and marked as already briefed).
 7. The learner is seeded with historical signal outcomes.
 8. Control state, the latest LLM briefing and reflection, and the activity log are restored.
 9. The LLM backends are probed (LM Studio first, then the remote fallback). LLM availability is logged.
-10. Five background goroutines start: strategy loop, news loop, OHLC loop, reflection loop and equity ticker loop. The strategy loop validates the market list with Kraken, restores recent price history and starts the WebSocket ticker stream.
-11. The HTTP server begins serving requests.
+10. When `-host` is not a loopback address, a warning is logged and the access token is loaded (generated on the first such start) and printed to the console.
+11. Five background goroutines start: strategy loop, news loop, OHLC loop, reflection loop and equity ticker loop. The strategy loop validates the market list with Kraken, restores recent price history and starts the WebSocket ticker stream. If Kraken confirms none of the configured markets (its pair list could not be loaded), it logs *No markets could be validated - waiting for Kraken* and retries after 5 s, doubling up to 5 minutes, until a market validates or the bot stops.
+12. The HTTP server begins serving requests.
 
 The dashboard is available at: `http://127.0.0.1:8000`
+
+### Access from other computers
+
+With a loopback `-host` (the default) nothing needs logging in. To open the dashboard from another machine, start the bot with `-host 0.0.0.0` (or the computer's LAN address):
+
+1. The console prints a block marked `DASHBOARD ACCESS TOKEN` at every start. Copy the token.
+2. Open `http://<computer's IP or name>:8000`. The browser is sent to `/login`; paste the token. The session lasts until the browser closes.
+3. Scripts send `Authorization: Bearer <token>`. The CLI reads the token from the database itself.
+
+The Host check accepts IP addresses, `localhost` and this computer's name. To use another name (for example `trading-pc.lan`), add it under **Settings → Advanced → Allowed host names** and restart. To replace the token, call `POST /api/access-token/rotate` with the current token, or delete the `ACCESS_TOKEN` row from the `settings` table while the bot is stopped. There is no HTTPS, so only do this on a trusted network. See [01-configuration.md](01-configuration.md#access-from-other-computers).
 
 ---
 
@@ -198,7 +212,7 @@ To temporarily disable a market without restarting: use the **Disable** button o
 
 ### View open positions
 
-Dashboard → Positions panel (live, updates every 5 seconds).
+Dashboard → Positions panel (updates every 5 seconds). Paper and live positions are listed together; live ones carry a **LIVE** badge and show `entry pending` / `exit pending` while a Kraken order is open.
 
 ### View closed trades
 
@@ -206,7 +220,13 @@ Dashboard → Closed Trades panel (updates every 30 seconds). `GET /api/export/t
 
 ### Manually close a position
 
-Use the **✕ Close** button on the Positions panel in the dashboard. This calls `POST /api/positions/{position_id_full}/close`, closes the paper position at the current market price, records the P&L outcome, and saves an equity snapshot immediately.
+Use the **✕ Close** button on the Positions panel in the dashboard. This calls `POST /api/positions/{position_id_full}/close`. A paper position is closed at the current market price, the P&L outcome is recorded, and an equity snapshot is saved immediately.
+
+A live position is closed by sending one Kraken sell order for the executed size, in either environment and also during the emergency stop. The response has `status: "closing"` and `pnl: null`, because the sale is not complete yet. The P&L is recorded when the order is reconciled on a later tick. A second close while that sell is pending returns `409`, as does closing one whose entry is still pending. A position smaller than Kraken's minimum order is removed as dust with nothing sent (`409`). A Kraken rejection returns `502`.
+
+### Forget a live position
+
+If a live position was already sold on Kraken by hand (or is too small to sell) the bot cannot close it. Use the **Forget** button next to it in the Positions panel, or `POST /api/positions/{position_id}/forget`. This removes the position from the bot's book only: **no order is sent** and the holding on Kraken is untouched. Check Kraken first — forgetting a position you still hold leaves it with no stop.
 
 Alternatively, via the API:
 
@@ -230,7 +250,7 @@ If positions remain open after a crash or during testing:
 curl -X POST http://127.0.0.1:8000/api/positions/reset
 ```
 
-Or use the **Reset Positions** button (paper mode only) on the dashboard. Each position is closed and recorded with `exit_reason = "operator_reset"` at the last known price (or its entry price), then all `open_positions` rows are removed and in-memory state is cleared.
+Or use the **Reset Positions** button (paper mode only) on the dashboard. Each position is closed and recorded with `exit_reason = "operator_reset"` at the last known price (or its entry price); each close removes that position's `open_positions` row. Nothing else is cleared, so a position opened while the reset runs stays open. Live positions are not affected.
 
 ---
 
@@ -288,8 +308,9 @@ To immediately halt all trading:
 **Effect:**
 - All strategy evaluation and execution is paused at the next tick (within 30 seconds).
 - All pending approvals are cleared.
-- Approving trades and manually closing positions are refused until you resume.
+- Approving trades is refused until you resume. **Manually closing a position is still allowed** (paper or live) — use it to get out while automation is halted.
 - Existing open positions are **not** automatically closed.
+- **Live positions have no automatic stop while the emergency stop is active.** Stop-losses and trailing stops do not send. The bot still prices their markets, reconciles pending Kraken orders (a fill during the stop is recorded) and moves trailing highs, and the activity feed reminds you every 10 minutes ("Emergency stop: N live position(s) have no automatic stop"). If you hold live positions, either close them by hand or resume soon.
 - The stop is persisted, so it stays active across a restart.
 
 To resume: click **Resume** on the dashboard or:
@@ -311,11 +332,38 @@ curl -X POST http://127.0.0.1:8000/api/control/resume
 4. Promote to **Semi-automated** for human-gated execution.
 5. Promote to **Fully automated** only after extended validation.
 
-To go back, choose **Paper** in the same dialog and confirm. The choice is saved, so a restart keeps the last environment chosen in the dashboard.
+To go back, choose **Paper** in the same dialog and confirm. This is refused (`409`) while any live position is open: close them first, or forget any you already sold on Kraken. Turning a market's live flag off is refused the same way while that market holds a live position. The choice is saved, so a restart keeps the last environment chosen in the dashboard.
 
-The risk engine still runs before live execution. In the live environment, per-market live toggles route that market to the Kraken `ExecutionEngine` (`internal/kraken/execution.go`), which submits Kraken `AddOrder` requests through the official Go SDK and records the returned transaction ID in the trade ledger. The engine refuses orders when the API key or secret is missing. Markets without the live flag continue to use paper execution, so you can promote one market at a time. Per-market live toggles have no dashboard control yet; set them with `POST /api/control/markets/{market}/live-toggle`. In the paper environment the live toggles are ignored for execution (orders stay on paper and a warning is logged). In the live environment, cash and equity on the dashboard come from Kraken balances and pending live orders are reconciled every two ticks.
+The risk engine still runs before live execution. In the live environment, per-market live toggles route that market to the Kraken `ExecutionEngine` (`internal/kraken/execution.go`), which submits Kraken `AddOrder` requests through the official Go SDK and records the returned transaction ID in the trade ledger. The engine refuses orders when the API key or secret is missing. Markets without the live flag continue to use paper execution, so you can promote one market at a time. Per-market live toggles are set with the **Live / Paper** button in the Markets panel (live environment) or `POST /api/control/markets/{market}/live-toggle`. In the paper environment the live toggles are ignored for execution (orders stay on paper and a warning is logged). In the live environment, cash and equity on the dashboard come from Kraken balances and pending live orders are reconciled on every tick.
 
-Live orders are submitted as Kraken spot market orders unless the `ExecutionIntent` carries a limit price. Live fills and balances remain exchange-owned; local paper positions are not mutated by live orders.
+Live orders are submitted as Kraken spot market orders unless the `ExecutionIntent` carries a limit price. Local paper positions are not changed by live orders. Live positions are tracked in their own book (`live_positions`, see [Execution Engines → Live Position Book](05-execution-engine.md#live-position-book)):
+
+- **One order per decision.** A repeated buy signal does not send a second buy while a live long exists on that market (including one whose order has not been confirmed), also after a restart. Each `AddOrder` carries a client order id; it is retried only when Kraken proves the order was not placed, and an order whose outcome is unknown is kept `pending` and looked up by that id.
+- **Intent first.** The position row naming the order is saved before the order is sent, so a crash at any moment leaves something to reconcile. If that save fails, a buy is not sent; a sell is sent anyway.
+- **No shorts.** The spot account cannot open shorts. A SELL signal sells an existing live long; with none it is logged as "not acted on" and no order is sent.
+- **Partial fills.** The position holds only the volume Kraken executed (`vol_exec`), and P&L uses that size and the average price. A remainder below Kraken's minimum order is dropped as dust.
+- **Stops.** Stop-loss and trailing stop run on live longs every tick — in either environment, and also for markets you disabled or that left the market list — and send one sell each. They are paused during the emergency stop. The trailing high is saved and survives a restart.
+- **Rejected sells.** If Kraken rejects a sell, automatic exits for that position pause for 5 minutes, doubling up to 1 hour, and the first rejection raises a `live_exit_rejected` alert. A manual close is not held back.
+- **Stale prices.** A market whose last streamed price is older than two strategy intervals is re-fetched over REST; if that fails too it is skipped (no stop or strategy on an old price) and the activity feed says so.
+- **Approvals** are re-checked by the risk engine when you approve them (see [Approval and Control](10-approval-and-control.md)).
+- **Alerts** are sent in the background and never delay a live decision. The daily-loss-limit webhook alert is sent at most once per UTC day, not once per refused signal.
+
+### Troubleshooting live orders
+
+- **An order stays `pending` with no transaction ID** — the reply to `AddOrder` was lost (timeout, Kraken busy). It is looked up by client order id every tick; if Kraken has no such order after 5 minutes it becomes `not_found` and its pending position is removed (entry) or returns to `open` (exit).
+- **A position shows `entry_pending` or `exit_pending` for long** — check the order in `order_records` and on Kraken. Reconciliation runs every tick while any live position exists, including during the emergency stop.
+- **A position the bot cannot sell** (sold by hand on Kraken, or dust) — use **Forget** (see [Managing Positions](#forget-a-live-position)).
+
+### Known limits (live)
+
+These are not handled automatically; know them before trading real money:
+
+- **Emergency stop = no automatic stops.** While the stop is active, live positions are not protected by stop-loss or trailing stop. Close them by hand if needed.
+- **Crash between P&L stamp and result.** If the bot crashes after a sell's P&L is written to the order but before the trade result is recorded, that result is missing from daily loss and learning. It is under-counted, never counted twice.
+- **Failed P&L stamp.** If writing the P&L to the order fails, a restart could count that sell's result a second time in the statistics. The holding itself is not affected.
+- **Old orphan buys.** A live buy placed by an older version that has no position row is not rebuilt; it is visible on Kraken only.
+- **Environment switch race.** A signal that read the environment as live just before you switch to paper can still send one live entry; that position is then protected by the live stops and blocks the switch until closed.
+- **Forget is trusted.** The bot does not check Kraken before forgetting a position; if you still hold it, it has no stop.
 
 ---
 
@@ -397,9 +445,17 @@ func All(s config.Settings) []Strategy {
 
 ### "Tick #N - prices fetched (warming up N/35 ticks)"
 
-Normal at startup for indicator-only strategy evaluation. The loop waits for `LookbackTicks = 34` price ticks of history (plus the current one), approximately 17 minutes at 30 seconds per tick, so MACD and the other configured indicators have enough history. If price ticks were restored from the database, this message may not appear at all.
+Normal at startup for indicator-only strategy evaluation. The loop waits for `LookbackTicks = 34` price ticks of history (plus the current one), approximately 17 minutes at 30 seconds per tick, so MACD and the other configured indicators have enough history. The count is the longest history among the enabled markets that were priced this tick, so a disabled or unpriced market cannot hold it back. If price ticks were restored from the database, this message may not appear at all.
 
 For strategies that use the LLM, the indicator warm-up is not used. Instead the loop logs "LLM data warmup waiting for …" until at least one market has the strategy's `RequiredPriceTicks()` of history (10 for `llm_only_strategy`, 35 for `basic_and_llm_strategy`, which still applies local indicator gates) and at least one news item is cached. Only markets whose price history is ready are evaluated.
+
+### "No markets could be validated - waiting for Kraken"
+
+At start-up Kraken confirmed none of the configured markets, usually because its pair list could not be loaded (network not up yet, Kraken returned an error). The strategy loop retries with a growing wait (5 s up to 5 minutes) and starts as soon as one market validates; no ticks run meanwhile. If it persists, check the network and `KRAKEN_REST_URL`, and that `FIXED_MARKETS` uses Kraken's `BASE/QUOTE` names.
+
+### `403 Host not allowed` or `401 Access token required`
+
+`403`: the browser used a host name the bot does not accept (see **Access from other computers**); use the IP address or add the name to **Allowed host names**. `401`: the bot listens on a non-loopback address and the request had no valid token; log in at `/login` or send the bearer token. After a token rotation, log in again.
 
 ### "Both LLM backends unavailable — LLM features disabled"
 
@@ -415,7 +471,7 @@ The script has Unix (LF) line endings, and `cmd.exe` misparses LF-only batch fil
 
 ### `launch.bat` reports "build failed" while the bot is running
 
-Windows locks a running executable, so `go build -o bin	radingbot.exe` cannot overwrite it. Close the "Kraken Bot" window (or stop `tradingbot.exe`) and run `launch.bat` again.
+Windows locks a running executable, so `go build -o bin\tradingbot.exe` cannot overwrite it. Close the "Kraken Bot" window (or stop `tradingbot.exe`) and run `launch.bat` again.
 
 ### "Daily loss limit reached"
 
