@@ -7,6 +7,20 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.14.0] — 2026-11-15
+
+### Added
+- **Strategy interval setting.** Settings → Signals → *Strategy interval (s)* (`STRATEGY_INTERVAL_SECONDS`) sets how often the strategy runs, from 30 to 600 seconds. It applies from the next tick, without a restart.
+  - Streamed prices are treated as stale after two intervals, as before.
+  - The LLM signal prompt states the real tick length ("Technical indicators (60s ticks)") instead of always saying 30 s.
+
+### Changed
+- **The strategy now runs every 60 seconds by default, not every 30.** Signals are evaluated half as often, and stops are checked once a minute.
+  - Indicators, the warm-up and `MOMENTUM_LOOKBACK_TICKS` count ticks, so at 60 s they cover twice as much time. On a fresh database the indicator strategies now wait about 35 minutes before the first signal (was 17.5). Set the interval to 30 to keep the old behaviour.
+  - Backtests still simulate 30-second ticks, so they match a 30-second interval best.
+
+---
+
 ## [0.13.0] — 2026-11-15
 
 More news sources for the LLM, each with an on/off switch. Guide: `docs/09-ingestion-adapters.md`.

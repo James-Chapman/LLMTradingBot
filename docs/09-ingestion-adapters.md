@@ -147,7 +147,7 @@ Kraken's public REST API has a per-IP rate limit. REST calls are wrapped by the 
 
 | Loop | Frequency | Call type |
 |------|-----------|-----------|
-| `strategyLoop` | Every 30s | WebSocket cache first; `GetTickersBatch()` only for missing stream prices |
+| `strategyLoop` | Every `STRATEGY_INTERVAL_SECONDS` (default 60 s) | WebSocket cache first; `GetTickersBatch()` only for missing stream prices |
 | `ohlcLoop` | Every 120s (2.5s/market) | `GetOHLC()`: one request per market and interval |
 
 At two active markets, the OHLC loop sends four requests per 120-second cycle. Combined with the occasional ticker batch, this stays well within Kraken's documented public tier limits.

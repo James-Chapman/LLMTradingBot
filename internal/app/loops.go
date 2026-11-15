@@ -28,7 +28,8 @@ import (
 // ---------------------------------------------------------------------------
 
 // strategyLoop resolves the universe, then polls market data and runs the
-// selected strategy every 30 s, acting according to the trading mode.
+// selected strategy every strategy interval (STRATEGY_INTERVAL_SECONDS),
+// acting according to the trading mode.
 func (a *App) strategyLoop(ctx context.Context) {
 	a.bootStrategyLoop(ctx)
 	for ctx.Err() == nil {
@@ -42,8 +43,10 @@ func (a *App) strategyLoop(ctx context.Context) {
 		if err != nil {
 			a.activity.Error("Strategy loop error", err.Error())
 		}
-		// Gated ticks wait a full interval; evaluated ticks keep a 30 s cadence.
-		wait := a.intervals.Strategy
+		// Gated ticks wait a full interval; evaluated ticks keep a steady
+		// cadence. The interval is read each tick, so a dashboard change
+		// applies from the next wait.
+		wait := a.strategyInterval()
 		if !skipped {
 			wait -= time.Since(start)
 		}

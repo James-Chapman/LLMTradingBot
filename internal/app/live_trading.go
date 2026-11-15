@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/James-Chapman/LLMTradingBot/internal/config"
 	"github.com/James-Chapman/LLMTradingBot/internal/domain"
 	"github.com/James-Chapman/LLMTradingBot/internal/kraken"
 	"github.com/James-Chapman/LLMTradingBot/internal/livebook"
@@ -869,7 +870,20 @@ func (a *App) mergePrices(prices map[string]float64) {
 // staleAfter is the age beyond which a streamed snapshot is not trusted:
 // two strategy intervals.
 func (a *App) staleAfter() time.Duration {
-	return 2 * a.intervals.Strategy
+	return 2 * a.strategyInterval()
+}
+
+// strategyInterval is the time between strategy ticks: the interval fixed by
+// the start-up options if any (tests), otherwise STRATEGY_INTERVAL_SECONDS.
+func (a *App) strategyInterval() time.Duration {
+	if a.intervals.Strategy > 0 {
+		return a.intervals.Strategy
+	}
+	seconds := a.cfg().StrategyIntervalSeconds
+	if seconds <= 0 {
+		seconds = config.Defaults().StrategyIntervalSeconds
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // freshSnapshots returns a snapshot per market, in markets order: the

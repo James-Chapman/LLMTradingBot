@@ -23,7 +23,7 @@ The primary design goals are:
 │              (background loops run as goroutines)                       │
 ├──────────────┬───────────────┬──────────────┬─────────────┬─────────────┤
 │ Strategy     │  News         │  OHLC        │  Reflection │  Equity     │
-│ Loop (30s)   │  Loop (5min)  │  Loop (2min) │  Loop (1hr) │  Ticker(10s)│
+│ Loop (60s)   │  Loop (5min)  │  Loop (2min) │  Loop (1hr) │  Ticker(10s)│
 └──────┬───────┴───────┬───────┴──────┬───────┴──────┬──────┴─────────────┘
        │               │              │              │
        ▼               ▼              ▼              ▼

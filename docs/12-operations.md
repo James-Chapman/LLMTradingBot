@@ -306,7 +306,7 @@ To immediately halt all trading:
 2. API: `curl -X POST http://127.0.0.1:8000/api/control/emergency-stop`
 
 **Effect:**
-- All strategy evaluation and execution is paused at the next tick (within 30 seconds).
+- All strategy evaluation and execution is paused at the next tick (within one strategy interval, 60 seconds by default).
 - All pending approvals are cleared.
 - Approving trades is refused until you resume. **Manually closing a position is still allowed** (paper or live) — use it to get out while automation is halted.
 - Existing open positions are **not** automatically closed.
@@ -371,7 +371,7 @@ These are not handled automatically; know them before trading real money:
 
 ### Signal frequency
 
-The strategy loop runs every 30 seconds (the `Intervals.Strategy` default in `internal/app/app.go`). Reducing this increases Kraken API call frequency — stay above 10 seconds to avoid rate limiting.
+The strategy loop runs every `STRATEGY_INTERVAL_SECONDS` (Settings → Signals → *Strategy interval*, default 60 s, 30–600 s; applies from the next tick). A longer interval eases the load on a slow LLM but makes the bot react more slowly: indicators, the warm-up and the momentum lookback count ticks, and stops are checked once per tick. Backtests always simulate 30-second ticks, so their results match a 30-second interval best.
 
 ### LLM response time
 
@@ -445,7 +445,7 @@ func All(s config.Settings) []Strategy {
 
 ### "Tick #N - prices fetched (warming up N/35 ticks)"
 
-Normal at startup for indicator-only strategy evaluation. The loop waits for `LookbackTicks = 34` price ticks of history (plus the current one), approximately 17 minutes at 30 seconds per tick, so MACD and the other configured indicators have enough history. The count is the longest history among the enabled markets that were priced this tick, so a disabled or unpriced market cannot hold it back. If price ticks were restored from the database, this message may not appear at all.
+Normal at startup for indicator-only strategy evaluation. The loop waits for `LookbackTicks = 34` price ticks of history (plus the current one), approximately 35 minutes at the default 60 seconds per tick (17.5 at 30 seconds), so MACD and the other configured indicators have enough history. The count is the longest history among the enabled markets that were priced this tick, so a disabled or unpriced market cannot hold it back. If price ticks were restored from the database, this message may not appear at all.
 
 For strategies that use the LLM, the indicator warm-up is not used. Instead the loop logs "LLM data warmup waiting for …" until at least one market has the strategy's `RequiredPriceTicks()` of history (10 for `llm_only_strategy`, 35 for `basic_and_llm_strategy`, which still applies local indicator gates) and at least one news item is cached. Only markets whose price history is ready are evaluated.
 

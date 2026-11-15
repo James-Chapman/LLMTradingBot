@@ -48,7 +48,7 @@ Two indicator details: RSI on a flat series (no gains and no losses, e.g. a pegg
 func (b *BasicStrategy) Evaluate(ctx context.Context, in strategy.Input) []domain.TradeIdea
 ```
 
-`in.MarketData` is a `map[string]strategy.MarketData` built by the strategy loop with `Price`, `PreviousPrice`, `PriceHistory`, `Volume`, `LLMSentiment`, `Indicators` (30-second ticks plus 5-minute candles) and `HigherTimeframe` (indicators computed from 15-minute candles). For each market:
+`in.MarketData` is a `map[string]strategy.MarketData` built by the strategy loop with `Price`, `PreviousPrice`, `PriceHistory`, `Volume`, `LLMSentiment`, `Indicators` (strategy ticks plus 5-minute candles) and `HigherTimeframe` (indicators computed from 15-minute candles). For each market:
 
 #### 1. Momentum Gate
 
@@ -408,18 +408,18 @@ Strategy base confidence
 
 ## Indicator Warm-up Times
 
-At 30 s/tick, indicators computed from the tick history become available after the following number of ticks:
+At the default 60 s/tick (`STRATEGY_INTERVAL_SECONDS`), indicators computed from the tick history become available after the following number of ticks. The times scale with the interval: at 30 s they halve.
 
-| Indicator | Ticks needed | Time |
+| Indicator | Ticks needed | Time at 60 s |
 |-----------|-------------|------|
-| Williams %R (14) | 14 | ~7 min |
-| RSI (14) | 15 | ~7.5 min |
-| Stochastic (14, 3) | 16 | ~8 min |
-| EMA (fast=9) | 9 | ~4.5 min |
-| EMA (slow=21) | 21 | ~10.5 min |
-| Bollinger Bands (20) | 20 | ~10 min |
-| ATR (14) | 15 | ~7.5 min |
-| MACD signal line | 34 | ~17 min |
+| Williams %R (14) | 14 | ~14 min |
+| RSI (14) | 15 | ~15 min |
+| Stochastic (14, 3) | 16 | ~16 min |
+| EMA (fast=9) | 9 | ~9 min |
+| EMA (slow=21) | 21 | ~21 min |
+| Bollinger Bands (20) | 20 | ~20 min |
+| ATR (14) | 15 | ~15 min |
+| MACD signal line | 34 | ~34 min |
 
 Once 5-minute candles are cached by the OHLC loop, ATR and Stochastic are computed from those candles instead and do not depend on tick count.
 

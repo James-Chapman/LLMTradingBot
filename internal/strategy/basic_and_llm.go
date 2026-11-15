@@ -73,6 +73,7 @@ func (b *BasicAndLLMStrategy) evaluateMarket(ctx context.Context, symbol string,
 		Equity:         in.Portfolio.Equity,
 		Cash:           in.Portfolio.Cash,
 		OpenPositions:  in.Portfolio.OpenPositions,
+		TickSeconds:    b.settings.StrategyIntervalSeconds,
 	})
 
 	if analysis.ConfidenceScale < b.settings.LLMVetoThreshold {

@@ -306,7 +306,7 @@ Written when a position is fully closed. This is the learning dataset used by `l
 
 ### Table: `equity_snapshots`
 
-Time series of total portfolio equity, one series per trading environment. Written every strategy tick (~30 seconds) and by the equity ticker loop (every 10 seconds) for the current environment, and after every paper fill as a `paper` row; trimmed to the newest 17,280 rows (~48 hours at 10 seconds, `storage.MaxEquityRows`) of each environment, so a long live session never pushes out the paper history.
+Time series of total portfolio equity, one series per trading environment. Written every strategy tick (`STRATEGY_INTERVAL_SECONDS`, 60 s by default) and by the equity ticker loop (every 10 seconds) for the current environment, and after every paper fill as a `paper` row; trimmed to the newest 17,280 rows (~48 hours at 10 seconds, `storage.MaxEquityRows`) of each environment, so a long live session never pushes out the paper history.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -325,7 +325,7 @@ On restart, `GetLatestCashFor(ctx, "paper")` restores the paper engine's cash (`
 
 ### Table: `market_snapshots`
 
-Rolling price tick history. Trimmed to 5,760 rows per symbol (~48 hours at 30-second intervals, `storage.MaxPriceRowsPerSymbol`). Indexed on `(symbol, timestamp)`.
+Rolling price tick history. Trimmed to 5,760 rows per symbol (~96 hours at the default 60-second interval, `storage.MaxPriceRowsPerSymbol`). Indexed on `(symbol, timestamp)`.
 
 | Column | Type | Notes |
 |---|---|---|

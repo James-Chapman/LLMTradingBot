@@ -4,6 +4,7 @@ import (
 	"context"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -152,6 +153,7 @@ type SignalRequest struct {
 	Equity         float64
 	Cash           float64
 	OpenPositions  []domain.PositionRecord
+	TickSeconds    int // length of one indicator tick; 0 means 30
 }
 
 // RecommendationRequest is the input to RecommendTrade.
@@ -405,7 +407,7 @@ func (a *LLMAnalyser) AnalyseSignal(ctx context.Context, req SignalRequest) Sign
 		priceStr + "\n" +
 		briefingBlock(briefing, req.Market) +
 		reflectionBlock(reflection, "Apply this advice when assessing the current signal.\n") + "\n" +
-		"Technical indicators (30s ticks):\n" + formatIndicators(req.Indicators) + "\n\n" +
+		"Technical indicators (" + strconv.Itoa(tickSeconds(req.TickSeconds)) + "s ticks):\n" + formatIndicators(req.Indicators) + "\n\n" +
 		a.portfolioBlock(req.Equity, req.Cash, req.OpenPositions) +
 		"Recent news (" + assetName(req.Market) + "):\n" + delimitedNewsBlock(relevantNews(req.Market, req.News, 5)) + "\n\n" +
 		"Return JSON with exactly these keys:\n" +
@@ -1033,4 +1035,13 @@ func firstErr(errs ...error) error {
 		}
 	}
 	return nil
+}
+
+// tickSeconds returns the indicator tick length to name in prompts: seconds,
+// or 30 (the historical tick) when it is not set.
+func tickSeconds(seconds int) int {
+	if seconds <= 0 {
+		return 30
+	}
+	return seconds
 }

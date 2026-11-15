@@ -24,20 +24,21 @@ type Settings struct {
 	DatabasePath string
 
 	// Trading
-	BaseCurrency           string
-	StartingCapital        float64
-	TargetTradeAmount      float64
-	MaxLossPerTradePercent float64
-	MaxDailyLossPercent    float64
-	MinTradeSize           float64
-	StopLossPct            float64
-	TrailingStopPct        float64
-	MomentumLookbackTicks  int
-	FeeAndSlippage         float64
-	MinSignalConfidence    float64
-	LLMVetoThreshold       float64
-	Min24hVolume           float64
-	AlertWebhookURL        string
+	BaseCurrency            string
+	StartingCapital         float64
+	TargetTradeAmount       float64
+	MaxLossPerTradePercent  float64
+	MaxDailyLossPercent     float64
+	MinTradeSize            float64
+	StopLossPct             float64
+	TrailingStopPct         float64
+	MomentumLookbackTicks   int
+	StrategyIntervalSeconds int // seconds between strategy ticks
+	FeeAndSlippage          float64
+	MinSignalConfidence     float64
+	LLMVetoThreshold        float64
+	Min24hVolume            float64
+	AlertWebhookURL         string
 
 	// Modes
 	TradingMode        string // manual | semi_automated | fully_automated
@@ -102,37 +103,38 @@ var defaultMarkets = []string{
 // Defaults returns the built-in default settings.
 func Defaults() Settings {
 	return Settings{
-		Host:                   "127.0.0.1",
-		Port:                   8000,
-		CORSOrigins:            []string{"http://localhost:8000", "http://127.0.0.1:8000"},
-		DatabasePath:           "./trading_bot.db",
-		BaseCurrency:           "EUR",
-		StartingCapital:        500.0,
-		TargetTradeAmount:      100.0,
-		MaxLossPerTradePercent: 5.0,
-		MaxDailyLossPercent:    5.0,
-		MinTradeSize:           50.0,
-		StopLossPct:            0.05,
-		TrailingStopPct:        0.03,
-		MomentumLookbackTicks:  10,
-		FeeAndSlippage:         0.0036,
-		MinSignalConfidence:    0.65,
-		LLMVetoThreshold:       0.70,
-		Min24hVolume:           0.0,
-		TradingMode:            "manual",
-		TradingEnvironment:     "paper",
-		KrakenRESTURL:          "https://api.kraken.com",
-		NewsSources:            []string{},
-		DisabledNewsSources:    []string{},
-		FixedMarkets:           slices.Clone(defaultMarkets),
-		DynamicUniverseSource:  "coingecko",
-		MaxEthEcosystemCoins:   10,
-		LMStudioBaseURL:        "http://localhost:1234/v1",
-		LMStudioTimeout:        60,
-		OpenAITimeout:          30,
-		LLMOnlyMaxConcurrency:  3,
-		LogLevel:               "INFO",
-		LogFile:                "trading_bot.log",
+		Host:                    "127.0.0.1",
+		Port:                    8000,
+		CORSOrigins:             []string{"http://localhost:8000", "http://127.0.0.1:8000"},
+		DatabasePath:            "./trading_bot.db",
+		BaseCurrency:            "EUR",
+		StartingCapital:         500.0,
+		TargetTradeAmount:       100.0,
+		MaxLossPerTradePercent:  5.0,
+		MaxDailyLossPercent:     5.0,
+		MinTradeSize:            50.0,
+		StopLossPct:             0.05,
+		TrailingStopPct:         0.03,
+		MomentumLookbackTicks:   10,
+		StrategyIntervalSeconds: 60,
+		FeeAndSlippage:          0.0036,
+		MinSignalConfidence:     0.65,
+		LLMVetoThreshold:        0.70,
+		Min24hVolume:            0.0,
+		TradingMode:             "manual",
+		TradingEnvironment:      "paper",
+		KrakenRESTURL:           "https://api.kraken.com",
+		NewsSources:             []string{},
+		DisabledNewsSources:     []string{},
+		FixedMarkets:            slices.Clone(defaultMarkets),
+		DynamicUniverseSource:   "coingecko",
+		MaxEthEcosystemCoins:    10,
+		LMStudioBaseURL:         "http://localhost:1234/v1",
+		LMStudioTimeout:         60,
+		OpenAITimeout:           30,
+		LLMOnlyMaxConcurrency:   3,
+		LogLevel:                "INFO",
+		LogFile:                 "trading_bot.log",
 	}
 }
 

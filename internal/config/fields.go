@@ -40,6 +40,11 @@ const (
 	// maxLLMTimeout (seconds) keeps the LLM timeouts far from overflowing
 	// time.Duration.
 	maxLLMTimeout = 600
+	// MinStrategyIntervalSeconds and MaxStrategyIntervalSeconds bound
+	// STRATEGY_INTERVAL_SECONDS: faster than 30 s adds load without fresher
+	// prices; slower than 10 minutes leaves stops checked too rarely.
+	MinStrategyIntervalSeconds = 30
+	MaxStrategyIntervalSeconds = 600
 )
 
 // Field describes one dashboard-managed setting. Live fields take effect as
@@ -84,6 +89,7 @@ var fields = []Field{
 	floatField("MIN_24H_VOLUME", "Minimum 24h volume", GroupRisk, true, "Skip markets trading less than this in 24 hours (0 = off).", atLeast(0), func(s *Settings) *float64 { return &s.Min24hVolume }),
 
 	// Signals (live)
+	intField("STRATEGY_INTERVAL_SECONDS", "Strategy interval (s)", GroupSignals, true, "Seconds between strategy runs (30-600). Indicators count price ticks, so a longer interval also makes their windows and the warm-up last longer. Backtests always use 30-second ticks.", MinStrategyIntervalSeconds, MaxStrategyIntervalSeconds, func(s *Settings) *int { return &s.StrategyIntervalSeconds }),
 	floatField("MIN_SIGNAL_CONFIDENCE", "Minimum signal confidence", GroupSignals, true, "Fully automated mode only trades signals at or above this (0–1).", between(0, 1), func(s *Settings) *float64 { return &s.MinSignalConfidence }),
 	floatField("LLM_VETO_THRESHOLD", "LLM veto threshold", GroupSignals, true, "The combined strategy drops signals the LLM rates below this (0–1).", between(0, 1), func(s *Settings) *float64 { return &s.LLMVetoThreshold }),
 	intField("MOMENTUM_LOOKBACK_TICKS", "Momentum lookback (ticks)", GroupSignals, true, "Price ticks used for the momentum calculation (1-199; the bot keeps 200 ticks per market).", 1, PriceHistoryTicks-1, func(s *Settings) *int { return &s.MomentumLookbackTicks }),

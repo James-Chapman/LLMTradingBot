@@ -8,7 +8,7 @@ import (
 
 // Retention limits and default page sizes (ported from repository.py).
 const (
-	MaxPriceRowsPerSymbol = 5_760  // 48 h of price ticks at 30 s intervals
+	MaxPriceRowsPerSymbol = 5_760  // price ticks kept per market: 96 h at the default 60 s interval
 	MaxEquityRows         = 17_280 // 48 h of equity snapshots at 10 s intervals
 	DefaultActivityKeep   = 2_000
 

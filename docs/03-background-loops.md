@@ -33,7 +33,7 @@ The LLM backend is probed once in `app.New` (`probeLLM`) before the loops start.
 
 ## Strategy Loop (`strategyLoop`)
 
-**Interval:** 30 seconds  
+**Interval:** `STRATEGY_INTERVAL_SECONDS` (default 60 seconds, 30–600), read before each wait so a dashboard change applies from the next tick. `App.strategyInterval()` returns it, unless `Options.Intervals.Strategy` fixes the interval (tests).  
 **Purpose:** Fetch live prices, evaluate the selected strategy, enforce risk rules, and route to execution.
 
 On first entry, `bootStrategyLoop` resolves the market universe, validates the symbols against Kraken's tradable pairs, restores up to 60 price ticks per market from SQLite, logs "Bot started", sends a `bot_started` alert, and starts the Kraken ticker stream with `market.Start(active, a.cacheMarketSnapshot)`.
@@ -64,7 +64,7 @@ If markets are configured but none can be validated (Kraken unreachable at start
 18. Dashboard state update         → merge into latestSignals (max 12), bump dashboard version
 ```
 
-A gated tick (emergency stop, no markets, no prices, warm-up) waits a full interval; an evaluated tick subtracts its own run time so the cadence stays at 30 seconds.
+A gated tick (emergency stop, no markets, no prices, warm-up) waits a full interval; an evaluated tick subtracts its own run time so the cadence stays at one interval. A tick that takes longer than the interval (for example a slow LLM) is followed by the next one at once.
 
 Live fills are reconciled (step 8) before the stops, so a just-filled live entry is protected in the same tick. Stop checks (step 9) run before the database writes of steps 10–12. A failed write ends the tick with an error, so running the stops first means a database problem cannot leave a position unprotected. The equity snapshot of step 11 then saves the cash from any stop close in the same tick.
 
@@ -79,11 +79,11 @@ The emergency stop is checked again for every idea in step 16 (`handleIdea`). A 
 
 > **Note:** `recordEquitySnapshot(ctx, prices)` runs during every strategy tick immediately after fresh market prices arrive. In paper mode it builds the snapshot from the paper engine (`portfolio.BuildEquitySnapshot`); in live mode it reads Kraken balances through `kraken.ExecutionEngine.GetAccountSnapshot()`, keeping the last-known live values if Kraken is unavailable. It updates `currentEquity`, `currentCash`, and the risk engine (`risk.UpdateEquity`), appends the point to `equityHistory`, and persists `total_equity`, `cash`, and `positions_value` to SQLite. The Equity Graph therefore records the same account source used by the dashboard header.
 
-`kraken.MarketAdapter.Start(symbols, callback)` runs the WebSocket v2 ticker subscription in a background goroutine. Every streamed update is stored by `cacheMarketSnapshot` into `latestSnapshots` and `currentPrices`. The 30-second strategy tick consumes these cached snapshots and only calls `GetTickersBatch()` for symbols that have not produced a stream update yet or whose last update is stale (see above). If the stream itself fails, the adapter switches to REST ticker polling, so the cache keeps filling either way.
+`kraken.MarketAdapter.Start(symbols, callback)` runs the WebSocket v2 ticker subscription in a background goroutine. Every streamed update is stored by `cacheMarketSnapshot` into `latestSnapshots` and `currentPrices`. Each strategy tick consumes these cached snapshots and only calls `GetTickersBatch()` for symbols that have not produced a stream update yet or whose last update is stale (see above). If the stream itself fails, the adapter switches to REST ticker polling, so the cache keeps filling either way.
 
 ### Warm-Up Period
 
-The indicator-only strategy will not generate signals until `strategy.LookbackTicks = 34` historical samples plus the latest tick have been collected. This prevents MACD and other indicators from running on insufficient data. The first signal can fire after approximately 17.5 minutes on a cold start (35 ticks × 30 seconds). The count is the longest price history among the markets that are enabled and priced in this tick, so a disabled or unpriced first market cannot hold the warm-up back.
+The indicator-only strategy will not generate signals until `strategy.LookbackTicks = 34` historical samples plus the latest tick have been collected. This prevents MACD and other indicators from running on insufficient data. The first signal can fire after approximately 35 minutes on a cold start (35 ticks × the default 60 seconds; 17.5 minutes at 30 seconds). The count is the longest price history among the markets that are enabled and priced in this tick, so a disabled or unpriced first market cannot hold the warm-up back.
 
 LLM-backed strategies use a data-driven check instead: each declares `RequiredPriceTicks()`, and the tick waits ("LLM data warmup waiting for … price ticks and news") until at least one market has that many ticks and the news cache is non-empty. `app.TradeWarmupTicks` is `0`; there is no fixed post-start delay.
 
@@ -296,7 +296,7 @@ Failed or empty fetches leave the previous cache entry in place. The `GET /api/o
 ## Equity Ticker Loop (`equityTickerLoop`)
 
 **Interval:** 10 seconds  
-**Purpose:** Recompute total portfolio equity from the latest known prices and push a supplemental snapshot to `equityHistory` between 30-second strategy ticks.
+**Purpose:** Recompute total portfolio equity from the latest known prices and push a supplemental snapshot to `equityHistory` between strategy ticks.
 
 ### Execution Sequence
 

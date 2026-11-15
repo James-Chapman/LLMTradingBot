@@ -103,9 +103,10 @@ The stop distances must be above 0 because the risk engine estimates a trade's p
 
 | Key | Default | Applies | Description |
 |---|---|---|---|
+| `STRATEGY_INTERVAL_SECONDS` | `60` | Now | Seconds between strategy ticks (30–600), read before each wait, so a change applies from the next tick. Indicators, the warm-up and `MOMENTUM_LOOKBACK_TICKS` count ticks, so a longer interval stretches them over more time. Streamed prices count as stale after two intervals. Backtests always simulate 30-second ticks |
 | `MIN_SIGNAL_CONFIDENCE` | `0.65` | Now | Minimum confidence to trade in fully automated mode. No effect in manual or semi-automated mode |
 | `LLM_VETO_THRESHOLD` | `0.70` | Now | The combined strategy vetoes signals the LLM rates below this. `0` disables the veto |
-| `MOMENTUM_LOOKBACK_TICKS` | `10` | Now | 30-second ticks of price history used for the momentum baseline (1–199: the bot keeps 200 ticks per market and momentum over N ticks needs N+1) |
+| `MOMENTUM_LOOKBACK_TICKS` | `10` | Now | Strategy ticks of price history used for the momentum baseline (1–199: the bot keeps 200 ticks per market and momentum over N ticks needs N+1) |
 | `LLM_ONLY_MAX_CONCURRENCY` | `3` | Now | Markets the LLM-only strategy analyses at once per tick (1–16) |
 
 ### Markets

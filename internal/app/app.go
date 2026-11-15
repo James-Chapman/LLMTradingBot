@@ -35,7 +35,7 @@ import (
 )
 
 // Version is the application version reported by /health and the dashboard.
-const Version = "0.13.0"
+const Version = "0.14.0"
 
 // Name is the application display name.
 const Name = "Kraken Trading Bot"
@@ -49,7 +49,7 @@ const (
 	signalBufferMax        = 12   // signals kept in the dashboard panel
 	riskRejectionsMax      = 50   // rolling risk rejections kept in memory
 	riskRejectionsShown    = 20   // rejections included in the dashboard
-	priceHistoryMax        = 200  // price ticks per market (~100 min at 30 s)
+	priceHistoryMax        = 200  // price ticks per market (200 min at the default 60 s interval)
 	equityHistoryMax       = 1440 // equity points (4 h at 10 s)
 	latestNewsMax          = 60   // cached news articles
 	restoredPricesPerSym   = 60   // price ticks restored per market at start-up
@@ -102,7 +102,7 @@ type UniverseSource interface {
 
 // Intervals are the background loop timings; zero values select main.py's.
 type Intervals struct {
-	Strategy        time.Duration // 30 s between strategy ticks
+	Strategy        time.Duration // 0: STRATEGY_INTERVAL_SECONDS from the settings, read each tick
 	News            time.Duration // 5 min between news fetches
 	ReflectionDelay time.Duration // 2 min before the first reflection
 	Reflection      time.Duration // 1 h between reflections
@@ -121,7 +121,6 @@ func (iv Intervals) withDefaults() Intervals {
 			*d = v
 		}
 	}
-	def(&iv.Strategy, 30*time.Second)
 	def(&iv.News, 300*time.Second)
 	def(&iv.ReflectionDelay, 120*time.Second)
 	def(&iv.Reflection, time.Hour)

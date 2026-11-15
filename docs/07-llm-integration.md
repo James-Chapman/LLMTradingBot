@@ -286,7 +286,7 @@ Your most recent self-reflection (47m ago, confidence 72%):
   Suggestion: Avoid longs when RSI above 70 and MACD histogram is negative.
 Apply this advice when assessing the current signal.
 
-Technical indicators (30s ticks):
+Technical indicators (60s ticks):
   Change — 15m: +0.54% | 30m: +1.23% | 5m: +0.21%
   RSI(14): 34.2 — oversold
   EMA9/21: 83,312.00 / 82,890.00 — bullish crossover
@@ -534,7 +534,7 @@ Returns:
 
 ### `MACD(prices, fast, slow, signal) map[string]any`
 
-Full MACD with signal line and histogram. Requires at least `slow + signal − 1 = 34` prices (~17 min at 30 s/tick).
+Full MACD with signal line and histogram. Requires at least `slow + signal − 1 = 34` prices (~34 min at the default 60 s/tick).
 
 Returns: `line`, `signal`, `histogram`, `bias`, `signal_bias`.
 
