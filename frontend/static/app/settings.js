@@ -5,7 +5,8 @@
  *     is confirmed; going live needs "LIVE" typed.
  *   Settings — every stored bot setting, one group at a time. Saving lists the
  *     changes in a confirmation first. Secrets are write-only: the API only
- *     says whether one is set, and the form never shows a value.
+ *     says whether one is set, and the form never shows a value. The
+ *     DISABLED_NEWS_SOURCES list is shown as one on/off switch per news feed.
  * selectStrategy is also used by the strategy panel of the Intelligence view.
  */
 
@@ -22,6 +23,7 @@ Dashboard.register('settings', {
     settingsGroup: '',      // group shown in the dialog
     settingsClear: {},      // secret key -> true when it should be cleared on save
     settingsRestartRequired: [],
+    settingsNewsFeeds: [],  // built-in news sources: {name, url, category, kind}
     settingsError: '',
     settingsNotice: '',
     settingsSaving: false,
@@ -152,6 +154,7 @@ Dashboard.register('settings', {
         this.resetSettingsDraft(data.fields);
         this.settingsFields = data.fields;
         this.settingsRestartRequired = data.restart_required;
+        this.settingsNewsFeeds = data.news_feeds || [];
     },
 
     // Opens the settings dialog with freshly loaded values (or the reason they could not load).
@@ -208,9 +211,63 @@ Dashboard.register('settings', {
         input.focus();
     },
 
-    // Removes one entry from a list setting.
+    // Removes one entry from a list setting. A removed extra news feed also loses its off switch.
     removeListItem(key, index) {
+        const removed = this.settingsDraft[key][index];
         this.settingsDraft[key] = this.settingsDraft[key].filter((_, i) => i !== index);
+        if (key === 'NEWS_SOURCES' && removed) {
+            const name = removed.split('::')[0].trim();
+            this.settingsDraft.DISABLED_NEWS_SOURCES = this.settingsDraft.DISABLED_NEWS_SOURCES.filter(n => n !== name);
+        }
+    },
+
+    // ── News feed switches (the DISABLED_NEWS_SOURCES setting) ──────────────
+
+    // Every news feed the switches cover: built-in ones by category, then the extra feeds being edited.
+    get newsFeedGroups() {
+        const groups = [];
+        for (const feed of this.settingsNewsFeeds) {
+            let group = groups.find(g => g.name === feed.category);
+            if (!group) groups.push(group = { name: feed.category, feeds: [] });
+            group.feeds.push(feed);
+        }
+        const extra = (this.settingsDraft.NEWS_SOURCES || []).map(spec => {
+            const [name, ...url] = spec.split('::');
+            return { name: name.trim(), url: url.join('::').trim() };
+        });
+        if (extra.length) groups.push({ name: 'Your feeds', feeds: extra });
+        return groups;
+    },
+
+    // True unless the feed is switched off in the form.
+    newsFeedOn(name) {
+        return !(this.settingsDraft.DISABLED_NEWS_SOURCES || []).includes(name);
+    },
+
+    // Flips one feed's switch in the form (saved with the other settings).
+    toggleNewsFeed(name) {
+        const off = this.settingsDraft.DISABLED_NEWS_SOURCES;
+        this.settingsDraft.DISABLED_NEWS_SOURCES = off.includes(name) ? off.filter(n => n !== name) : [...off, name];
+    },
+
+    // Switches every feed on, or every feed off.
+    setAllNewsFeeds(on) {
+        this.settingsDraft.DISABLED_NEWS_SOURCES = on ? [] : this.newsFeedGroups.flatMap(g => g.feeds.map(f => f.name));
+    },
+
+    // "12 of 21 on" for the switch panel.
+    newsFeedSummary() {
+        const names = this.newsFeedGroups.flatMap(g => g.feeds.map(f => f.name));
+        return `${names.filter(n => this.newsFeedOn(n)).length} of ${names.length} on`;
+    },
+
+    // The feed's host name for display, e.g. coindesk.com.
+    feedHost(url) {
+        try {
+            return new URL(url).host.replace(/^www\./, '');
+        } catch {
+            return url;
+        }
     },
 
     // The edited settings as the API expects them: {KEY: text}. Lists become JSON arrays.
@@ -247,6 +304,16 @@ Dashboard.register('settings', {
     _describeSettingChange(field, value) {
         const when = field.live ? 'applies now' : 'after restart';
         if (field.secret) return `• ${field.label}: ${value === '' ? 'cleared' : 'new value'} (${when})`;
+        if (field.key === 'DISABLED_NEWS_SOURCES') {
+            const before = JSON.parse(field.value || '[]');
+            const after = JSON.parse(value);
+            const parts = [];
+            const off = after.filter(x => !before.includes(x));
+            const on = before.filter(x => !after.includes(x));
+            if (off.length) parts.push(`switched off ${off.join(', ')}`);
+            if (on.length) parts.push(`switched on ${on.join(', ')}`);
+            return `• ${field.label}: ${parts.join('; ') || 'reordered'} (${when})`;
+        }
         if (field.kind === 'list') {
             const before = JSON.parse(field.value || '[]');
             const after = JSON.parse(value);

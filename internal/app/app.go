@@ -35,7 +35,7 @@ import (
 )
 
 // Version is the application version reported by /health and the dashboard.
-const Version = "0.12.1"
+const Version = "0.13.0"
 
 // Name is the application display name.
 const Name = "Kraken Trading Bot"
@@ -140,7 +140,7 @@ type Options struct {
 	Live            LiveEngine
 	LLM             LLMClient
 	Universe        UniverseSource
-	NewsAdapters    []news.Adapter // nil: RSS feeds from settings plus Fear & Greed
+	NewsAdapters    []news.Adapter // nil: the built-in sources plus the extra feeds from settings
 	StrategyFactory func(config.Settings) []strategy.Strategy
 	Activity        *observability.ActivityLog // nil: observability.Activity
 	Logger          *slog.Logger
@@ -336,10 +336,8 @@ func (a *App) applyDefaults() {
 		a.universe = defaultUniverse(s)
 	}
 	if a.newsAdapters == nil {
-		for _, rss := range news.BuildRSSAdapters(s.NewsSources) {
-			a.newsAdapters = append(a.newsAdapters, rss)
-		}
-		a.newsAdapters = append(a.newsAdapters, news.NewFearGreedAdapter())
+		// Every source gets an adapter; switched-off ones are skipped per fetch.
+		a.newsAdapters = news.BuildAdapters(config.BuiltInNewsFeeds(), s.NewsSources)
 	}
 }
 

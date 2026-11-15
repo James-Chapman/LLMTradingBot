@@ -217,8 +217,9 @@ All three dialogs use `.modal-backdrop` + `.modal-panel`, close on Escape and on
 | `bool` | Switch |
 | `list` | Removable chips, an add box (Enter or **Add**; market symbols upper-cased, duplicates ignored), entry count and **Remove all** |
 | secret | `type="password"`, `autocomplete="new-password"`, never pre-filled; **Clear** / **Keep** |
+| `DISABLED_NEWS_SOURCES` | **News feeds** panel: one switch per source, grouped by category (`newsFeedGroups`: the API's `news_feeds`, then *Your feeds* from the `NEWS_SOURCES` draft), each with its host; an *n of m on* count and **All on** / **All off**. A switch edits the list of switched-off names (`toggleNewsFeed`); removing an extra feed also drops its name from that list |
 
-`saveSettings()` confirms with one line per change (lists show `+` added and `−` removed; secrets only *new value* / *cleared*), then posts the changes. Closing with unsaved changes asks first. While `settingsRestartRequired` is not empty, a banner lists the keys: *Settings saved. Restart the bot to apply: …*.
+`saveSettings()` confirms with one line per change (lists show `+` added and `−` removed; news feeds *switched off …* / *switched on …*; secrets only *new value* / *cleared*), then posts the changes. Closing with unsaved changes asks first. While `settingsRestartRequired` is not empty, a banner lists the keys: *Settings saved. Restart the bot to apply: …*.
 
 **Signal detail** (`.signal-panel`, `showSignal(id)`): strategy, time, market and direction, final confidence, thesis, score breakdown (momentum base, indicator consensus, news and LLM sentiment, ATR penalty, strategy confidence, learner and LLM multipliers, final), indicator votes, raw signal data, risk decision, LLM assessment, news in context, entry and exit plans.
 

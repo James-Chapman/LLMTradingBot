@@ -512,7 +512,11 @@ Lists every setting in display order. Secret values are never sent.
       "restart_pending": true
     }
   ],
-  "restart_required": ["KRAKEN_API_KEY"]
+  "restart_required": ["KRAKEN_API_KEY"],
+  "news_feeds": [
+    {"name": "CoinDesk", "url": "https://www.coindesk.com/arc/outboundfeeds/rss/", "category": "Crypto news", "kind": "feed"},
+    {"name": "Fear & Greed", "url": "https://alternative.me/crypto/fear-and-greed-index/", "category": "Market sentiment", "kind": "fear_greed"}
+  ]
 }
 ```
 
@@ -524,6 +528,7 @@ Lists every setting in display order. Secret values are never sent.
 | `is_set` | Whether a value is saved (the only thing reported for secrets) |
 | `restart_pending` | Saved value differs from the one the running bot uses |
 | `restart_required` | Every key with `restart_pending` |
+| `news_feeds` | The built-in news sources (`config.BuiltInNewsFeeds()`), which the dashboard lists with a switch each. `kind` is `feed` (RSS/Atom) or `fear_greed`. Switched-off names are the `DISABLED_NEWS_SOURCES` setting |
 
 ### `POST /api/settings`
 

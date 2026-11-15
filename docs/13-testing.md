@@ -60,7 +60,7 @@ The suite intentionally checks stable behaviour rather than internal implementat
 - LLM strategy behaviour: LLM long recommendations emit trade ideas, hold recommendations do not, indicators are passed through to the LLM, and the veto threshold blocks low-scale signals.
 - LLM analyser prompt behaviour: briefing, signal analysis, recommendation and reflection prompts include the expected context; responses are parsed and clamped defensively.
 - LLM clients: tolerant JSON parsing, circuit breaker backoff, LM Studio model auto-selection, and the switching client's fallback to the remote endpoint and reclaiming of LM Studio.
-- News: RSS spec parsing, feed fetching and parsing, timestamp normalisation, and the Fear & Greed adapter.
+- News: RSS spec parsing, RSS and Atom fetching and parsing, building adapters from the built-in catalogue plus extra feeds, timestamp normalisation, and the Fear & Greed adapter. The app tests cover switching feeds off and on (`TestNewsFeedSwitches`).
 - Indicators: insufficient-history behaviour, RSI edge cases, named price-change windows, Python-compatible rounding, and JSON-safe output.
 - Backtest replay (`internal/backtest`, see `docs/14-backtesting.md`): accounting, tick timing, determinism, no look-ahead (`TestReplayNoLookAhead`), input parity with a naive recomputation (`TestReplayInputParity`), universe selection, provenance and the simulated exchange's fills, on synthetic bars built in the tests; LLM strategies are refused. The real strategy and scripted strategies drive the runs.
 - Backtest reports (`internal/backtest`):

@@ -2466,8 +2466,35 @@
                                             </button>
                                         </template>
 
+                                        <!-- News feeds: one switch per feed (switched-off names are the saved list) -->
+                                        <template x-if="field.key === 'DISABLED_NEWS_SOURCES'">
+                                            <div :id="'setting-' + field.key" class="feed-switches" role="group" aria-label="News feeds">
+                                                <div class="feed-switches-head">
+                                                    <span class="setting-help" x-text="newsFeedSummary()"></span>
+                                                    <button type="button" class="btn btn-small btn-secondary" @click="setAllNewsFeeds(true)">All on</button>
+                                                    <button type="button" class="btn btn-small btn-secondary" @click="setAllNewsFeeds(false)">All off</button>
+                                                </div>
+                                                <template x-for="group in newsFeedGroups" :key="group.name">
+                                                    <div class="feed-group">
+                                                        <h4 class="feed-group-title" x-text="group.name"></h4>
+                                                        <template x-for="feed in group.feeds" :key="feed.name">
+                                                            <div class="feed-row">
+                                                                <button type="button" role="switch" class="switch"
+                                                                    :aria-checked="newsFeedOn(feed.name) ? 'true' : 'false'"
+                                                                    :aria-label="feed.name" @click="toggleNewsFeed(feed.name)">
+                                                                    <span class="switch-knob"></span>
+                                                                </button>
+                                                                <span class="feed-name" x-text="feed.name"></span>
+                                                                <span class="feed-host mono" :title="feed.url" x-text="feedHost(feed.url)"></span>
+                                                            </div>
+                                                        </template>
+                                                    </div>
+                                                </template>
+                                            </div>
+                                        </template>
+
                                         <!-- List: removable chips plus an add box -->
-                                        <template x-if="!field.secret && field.kind === 'list'">
+                                        <template x-if="!field.secret && field.kind === 'list' && field.key !== 'DISABLED_NEWS_SOURCES'">
                                             <div class="chip-editor">
                                                 <div class="chip-list">
                                                     <template x-for="(item, index) in settingsDraft[field.key]" :key="item">
@@ -2482,7 +2509,7 @@
                                                 <form class="chip-add" @submit.prevent="addListItem(field, $event.target.elements.entry)">
                                                     <input :id="'setting-' + field.key" name="entry" type="text" autocomplete="off"
                                                         class="setting-input mono"
-                                                        :placeholder="field.key === 'FIXED_MARKETS' ? 'Add a market, e.g. SOL/EUR' : field.key === 'NEWS_SOURCES' ? 'Add a feed as Name::URL' : 'Add an entry'">
+                                                        :placeholder="field.key === 'FIXED_MARKETS' ? 'Add a market, e.g. SOL/EUR' : field.key === 'NEWS_SOURCES' ? 'Add a feed as Name::https://…' : 'Add an entry'">
                                                     <button type="submit" class="btn btn-small btn-secondary">Add</button>
                                                     <span class="setting-help"
                                                         x-text="settingsDraft[field.key].length + (settingsDraft[field.key].length === 1 ? ' entry' : ' entries')"></span>

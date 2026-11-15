@@ -113,7 +113,7 @@ LLMTradingBot/
 |   |   |-- switching_client.go     LM Studio → remote fallback router
 |   |   |-- pyfmt.go                Python-compatible number formatting for prompts
 |   |   `-- analyser.go             Signal analysis, briefing, reflection
-|   |-- news/                       RSS feeds and Fear & Greed adapter
+|   |-- news/                       RSS/Atom feeds and Fear & Greed adapter
 |   |-- observability/              slog JSON logging and the activity log
 |   |-- paper/                      Paper trading engine and operator reset
 |   |-- portfolio/equity.go         Mark-to-market equity snapshots

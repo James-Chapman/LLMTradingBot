@@ -111,7 +111,9 @@ var fields = []Field{
 	intField("OPENAI_TIMEOUT", "Fallback LLM timeout (s)", GroupLLM, false, "Seconds to wait for a fallback reply (1-600).", 1, maxLLMTimeout, func(s *Settings) *int { return &s.OpenAITimeout }),
 
 	// News & alerts
-	listField("NEWS_SOURCES", "News feeds", GroupNews, false, "RSS feeds as Name::URL.", nil, func(s *Settings) *[]string { return &s.NewsSources }),
+	// The dashboard shows this list as one on/off switch per news feed.
+	listField("DISABLED_NEWS_SOURCES", "News feeds", GroupNews, true, "Switch a feed off to stop the bot reading it; its articles leave the news list at the next fetch. Every feed is on by default.", newsNames, func(s *Settings) *[]string { return &s.DisabledNewsSources }),
+	listField("NEWS_SOURCES", "Extra news feeds", GroupNews, false, "Your own RSS or Atom feeds as Name::URL, read as well as the built-in feeds.", extraNewsFeeds, func(s *Settings) *[]string { return &s.NewsSources }),
 	stringField("ALERT_WEBHOOK_URL", "Alert webhook URL", GroupNews, true, "Receives bot alerts (start, emergency stop, daily loss). Empty = off.", false, httpURL(true), func(s *Settings) *string { return &s.AlertWebhookURL }),
 
 	// Advanced (restart)

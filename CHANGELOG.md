@@ -7,6 +7,24 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.13.0] — 2026-11-15
+
+More news sources for the LLM, each with an on/off switch. Guide: `docs/09-ingestion-adapters.md`.
+
+### Added
+- **11 more news sources**, read every 5 minutes with the others (21 in total):
+  - Crypto news: CryptoBriefing, BeInCrypto, CoinGape, crypto.news, The Daily Hodl, AMBCrypto, Bitcoin.com News and Blockworks.
+  - Macro & regulatory: Federal Reserve, SEC and ECB press releases (rate decisions, ETF and enforcement news).
+- **An on/off switch for every news source** under Settings → News & alerts → *News feeds*. The 20 built-in feeds, Fear & Greed and your own extra feeds are each listed, grouped by category; all are on by default. Changes apply at once: a switched-off source is not fetched from the next news cycle and its articles leave the news list. *All on* / *All off* switch every source together. Stored as the new `DISABLED_NEWS_SOURCES` setting.
+- **Atom feeds** can be read as well as RSS, for built-in and extra feeds (Blockworks uses Atom).
+
+### Changed
+- **The built-in feeds are no longer part of the editable feed list.** `NEWS_SOURCES` is now *Extra news feeds*: only feeds you add, as `Name::URL`. A list saved before this version still loads; entries named like a built-in source are dropped from it.
+  - If you removed one of the original feeds from the old list, it is back and switched on. Switch it off under *News feeds*.
+- Extra feeds are checked when saved: each must be `Name::URL` with an http(s) URL, and two feeds may not share a name. Before, a malformed entry was saved and then skipped at start-up.
+
+---
+
 ## [0.12.1] — 2026-11-15
 
 ### Fixed

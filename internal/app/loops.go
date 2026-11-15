@@ -813,18 +813,30 @@ func (a *App) newsLoop(ctx context.Context) {
 	}
 }
 
-// newsCycle runs one news fetch: store, cache, brief new articles, re-probe the LLM.
+// newsCycle runs one news fetch: store, cache, brief new articles, re-probe
+// the LLM. Sources switched off in the dashboard are not fetched and their
+// articles leave the cache.
 func (a *App) newsCycle(ctx context.Context) error {
+	disabled := a.cfg().DisabledNewsSources
+	adapters := enabledNewsAdapters(a.newsAdapters, disabled)
+	if len(a.newsAdapters) > 0 && len(adapters) == 0 {
+		a.mu.Lock()
+		a.latestNews = withoutNewsSources(a.latestNews, disabled)
+		a.mu.Unlock()
+		a.activity.Info("All news feeds are switched off", "Switch a feed on under Settings → News & alerts.")
+		a.llmClient.RecheckPrimary(ctx)
+		return nil
+	}
 	var items []domain.NewsItem
 	failures := 0
-	for _, adapter := range a.newsAdapters {
+	for _, adapter := range adapters {
 		fetched, err := adapter.FetchNews(ctx) // adapters log their own failures
 		if err != nil {
 			failures++
 		}
 		items = append(items, fetched...)
 	}
-	if len(a.newsAdapters) > 0 && failures == len(a.newsAdapters) {
+	if len(adapters) > 0 && failures == len(adapters) {
 		// Nothing was fetched: keep the previous cache rather than emptying it
 		// (an empty cache would pause LLM strategies) and brief nothing.
 		a.llmClient.RecheckPrimary(ctx)
@@ -845,7 +857,7 @@ func (a *App) newsCycle(ctx context.Context) error {
 	// before count as new; the briefed set keeps every cached ID and is
 	// bounded by briefedNewsIDsMax.
 	a.mu.Lock()
-	latest := mergeNews(a.latestNews, fetched, latestNewsMax)
+	latest := mergeNews(withoutNewsSources(a.latestNews, disabled), fetched, latestNewsMax)
 	a.latestNews = latest
 	var fresh []storage.NewsEntry
 	for _, n := range latest {

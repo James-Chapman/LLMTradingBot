@@ -30,7 +30,7 @@ const (
 	maxFeedBodySize = 10 << 20 // 10 MiB guard against runaway responses
 )
 
-// RSSAdapter fetches one RSS feed. Build it with NewRSSAdapter or
+// RSSAdapter fetches one RSS or Atom feed. Build it with NewRSSAdapter or
 // RSSAdapterFromSpec; it must not be copied after first use.
 type RSSAdapter struct {
 	Name     string
@@ -148,13 +148,25 @@ func BuildRSSAdapters(specs []string) []*RSSAdapter {
 	return adapters
 }
 
-// rssChild is one direct child element of an <item>.
+// rssChild is one direct child element of an RSS <item> or Atom <entry>.
 type rssChild struct {
 	XMLName xml.Name
-	Text    string `xml:",chardata"`
+	Attrs   []xml.Attr `xml:",any,attr"`
+	Text    string     `xml:",chardata"`
 }
 
-// rssItem captures every direct child of an <item> so fields can be matched by name.
+// attr returns the child's attribute named local, or "".
+func (c rssChild) attr(local string) string {
+	for _, a := range c.Attrs {
+		if a.Name.Local == local {
+			return strings.TrimSpace(a.Value)
+		}
+	}
+	return ""
+}
+
+// rssItem captures every direct child of an RSS <item> or Atom <entry> so
+// fields can be matched by name.
 type rssItem struct {
 	XMLName  xml.Name
 	Children []rssChild `xml:",any"`
@@ -171,13 +183,43 @@ func (it rssItem) text(local string) string {
 	return ""
 }
 
+// firstText returns the first non-empty child text among locals, in order.
+func (it rssItem) firstText(locals ...string) string {
+	for _, local := range locals {
+		if v := it.text(local); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// link returns the item's page address: the RSS <link> text, or else the
+// href of an Atom <link> whose rel is empty or "alternate" (so enclosure
+// and self links are ignored).
+func (it rssItem) link() string {
+	if v := it.text("link"); v != "" {
+		return v
+	}
+	for _, child := range it.Children {
+		if child.XMLName.Local != "link" || child.XMLName.Space != it.XMLName.Space {
+			continue
+		}
+		if rel := child.attr("rel"); rel == "" || rel == "alternate" {
+			return child.attr("href")
+		}
+	}
+	return ""
+}
+
 // parsedItem is a feed item plus whether its pubDate could be parsed.
 type parsedItem struct {
 	item  domain.NewsItem
 	dated bool
 }
 
-// ParseRSS parses up to maxItems <item> elements from an RSS document. Title
+// ParseRSS parses up to maxItems <item> elements from an RSS document, or
+// <entry> elements from an Atom one (summary or content stands in for the
+// description, published or updated for the pubDate). Title
 // and description are cleaned to plain single-line text and capped (see
 // CleanText); only http(s) links are kept. Items without a title are
 // skipped; unparseable pubDates fall back to now (UTC).
@@ -215,7 +257,7 @@ func parseRSSItems(data []byte, sourceName string, maxItems int) ([]parsedItem, 
 			return nil, fmt.Errorf("parse RSS: %w", err)
 		}
 		start, ok := token.(xml.StartElement)
-		if !ok || start.Name.Local != "item" {
+		if !ok || (start.Name.Local != "item" && start.Name.Local != "entry") {
 			continue
 		}
 		var raw rssItem
@@ -230,14 +272,14 @@ func parseRSSItems(data []byte, sourceName string, maxItems int) ([]parsedItem, 
 		if title == "" {
 			continue
 		}
-		link := safeLink(raw.text("link"))
-		published, dated := parseDate(raw.text("pubDate"))
+		link := safeLink(raw.link())
+		published, dated := parseDate(raw.firstText("pubDate", "published", "updated"))
 		items = append(items, parsedItem{
 			item: domain.NewsItem{
 				ID:          StableID(title, link),
 				Source:      sourceName,
 				Title:       title,
-				Content:     CleanText(raw.text("description"), MaxDescriptionRunes),
+				Content:     CleanText(raw.firstText("description", "summary", "content"), MaxDescriptionRunes),
 				PublishedAt: published,
 				URL:         link,
 			},

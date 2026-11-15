@@ -157,7 +157,8 @@ The fallback is used only while LM Studio is unreachable; `llm.SwitchingClient` 
 
 | Key | Default | Applies | Description |
 |---|---|---|---|
-| `NEWS_SOURCES` | 9 built-in feeds | Restart | RSS feeds as `Name::URL`, one per line. The Fear & Greed adapter is always included |
+| `DISABLED_NEWS_SOURCES` | empty (every feed on) | Now | Names of news sources the bot does not read. The dashboard shows it as **News feeds**: one switch per built-in source (20 feeds plus Fear & Greed) and per extra feed. A switched-off source is not fetched from the next news cycle, and its articles leave the news cache. Names match case-insensitively |
+| `NEWS_SOURCES` | empty | Restart | **Extra news feeds**: your own RSS or Atom feeds as `Name::URL` (http or https), read as well as the built-in ones. Entries named like a built-in source are dropped (lists saved before 0.13.0 held the old defaults, which are now built in); a malformed entry or two feeds with the same name are refused |
 | `ALERT_WEBHOOK_URL` | empty | Now | Webhook for start, emergency stop, daily loss and stop-loss alerts. Empty disables alerts |
 
 ### Advanced

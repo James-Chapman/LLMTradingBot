@@ -33,8 +33,9 @@ type SettingView struct {
 
 // SettingsView is the GET /api/settings response.
 type SettingsView struct {
-	Fields          []SettingView `json:"fields"`
-	RestartRequired []string      `json:"restart_required"` // keys saved but not yet in use
+	Fields          []SettingView     `json:"fields"`
+	RestartRequired []string          `json:"restart_required"` // keys saved but not yet in use
+	NewsFeeds       []config.NewsFeed `json:"news_feeds"`       // built-in sources, for the feed switches
 }
 
 // SettingsUpdate is the POST /api/settings response.
@@ -96,13 +97,13 @@ func (a *App) savedSettings() config.Settings {
 }
 
 // SettingsView lists every dashboard setting with its saved value and
-// whether it is waiting for a restart.
+// whether it is waiting for a restart, plus the built-in news sources.
 func (a *App) SettingsView() SettingsView {
 	a.settingsMu.RLock()
 	saved, running := a.saved, a.settings
 	a.settingsMu.RUnlock()
 
-	view := SettingsView{Fields: []SettingView{}, RestartRequired: []string{}}
+	view := SettingsView{Fields: []SettingView{}, RestartRequired: []string{}, NewsFeeds: config.BuiltInNewsFeeds()}
 	for _, f := range config.Fields() {
 		v := SettingView{Key: f.Key, Label: f.Label, Group: f.Group, Help: f.Help, Kind: string(f.Kind), Live: f.Live, Secret: f.Secret}
 		value := f.Value(saved)

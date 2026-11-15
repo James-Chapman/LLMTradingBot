@@ -1,5 +1,6 @@
-// Package news provides news ingestion adapters: configurable RSS feeds
-// ('Name::URL' specs) and the Alternative.me Crypto Fear & Greed index.
+// Package news provides news ingestion adapters: RSS and Atom feeds (the
+// built-in catalogue in config.BuiltInNewsFeeds plus extra
+// 'Name::URL' feeds) and the Alternative.me Crypto Fear & Greed index.
 //
 // Article IDs are derived from sha256(title + url) so they are stable across
 // restarts and de-duplication of already-briefed items keeps working.
