@@ -529,12 +529,24 @@ func TestBacktestPathSafety(t *testing.T) {
 	writeFile(t, base, "outside/summary.md", outsideMarker)
 	h := backtestHarness(t, root)
 
-	// noLeak fails when a response names the outside run or a filesystem path.
+	// isRedirect reports whether ServeMux answered with a redirect to the
+	// cleaned form of a non-canonical path.
+	isRedirect := func(rec *httptest.ResponseRecorder) bool {
+		return rec.Code == http.StatusMovedPermanently || rec.Code == http.StatusTemporaryRedirect || rec.Code == http.StatusPermanentRedirect
+	}
+
+	// noLeak fails when a response carries the outside run's data, or names
+	// a filesystem path. A redirect's body repeats the URL the client sent,
+	// which on Linux contains the temp folder (it starts with "/"); that is
+	// the request's own text, not a leak, so only the data is checked there.
 	noLeak := func(t *testing.T, target string, rec *httptest.ResponseRecorder) {
 		t.Helper()
 		body := rec.Body.String()
-		if strings.Contains(body, outsideMarker) || strings.Contains(body, base) || strings.Contains(body, filepath.ToSlash(base)) {
-			t.Errorf("%s: response leaks outside data or a path: %s", target, body)
+		if strings.Contains(body, outsideMarker) {
+			t.Errorf("%s: response leaks outside data: %s", target, body)
+		}
+		if !isRedirect(rec) && (strings.Contains(body, base) || strings.Contains(body, filepath.ToSlash(base))) {
+			t.Errorf("%s: response names a filesystem path: %s", target, body)
 		}
 	}
 
@@ -566,7 +578,7 @@ func TestBacktestPathSafety(t *testing.T) {
 				for hop := 0; hop < 3; hop++ {
 					rec = h.do(http.MethodGet, next, nil)
 					noLeak(t, next, rec)
-					if rec.Code != http.StatusMovedPermanently && rec.Code != http.StatusTemporaryRedirect && rec.Code != http.StatusPermanentRedirect {
+					if !isRedirect(rec) {
 						break
 					}
 					next = rec.Header().Get("Location")
@@ -581,7 +593,7 @@ func TestBacktestPathSafety(t *testing.T) {
 	t.Run("GIVEN an id that the mux would clean or redirect WHEN checked by the handler itself THEN it is still refused", func(t *testing.T) {
 		// The handler must not rely on ServeMux path cleaning.
 		refused := []string{"", ".", "..", "../outside", "r1/../../outside", "r1/..", "./r1", "r1/", "/r1", "//r1",
-			`..\outside`, `r1\..\..\outside`, "C:", "C:/windows", "c:outside", "r1\x00", "r1\x00/x", "r1/\x01", "NUL", "r1/CON", strings.Repeat("a", 600)}
+			`..\outside`, `r1\..\..\outside`, "C:", "C:/windows", "c:outside", "r1\x00", "r1\x00/x", "r1/\x01", "NUL", "r1/CON", "nul.txt", "r1/com1", "LPT9/x", strings.Repeat("a", 600)}
 		for _, id := range refused {
 			if validBacktestID(id) {
 				t.Errorf("id %q must be refused", id)

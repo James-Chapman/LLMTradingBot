@@ -133,7 +133,29 @@ func validBacktestID(id string) bool {
 			return false
 		}
 	}
+	for _, segment := range strings.Split(id, "/") {
+		if windowsReservedName(segment) {
+			return false
+		}
+	}
 	return filepath.IsLocal(filepath.FromSlash(id))
+}
+
+// windowsReservedName reports whether a path segment is a Windows device
+// name (CON, NUL, COM1…), with or without an extension. filepath.IsLocal
+// only refuses these on Windows; checking here keeps ids valid or invalid
+// on every platform alike.
+func windowsReservedName(segment string) bool {
+	base, _, _ := strings.Cut(segment, ".")
+	base = strings.ToUpper(strings.TrimRight(base, " "))
+	switch base {
+	case "CON", "PRN", "AUX", "NUL":
+		return true
+	}
+	if len(base) == 4 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) {
+		return base[3] >= '1' && base[3] <= '9'
+	}
+	return false
 }
 
 // openResultsRoot opens the results folder as an os.Root; it returns nil,
