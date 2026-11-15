@@ -26,6 +26,8 @@ tradingbot.exe [-db FILE] [-host ADDR] [-port N] [-log FILE] [-frontend DIR]
 | `-log` | `trading_bot.log` | Log file. LLM client and analyser records are also written to `llm.log` in the same directory |
 | `-frontend` | `frontend` | Directory holding `index.html`, `approvals.html`, `login.html`, `sw.js` and `static/` |
 
+The bot finds its files whatever folder it is started from. Its **home folder** is the first of these that holds `frontend/index.html`: the working directory, the folder holding the executable, and the folder above that (the executable is built into `bin/`). The dashboard is served from the home folder, and the database and log file are kept there when `-db` and `-log` are left at their defaults. So double-clicking `bin	radingbot.exe` uses the same dashboard and database as `launch.bat`. Paths given with `-db`, `-log` or `-frontend` are used exactly as given (relative ones against the working directory). If no dashboard is found the bot refuses to start and lists where it looked. The start-up log line records the `database` and `frontend` paths in use.
+
 `-h` prints the flags. `launch.bat` starts the bot without flags, so the defaults apply. The CLI's `run` command passes its `-db`, `-host`, `-port` and `-log` through (see [12-operations.md](12-operations.md)).
 
 ---

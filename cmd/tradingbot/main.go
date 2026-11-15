@@ -52,6 +52,13 @@ func main() {
 	if err != nil {
 		os.Exit(2)
 	}
+	// Find the dashboard and the database whatever folder the bot was started
+	// from (double-clicking the executable starts it in bin).
+	boot, frontendDir, err = resolvePaths(boot, frontendDir, homeCandidates())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "tradingbot:", err)
+		os.Exit(1)
+	}
 	if err := run(boot, frontendDir); err != nil {
 		fmt.Fprintln(os.Stderr, "tradingbot:", err)
 		os.Exit(1)
@@ -69,7 +76,7 @@ func parseFlags(args []string, out io.Writer) (config.Bootstrap, string, error) 
 	host := fs.String("host", defaults.Host, "address the dashboard listens on")
 	port := fs.Int("port", defaults.Port, "port the dashboard listens on")
 	logFile := fs.String("log", defaults.LogFile, "log file (llm.log is written beside it)")
-	frontendDir := fs.String("frontend", "frontend", "directory holding index.html, approvals.html, sw.js and static/")
+	frontendDir := fs.String("frontend", defaultFrontendDir, "directory holding index.html, approvals.html, sw.js and static/")
 	if err := fs.Parse(args); err != nil {
 		return config.Bootstrap{}, "", err
 	}
@@ -164,7 +171,9 @@ func run(boot config.Bootstrap, frontendDir string) error {
 	go func() {
 		logger.Info("Starting Kraken Trading Bot",
 			"host", settings.Host, "port", settings.Port,
-			"mode", bot.TradingMode(), "environment", bot.TradingEnvironment(), "version", app.Version)
+			"mode", bot.TradingMode(), "environment", bot.TradingEnvironment(), "version", app.Version,
+			// Which files are in use: the answer when the dashboard or the data is not the expected one.
+			"database", boot.DatabasePath, "frontend", frontendDir)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serveErr <- err
 		}

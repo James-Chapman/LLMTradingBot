@@ -7,6 +7,18 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.12.1] — 2026-11-15
+
+### Fixed
+- **The bot finds its dashboard and database whatever folder it is started from.** Double-clicking `bin\tradingbot.exe` starts it in `bin`, where the relative `frontend` folder does not exist. Every page returned "404 not found" while the API worked, and a new, empty `trading_bot.db` was silently created in `bin` and traded on instead of the real one.
+  - The bot now looks for `frontend/index.html` in the working folder, the executable's folder and the folder above it, and uses the dashboard, database and log file of the first one that has it.
+  - Paths given with `-db`, `-log` or `-frontend` are used exactly as given.
+  - If no dashboard is found, the bot refuses to start and lists where it looked, instead of running with no page.
+  - The start-up log line shows which database and dashboard folder are in use.
+- A stray `bin\trading_bot.db` (with its `-shm` and `-wal` files and `bin\trading_bot.log`) left by an earlier start can be deleted once the bot is stopped.
+
+---
+
 ## [0.12.0] — 2026-11-15
 
 A redesigned dashboard, and a viewer for backtest results. Guide: `docs/11-frontend.md`.
