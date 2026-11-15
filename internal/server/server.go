@@ -73,6 +73,9 @@ type Options struct {
 	Access TokenSource
 	// FailedLoginDelay is the wait after a wrong token (default 1 s).
 	FailedLoginDelay time.Duration
+	// BacktestResultsDir is the folder the backtest viewer reads run
+	// directories from (default "results", relative to the working directory).
+	BacktestResultsDir string
 }
 
 // handler serves the API for one App.
@@ -84,6 +87,8 @@ type handler struct {
 	requireLogin bool
 	access       TokenSource
 	failDelay    time.Duration
+	// resultsDir is the backtest results folder read by /api/backtests.
+	resultsDir string
 }
 
 // New returns the bot's HTTP handler: the Host check, then CORS, then (when
@@ -98,9 +103,13 @@ func New(a *app.App, opts Options) http.Handler {
 		requireLogin: !config.IsLoopbackHost(settings.Host),
 		access:       opts.Access,
 		failDelay:    opts.FailedLoginDelay,
+		resultsDir:   opts.BacktestResultsDir,
 	}
 	if h.frontendDir == "" {
 		h.frontendDir = "frontend"
+	}
+	if h.resultsDir == "" {
+		h.resultsDir = "results"
 	}
 	if h.logger == nil {
 		h.logger = observability.Logger("server")
@@ -165,6 +174,11 @@ func (h *handler) routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/positions/{position_id}/forget", h.forgetPosition)
 	mux.HandleFunc("POST /api/positions/reset", h.resetPositions)
 	mux.HandleFunc("GET /api/news", h.news)
+
+	// Backtest results (read-only; files under BacktestResultsDir, see backtests.go)
+	mux.HandleFunc("GET /api/backtests", h.listBacktests)
+	mux.HandleFunc("GET /api/backtests/{id...}", h.getBacktest)
+
 	mux.HandleFunc("GET /api/health", h.apiHealth)
 	mux.HandleFunc("GET /health", h.health)
 	return mux

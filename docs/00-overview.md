@@ -70,7 +70,7 @@ Live prices reach the strategy loop through the Kraken WebSocket v2 ticker chann
 | Language | Go | 1.27; single static binary per command |
 | Web server | `net/http` (`http.ServeMux`) | Package `internal/server`; Host-header check always on; access token when `-host` is not loopback; graceful shutdown on Ctrl+C / SIGTERM (a second Ctrl+C quits at once) |
 | Concurrency | Goroutines + `context.Context` | One goroutine per background loop; cancellation via the root context |
-| Frontend | Alpine.js + local CSS | No build step; utility styling in `/static/styles.css` |
+| Frontend | Alpine.js + local CSS | No build step; a design system (tokens and components) in `/static/styles.css`, one script per view in `/static/app/` |
 | Charts | Lightweight Charts (candles), Chart.js (equity) | CDN-loaded |
 | Database | SQLite via `database/sql` + `modernc.org/sqlite` | Pure Go (no cgo); one shared connection (`SetMaxOpenConns(1)`); WAL journal; schema compatible with Python-created DBs |
 | Settings | `internal/config` (`Settings` struct + field registry) | Built-in defaults → values saved from the dashboard's Settings dialog (SQLite `settings` table, secrets DPAPI-encrypted) → start-up flags `-db -host -port -log`. No `.env`, no environment variables |
@@ -113,7 +113,7 @@ LLMTradingBot/
 |   |   |-- switching_client.go     LM Studio → remote fallback router
 |   |   |-- pyfmt.go                Python-compatible number formatting for prompts
 |   |   `-- analyser.go             Signal analysis, briefing, reflection
-|   |-- news/                       RSS feeds and Fear & Greed adapter
+|   |-- news/                       RSS/Atom feeds and Fear & Greed adapter
 |   |-- observability/              slog JSON logging and the activity log
 |   |-- paper/                      Paper trading engine and operator reset
 |   |-- portfolio/equity.go         Mark-to-market equity snapshots
@@ -129,10 +129,11 @@ LLMTradingBot/
 |   |   `-- calc/                   Shared decision formulas and constants
 |   `-- universe/resolver.go        Tradable market universe builder (fixed + CoinGecko coins in BASE_CURRENCY)
 `-- frontend/
-    |-- index.html                  Main dashboard (Alpine.js SPA)
+    |-- index.html                  Main dashboard: markup of the shell and its six views (Alpine.js)
     |-- approvals.html              Dedicated approval queue page
     |-- login.html                  Access-token form (only used when -host is not loopback)
-    |-- static/styles.css           Local utility styles
+    |-- static/styles.css           Design system: tokens, components, view layouts, breakpoints
+    |-- static/app/                 Dashboard scripts: core.js plus one file per view (see 11-frontend.md)
     `-- sw.js                       Service Worker
 ```
 

@@ -172,18 +172,26 @@ type Adapter interface {
 }
 ```
 
-### Configurable RSS Sources
+### Built-in Sources
 
-RSS sources are the `NEWS_SOURCES` setting (dashboard → ⚙ Settings → News & alerts), one `Name::URL` entry per line:
+`config.BuiltInNewsFeeds()` (`internal/config/newsfeeds.go`) is the catalogue the bot ships with. Each entry has a `Name`, `URL`, `Category` and `Kind` (`feed` for RSS/Atom, `fear_greed` for the index):
 
-```
-CoinDesk::https://www.coindesk.com/arc/outboundfeeds/rss/
-My Feed::https://example.com/rss
-```
+| Category | Sources |
+|---|---|
+| Crypto news | CoinDesk, CoinTelegraph, The Block, Decrypt, Bitcoin Magazine, CryptoSlate, The Defiant, CryptoPotato, NewsBTC, CryptoBriefing, BeInCrypto, CoinGape, crypto.news, The Daily Hodl, AMBCrypto, Bitcoin.com News, Blockworks (Atom) |
+| Macro & regulatory | Federal Reserve press releases, SEC press releases, ECB press releases |
+| Market sentiment | Fear & Greed (Alternative.me) |
 
-At startup, `news.BuildRSSAdapters(settings.NewsSources)` parses each entry into an `RSSAdapter`. Invalid entries (missing `::`, empty name, or empty URL) are skipped with a warning log. A `FearGreedAdapter` is always appended automatically; it does not need a `NEWS_SOURCES` entry.
+Every URL was checked with the bot's User-Agent on 2026-11-15. Bitcoinist, U.Today and cryptonews.com timed out and CoinJournal returned 502 at that time, so they are not included.
 
-To add a new RSS source, add a line to **News feeds** in the Settings dialog, save, and restart the bot.
+To add a built-in source, append a `NewsFeed` to `builtInNewsFeeds`. It appears in the dashboard switches automatically, switched on.
+
+### Extra Feeds and Switches
+
+- **Extra feeds** are the `NEWS_SOURCES` setting (dashboard → ⚙ Settings → News & alerts → *Extra news feeds*), one `Name::URL` entry each, e.g. `My Feed::https://example.com/rss`. They need a restart. Entries named like a built-in source are dropped when the setting is applied.
+- **Switches** are the `DISABLED_NEWS_SOURCES` setting (*News feeds* in the dialog), which applies at once. It lists the names that are off; every source is on unless listed.
+
+At start-up `news.BuildAdapters(config.BuiltInNewsFeeds(), settings.NewsSources)` returns one adapter per built-in source in catalogue order, then one per extra feed (invalid specs are skipped with a warning; an extra feed named like a built-in source is not added twice). `newsCycle` skips adapters whose `SourceName()` is switched off and removes their articles from the cache.
 
 ---
 
@@ -205,6 +213,8 @@ func BuildRSSAdapters(specs []string) []*RSSAdapter
 ---
 
 ### `ParseRSS()` (`internal/news/rss.go`)
+
+Reads RSS 2.0 `<item>` elements and Atom `<entry>` elements with the same code. For Atom, the page link is the `href` of a `<link>` whose `rel` is empty or `alternate` (enclosure and self links are ignored), `<summary>` or `<content>` stands in for `<description>`, and `<published>` or `<updated>` for `<pubDate>`.
 
 ```go
 func ParseRSS(data []byte, sourceName string, maxItems int, now time.Time) ([]domain.NewsItem, error)

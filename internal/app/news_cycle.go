@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/James-Chapman/LLMTradingBot/internal/domain"
+	"github.com/James-Chapman/LLMTradingBot/internal/news"
 	"github.com/James-Chapman/LLMTradingBot/internal/portfolio"
 	"github.com/James-Chapman/LLMTradingBot/internal/storage"
 )
@@ -61,6 +62,41 @@ func mergeNews(previous, fetched []storage.NewsEntry, limit int) []storage.NewsE
 		return publishedTime(merged[i]).After(publishedTime(merged[j]))
 	})
 	return merged[:min(len(merged), limit)]
+}
+
+// newsSourceOff reports whether source is in the switched-off list (any case).
+func newsSourceOff(disabled []string, source string) bool {
+	for _, name := range disabled {
+		if strings.EqualFold(name, source) {
+			return true
+		}
+	}
+	return false
+}
+
+// enabledNewsAdapters returns the adapters whose source is not switched off.
+func enabledNewsAdapters(adapters []news.Adapter, disabled []string) []news.Adapter {
+	out := make([]news.Adapter, 0, len(adapters))
+	for _, adapter := range adapters {
+		if !newsSourceOff(disabled, adapter.SourceName()) {
+			out = append(out, adapter)
+		}
+	}
+	return out
+}
+
+// withoutNewsSources returns the cached entries whose source is not switched off.
+func withoutNewsSources(entries []storage.NewsEntry, disabled []string) []storage.NewsEntry {
+	if len(disabled) == 0 {
+		return entries
+	}
+	out := make([]storage.NewsEntry, 0, len(entries))
+	for _, n := range entries {
+		if !newsSourceOff(disabled, n.Source) {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // publishedTime parses a cache entry's ISO publish time (zero if unparseable).

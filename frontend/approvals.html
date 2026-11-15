@@ -3,30 +3,25 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Approvals — Kraken Bot</title>
+    <meta name="color-scheme" content="dark">
+    <title>Approvals — LLM Trading Bot</title>
     <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
 
 <!-- ── Header ─────────────────────────────────────────────────────────── -->
-<header class="app-header sticky top-0 z-50">
-    <div class="app-shell approvals-shell header-bar">
-        <div class="header-left">
-            <a href="/" style="font-size:13px;color:var(--blue);text-decoration:none;">← Dashboard</a>
-            <span style="color:var(--border);">|</span>
-            <span style="font-size:15px;font-weight:600;">Trade Approvals</span>
-        </div>
-        <div id="count-badge" class="pill pill-gold">Loading…</div>
+<header class="page-header">
+    <div class="row">
+        <a href="/#/overview/approvals" class="btn btn-ghost btn-small">← Dashboard</a>
+        <h1 class="dialog-title">Trade Approvals</h1>
     </div>
+    <span id="count-badge" class="pill pill-outline">Loading…</span>
 </header>
 
 <!-- ── Main ───────────────────────────────────────────────────────────── -->
-<main class="app-shell approvals-shell page-stack">
-    <div id="container" class="approval-list">
-        <div style="text-align:center;padding:80px 0;color:var(--muted);">
-            <div style="font-size:32px;margin-bottom:12px;">⏳</div>
-            <div style="font-size:14px;">Loading…</div>
-        </div>
+<main class="page-main">
+    <div id="container">
+        <div class="panel"><p class="empty">Loading…</p></div>
     </div>
 </main>
 
@@ -58,14 +53,61 @@ function parseUtc(value) {
     return new Date(hasZone ? text : text + 'Z');
 }
 
+// Shows the count in the header badge: amber only while trades wait, red for an error.
+function setBadge(text, pill) {
+    const badge = document.getElementById('count-badge');
+    badge.textContent = text;
+    badge.className = `pill ${pill}`;
+}
+
 // Replaces the list with an error so a failed load never leaves "Loading…" on screen.
 function showLoadError(message) {
-    document.getElementById('count-badge').textContent = 'Error';
+    setBadge('Error', 'pill-loss');
     document.getElementById('container').innerHTML = `
-        <div style="text-align:center;padding:80px 0;color:var(--red);">
-            <div style="font-size:15px;font-weight:600;margin-bottom:8px;">Could not load approvals</div>
-            <div style="font-size:13px;color:var(--muted);">${esc(message)} — retrying every few seconds.</div>
-        </div>`;
+        <div class="panel"><div class="empty is-error">
+            <strong>Could not load approvals</strong><br>
+            ${esc(message)} — retrying every few seconds.
+        </div></div>`;
+}
+
+// Renders one approval as a card; every server value goes through esc().
+function approvalCard(a) {
+    const long = a.direction === 'long';
+    const pct = Math.round(a.confidence * 100);
+    const expiry = parseUtc(a.expires_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return `
+    <article class="approval-page-card" data-card-id="${esc(a.id)}">
+        <div class="row-between">
+            <div class="row">
+                <span class="market-quote-price">${esc(a.market)}</span>
+                <span class="pill ${long ? 'pill-profit' : 'pill-loss'}">${long ? '▲' : '▼'} ${esc(a.direction.toUpperCase())}</span>
+            </div>
+            <div class="list-item-meta">
+                <div>${esc(a.strategy_id)}</div>
+                <div>Expires ${esc(expiry)}</div>
+            </div>
+        </div>
+
+        <div class="row approval-confidence">
+            <span class="meter"><span class="meter-fill ${long ? 'is-long' : 'is-short'}" style="width:${pct}%"></span></span>
+            <span class="num ${long ? 'pos' : 'neg'}">${pct}%</span>
+            <span class="muted">confidence</span>
+        </div>
+
+        <div class="approval-details">
+            <div><h2 class="section-title">Thesis</h2><p>${esc(a.thesis)}</p></div>
+            <div><h2 class="section-title">Entry</h2><p>${esc(a.entry_plan)}</p></div>
+            <div><h2 class="section-title">Exit</h2><p>${esc(a.exit_plan)}</p></div>
+        </div>
+
+        <div class="approval-foot">
+            <span class="${a.risk_approved ? 'pos' : 'neg'}">Risk: ${esc(a.risk_reason)}</span>
+            <div class="approval-actions">
+                <button type="button" class="btn btn-primary" data-approval-id="${esc(a.id)}" data-approval-action="approve">✓ Approve</button>
+                <button type="button" class="btn btn-danger-quiet" data-approval-id="${esc(a.id)}" data-approval-action="reject">✗ Reject</button>
+            </div>
+        </div>
+    </article>`;
 }
 
 // Fetches the pending approvals and renders one card per trade.
@@ -79,80 +121,23 @@ async function load() {
         }
         const approvals = await r.json();
 
-        document.getElementById('count-badge').textContent =
-            approvals.length ? `${approvals.length} pending` : 'No pending';
-
-        const el = document.getElementById('container');
-
-        if (!approvals.length) {
-            el.innerHTML = `
-                <div style="text-align:center;padding:80px 0;color:var(--muted);">
-                    <div style="font-size:40px;margin-bottom:16px;">✓</div>
-                    <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:8px;">No pending approvals</div>
-                    <div style="font-size:13px;">Choose the <b>semi-automated</b> mode in the dashboard's Trading settings dialog to generate trade proposals.</div>
-                </div>`;
-            return;
+        if (approvals.length) {
+            setBadge(`${approvals.length} pending`, 'pill-warning');
+        } else {
+            setBadge('None pending', 'pill-outline');
         }
 
-        el.innerHTML = approvals.map(a => {
-            const long   = a.direction === 'long';
-            const col    = long ? 'var(--green)' : 'var(--red)';
-            const bg     = long ? 'rgba(63,185,80,.06)' : 'rgba(248,81,73,.06)';
-            const pct    = Math.round(a.confidence * 100);
-            const expiry = parseUtc(a.expires_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
-            const riskCol = a.risk_approved ? 'var(--green)' : 'var(--red)';
-            return `
-            <div class="card approval-card" data-card-id="${esc(a.id)}">
-                <!-- Title row -->
-                <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:16px;">
-                    <div style="display:flex;align-items:center;gap:10px;">
-                        <span style="font-size:20px;font-weight:700;">${esc(a.market)}</span>
-                        <span class="pill ${long ? 'pill-green' : 'pill-red'}">${long ? '▲' : '▼'} ${esc(a.direction.toUpperCase())}</span>
-                    </div>
-                    <div style="text-align:right;font-size:12px;color:var(--muted);">
-                        <div>${esc(a.strategy_id)}</div>
-                        <div>Expires ${expiry}</div>
-                    </div>
-                </div>
-
-                <!-- Confidence bar -->
-                <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;">
-                    <div style="flex:1;height:6px;background:var(--subtle);border-radius:3px;">
-                        <div style="height:6px;border-radius:3px;width:${pct}%;background:${col};transition:width .3s;"></div>
-                    </div>
-                    <span style="font-size:13px;font-weight:700;color:${col};">${pct}%</span>
-                    <span style="font-size:12px;color:var(--muted);">confidence</span>
-                </div>
-
-                <!-- Details grid -->
-                <div class="approval-details">
-                    <div>
-                        <div class="label" style="margin-bottom:6px;">Thesis</div>
-                        <div style="font-size:13px;line-height:1.5;">${esc(a.thesis)}</div>
-                    </div>
-                    <div>
-                        <div class="label" style="margin-bottom:6px;">Entry</div>
-                        <div style="font-size:13px;line-height:1.5;">${esc(a.entry_plan)}</div>
-                    </div>
-                    <div>
-                        <div class="label" style="margin-bottom:6px;">Exit</div>
-                        <div style="font-size:13px;line-height:1.5;">${esc(a.exit_plan)}</div>
-                    </div>
-                </div>
-
-                <!-- Risk + actions -->
-                <div style="display:flex;align-items:center;justify-content:space-between;padding-top:16px;border-top:1px solid var(--subtle);">
-                    <div style="font-size:12px;color:${riskCol};">
-                        Risk: ${esc(a.risk_reason)}
-                    </div>
-                    <div class="approval-actions">
-                        <button class="btn btn-approve" data-approval-id="${esc(a.id)}" data-approval-action="approve">✓ Approve</button>
-                        <button class="btn btn-reject"  data-approval-id="${esc(a.id)}" data-approval-action="reject">✗ Reject</button>
-                    </div>
-                </div>
-            </div>`;
-        }).join('');
-    } catch(e) {
+        const el = document.getElementById('container');
+        if (!approvals.length) {
+            el.innerHTML = `
+                <div class="panel"><div class="empty">
+                    <strong>No pending approvals</strong><br>
+                    Choose the <b>semi-automated</b> mode in the dashboard's Trading settings dialog to generate trade proposals.
+                </div></div>`;
+            return;
+        }
+        el.innerHTML = approvals.map(approvalCard).join('');
+    } catch (e) {
         console.error(e);
         showLoadError(`The server could not be reached (${e.message})`);
     }
@@ -161,8 +146,8 @@ async function load() {
 // Approves or rejects one trade and tells the operator when no real order was executed.
 async function decide(id, action) {
     const card = [...document.querySelectorAll('[data-card-id]')].find(c => c.dataset.cardId === id);
-    const restoreCard = () => { if (card) { card.style.opacity = '1'; card.style.pointerEvents = ''; } };
-    if (card) { card.style.opacity = '0.4'; card.style.pointerEvents = 'none'; }
+    const restoreCard = () => card?.classList.remove('is-busy');
+    card?.classList.add('is-busy');
     try {
         const r = await fetch(`/api/approvals/${encodeURIComponent(id)}/${action}`, { method: 'POST' });
         const d = await r.json().catch(() => ({}));
@@ -181,7 +166,7 @@ async function decide(id, action) {
             alert(`Trade approved but the ${d.environment || 'paper'} order was REJECTED (e.g. insufficient funds).`);
         }
         setTimeout(load, 400);
-    } catch(e) {
+    } catch (e) {
         console.error(e);
         restoreCard();
         alert(`Could not ${action} the trade — the server could not be reached (${e.message}).`);

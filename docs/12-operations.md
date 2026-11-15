@@ -89,7 +89,7 @@ Flags:
 | `-log` | `trading_bot.log` | Log file; `llm.log` is written beside it |
 | `-frontend` | `frontend` | Directory holding `index.html`, `approvals.html`, `login.html`, `sw.js` and `static/` |
 
-The defaults are relative to the working directory, so start the bot from the repository root (`launch.bat` does this). `-h` prints the flags. No environment variables are read.
+The bot finds its files whatever folder it is started from. Its **home folder** is the first of these that holds `frontend/index.html`: the working directory, the folder holding the executable, and the folder above that (the executable is built into `bin/`). The dashboard is served from the home folder, and the database and log file are kept there when `-db` and `-log` are left at their defaults. So double-clicking `bin	radingbot.exe` uses the same dashboard and database as `launch.bat`. Paths given with `-db`, `-log` or `-frontend` are used exactly as given (relative ones against the working directory). If no dashboard is found the bot refuses to start and lists where it looked. The start-up log line records the `database` and `frontend` paths in use. `-h` prints the flags. No environment variables are read.
 
 The operator CLI can also start the bot. It looks for `tradingbot.exe` next to itself or on `PATH`:
 
@@ -483,7 +483,7 @@ A signal was generated for a market that already has an open position in the sam
 
 ### Positions not appearing after restart
 
-Positions are restored from the database on startup. If the `open_positions` table is empty (e.g., after a reset or fresh DB), no positions will appear. Check `SELECT * FROM open_positions;` in SQLite, and check that `DATABASE_PATH` points at the file you expect: it is resolved relative to the working directory.
+Positions are restored from the database on startup. If the `open_positions` table is empty (e.g., after a reset or fresh DB), no positions will appear. Check `SELECT * FROM open_positions;` in SQLite, and check which database is in use: the start-up log line shows its path. Before 0.12.1 a bot started from another folder (for example by double-clicking `bin	radingbot.exe`) created a new empty `trading_bot.db` there; such a stray file can be deleted once the bot is stopped.
 
 ### LLM reflection not appearing
 

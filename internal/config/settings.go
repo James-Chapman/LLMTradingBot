@@ -48,8 +48,10 @@ type Settings struct {
 	KrakenAPISecret string
 	KrakenRESTURL   string
 
-	// News sources, each "Name::URL"
-	NewsSources []string
+	// News: extra feeds ("Name::URL") on top of BuiltInNewsFeeds, and the
+	// names of sources (built-in or extra) switched off in the dashboard
+	NewsSources         []string
+	DisabledNewsSources []string
 
 	// Universe
 	FixedMarkets          []string
@@ -120,26 +122,17 @@ func Defaults() Settings {
 		TradingMode:            "manual",
 		TradingEnvironment:     "paper",
 		KrakenRESTURL:          "https://api.kraken.com",
-		NewsSources: []string{
-			"CoinDesk::https://www.coindesk.com/arc/outboundfeeds/rss/",
-			"CoinTelegraph::https://cointelegraph.com/rss",
-			"The Block::https://www.theblock.co/rss.xml",
-			"Decrypt::https://decrypt.co/feed",
-			"Bitcoin Magazine::https://bitcoinmagazine.com/.rss/full/",
-			"CryptoSlate::https://cryptoslate.com/feed/",
-			"The Defiant::https://thedefiant.io/feed/",
-			"CryptoPotato::https://cryptopotato.com/feed/",
-			"NewsBTC::https://www.newsbtc.com/feed/",
-		},
-		FixedMarkets:          slices.Clone(defaultMarkets),
-		DynamicUniverseSource: "coingecko",
-		MaxEthEcosystemCoins:  10,
-		LMStudioBaseURL:       "http://localhost:1234/v1",
-		LMStudioTimeout:       60,
-		OpenAITimeout:         30,
-		LLMOnlyMaxConcurrency: 3,
-		LogLevel:              "INFO",
-		LogFile:               "trading_bot.log",
+		NewsSources:            []string{},
+		DisabledNewsSources:    []string{},
+		FixedMarkets:           slices.Clone(defaultMarkets),
+		DynamicUniverseSource:  "coingecko",
+		MaxEthEcosystemCoins:   10,
+		LMStudioBaseURL:        "http://localhost:1234/v1",
+		LMStudioTimeout:        60,
+		OpenAITimeout:          30,
+		LLMOnlyMaxConcurrency:  3,
+		LogLevel:               "INFO",
+		LogFile:                "trading_bot.log",
 	}
 }
 

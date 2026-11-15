@@ -197,18 +197,21 @@ After risk evaluation (`handleIdea`). A rejected decision is logged, stored in `
 
 | Adapter | Feed |
 |---------|------|
-| `news.RSSAdapter` (one per `NEWS_SOURCES` entry) | CoinDesk, Cointelegraph, The Block, Decrypt, Bitcoin Magazine, CryptoSlate, The Defiant, CryptoPotato, NewsBTC (defaults) |
-| `news.FearGreedAdapter` | Alternative.me Fear & Greed JSON API (always included) |
+| `news.RSSAdapter` (one per built-in feed and per `NEWS_SOURCES` entry; reads RSS and Atom) | Crypto news: CoinDesk, CoinTelegraph, The Block, Decrypt, Bitcoin Magazine, CryptoSlate, The Defiant, CryptoPotato, NewsBTC, CryptoBriefing, BeInCrypto, CoinGape, crypto.news, The Daily Hodl, AMBCrypto, Bitcoin.com News, Blockworks (Atom). Macro & regulatory: Federal Reserve, SEC, ECB press releases |
+| `news.FearGreedAdapter` | Alternative.me Fear & Greed JSON API |
 
-RSS adapters are built from `NEWS_SOURCES` by `news.BuildRSSAdapters`; there are no per-feed adapter types.
+Adapters are built at start-up by `news.BuildAdapters(config.BuiltInNewsFeeds(), settings.NewsSources)`; there are no per-feed adapter types. Every source gets an adapter; the ones named in `DISABLED_NEWS_SOURCES` are skipped per cycle, so the dashboard switches apply without a restart.
 
 ### Execution Sequence (`newsCycle`)
 
 ```
-1.  Fetch from all adapters       → sequentially; each adapter logs its own failures
+0.  Skip switched-off sources     → adapters named in DISABLED_NEWS_SOURCES are not fetched; if every source is off, drop
+                                    their articles from the cache, log "All news feeds are switched off", re-probe the LLM and stop
+1.  Fetch from the other adapters → sequentially; each adapter logs its own failures
 2.  Normalise all PublishedAt values to UTC, then sort descending
 3.  Upsert each item to DB        → repo.UpsertNewsItem() (INSERT OR IGNORE)
-4.  Merge into latestNews cache   → this cycle's articles are merged into the previous cache (dedupe by ID), newest 60 kept, 200-char summaries
+4.  Merge into latestNews cache   → this cycle's articles are merged into the previous cache (dedupe by ID; articles from
+                                    switched-off sources removed), newest 60 kept, 200-char summaries
 5.  Compute fresh articles        → cached IDs not in briefedNewsIDs; fresh IDs are added to briefedNewsIDs
 6.  If fresh articles exist       → go a.marketBriefingTask(ctx, fresh) (tracked by a WaitGroup)
 7.  Log "News fetched" to activity feed

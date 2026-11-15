@@ -7,6 +7,73 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.13.0] — 2026-11-15
+
+More news sources for the LLM, each with an on/off switch. Guide: `docs/09-ingestion-adapters.md`.
+
+### Added
+- **11 more news sources**, read every 5 minutes with the others (21 in total):
+  - Crypto news: CryptoBriefing, BeInCrypto, CoinGape, crypto.news, The Daily Hodl, AMBCrypto, Bitcoin.com News and Blockworks.
+  - Macro & regulatory: Federal Reserve, SEC and ECB press releases (rate decisions, ETF and enforcement news).
+- **An on/off switch for every news source** under Settings → News & alerts → *News feeds*. The 20 built-in feeds, Fear & Greed and your own extra feeds are each listed, grouped by category; all are on by default. Changes apply at once: a switched-off source is not fetched from the next news cycle and its articles leave the news list. *All on* / *All off* switch every source together. Stored as the new `DISABLED_NEWS_SOURCES` setting.
+- **Atom feeds** can be read as well as RSS, for built-in and extra feeds (Blockworks uses Atom).
+
+### Changed
+- **The built-in feeds are no longer part of the editable feed list.** `NEWS_SOURCES` is now *Extra news feeds*: only feeds you add, as `Name::URL`. A list saved before this version still loads; entries named like a built-in source are dropped from it.
+  - If you removed one of the original feeds from the old list, it is back and switched on. Switch it off under *News feeds*.
+- Extra feeds are checked when saved: each must be `Name::URL` with an http(s) URL, and two feeds may not share a name. Before, a malformed entry was saved and then skipped at start-up.
+
+---
+
+## [0.12.1] — 2026-11-15
+
+### Fixed
+- **The bot finds its dashboard and database whatever folder it is started from.** Double-clicking `bin\tradingbot.exe` starts it in `bin`, where the relative `frontend` folder does not exist. Every page returned "404 not found" while the API worked, and a new, empty `trading_bot.db` was silently created in `bin` and traded on instead of the real one.
+  - The bot now looks for `frontend/index.html` in the working folder, the executable's folder and the folder above it, and uses the dashboard, database and log file of the first one that has it.
+  - Paths given with `-db`, `-log` or `-frontend` are used exactly as given.
+  - If no dashboard is found, the bot refuses to start and lists where it looked, instead of running with no page.
+  - The start-up log line shows which database and dashboard folder are in use.
+- **Backtest ids are checked the same way on every platform.** Windows device names (`NUL`, `CON`, `COM1`, ...) were refused only when the bot ran on Windows; on Linux they were accepted as ordinary names. They are now refused everywhere. A path-safety test that failed on Linux for an unrelated reason is also corrected: it mistook the router's redirect, which repeats the requested URL, for a leaked path.
+- A stray `bin\trading_bot.db` (with its `-shm` and `-wal` files and `bin\trading_bot.log`) left by an earlier start can be deleted once the bot is stopped.
+
+---
+
+## [0.12.0] — 2026-11-15
+
+A redesigned dashboard, and a viewer for backtest results. Guide: `docs/11-frontend.md`.
+
+### Changed — dashboard
+- **Six views instead of one long page**, with a sidebar on wide screens, an icon rail on medium ones and a tab bar at the bottom on phones. Each view has its own address (`#/markets/BTC-EUR`, `#/trading/ledger`), so it can be bookmarked and the back button works.
+  - **Overview**: whether the bot is running and in which mode, key figures, the equity chart, open positions, pending approvals and the latest signals.
+  - **Markets**: a searchable market table. Selecting a market shows its 5- and 15-minute charts beside the table, in place of one chart card per market down the page. On a phone, tapping a market opens it on its own screen.
+  - **Trading**: open positions, closed positions, the trade ledger, rejected trades, risk rejections and the P&L summary, as tabs.
+  - **Intelligence**: the market briefing, signals, strategy selection, reflection, learning and news. The briefing shows the nine most notable market outlooks, bearish and bullish first, with a button for the rest.
+  - **Backtests**: new, see below.
+  - **Activity**: the activity log and system health.
+- **The header always shows** the environment and mode, the connection state, pending approvals, Settings and the Emergency stop. In the live environment the header carries an orange marker.
+- **New look.** A refined dark style with one set of colours, type sizes and components used on every page, including the approvals and login pages. Numbers line up in columns. Green and red are used only for profit, loss and direction.
+- **Realised P&L today** is a new figure on the Overview: the P&L of trades closed since 00:00 UTC.
+- Feedback that is not a safety confirmation appears as a message in the corner instead of a browser alert. Errors stay until dismissed.
+- Charts fit their data, and long activity entries are shortened with a "more" button.
+- Dialogs close on Escape, keep keyboard focus inside while open, and return it afterwards. Every control shows a focus ring.
+
+### Added — backtest viewer
+- **Backtests view.** Lists the runs in the `results/` folder and shows each one: what was run, the "Read this first" notes, the verdict, key figures, the equity and drawdown chart, benchmarks, costs, reconciliation, trades and orders, the assumptions, and the raw summary. Split, walk-forward, regimes and sensitivity runs each have their own layout, with links to their individual runs.
+  - The notes come before any figure and cannot be collapsed. The verdict is shown as the backtester wrote it. A figure the backtester could not compute shows "n/a" with the reason.
+  - It is read-only.
+- **API**: `GET /api/backtests` and `GET /api/backtests/{id}`, with `?part=equity|trades|orders|summary_md`. Requests cannot reach files outside the results folder.
+
+### Changed — code
+- The 3,200-line `index.html` is split into markup, a stylesheet, and one script per view under `frontend/static/app/`. Text from the server, the LLM and news is placed with Alpine text bindings; the dashboard no longer builds HTML from strings.
+- The service worker fetches the app's scripts and stylesheet from the network first, so a fix is never one reload behind.
+
+### Notes
+- Everything the old dashboard showed is still there; `docs/11-frontend.md` lists where each item went. Removed: per-source colours on news items, and the collapse buttons on panels (views and tabs replace them).
+- Checked in a browser at desktop, tablet and phone widths on a fresh paper account. Signals, open positions, approvals and the live environment had no data there, so those screens are covered by tests only.
+- In the Backtests list a run opens with a click; middle-click to open in a new tab does not work.
+
+---
+
 ## [0.11.0] — 2026-11-14
 
 Historical backtesting: replay the bot's own strategy against real Kraken trade history, with documented execution assumptions, to see whether it would have made money after costs. Full guide: `docs/14-backtesting.md`.
