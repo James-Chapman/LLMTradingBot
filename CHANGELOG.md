@@ -15,6 +15,7 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - Paths given with `-db`, `-log` or `-frontend` are used exactly as given.
   - If no dashboard is found, the bot refuses to start and lists where it looked, instead of running with no page.
   - The start-up log line shows which database and dashboard folder are in use.
+- **Backtest ids are checked the same way on every platform.** Windows device names (`NUL`, `CON`, `COM1`, ...) were refused only when the bot ran on Windows; on Linux they were accepted as ordinary names. They are now refused everywhere. A path-safety test that failed on Linux for an unrelated reason is also corrected: it mistook the router's redirect, which repeats the requested URL, for a leaked path.
 - A stray `bin\trading_bot.db` (with its `-shm` and `-wal` files and `bin\trading_bot.log`) left by an earlier start can be deleted once the bot is stopped.
 
 ---
