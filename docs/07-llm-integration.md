@@ -2,7 +2,7 @@
 
 The LLM subsystem lives in `internal/llm`. It consists of an `OpenAICompatClient` that talks to any OpenAI-compatible chat-completions server, a `SwitchingClient` that routes between a primary LM Studio instance and an optional remote fallback, and an `LLMAnalyser` that builds prompts and parses responses (`internal/llm/analyser.go`). A pure-Go technical indicator library (`internal/analysis/indicators.go`) feeds the prompts.
 
-The LLM acts in two modes. For `basic_and_llm_strategy` it adjusts signal confidence, annotates theses, and can veto signals entirely when its `confidence_scale` falls below `LLM_VETO_THRESHOLD` (default 0.70). For `llm_only_strategy` it directly recommends `long`, `short`, or `hold`; only `long` and `short` become trade ideas. The `basic_strategy` does not use the LLM at all.
+The LLM acts in two modes. For `basic_and_llm_strategy` it adjusts signal confidence, annotates theses, and can veto signals entirely when its `confidence_scale` falls below `LLM_VETO_THRESHOLD` (default 0.70). The LLM versions of the 4-hour strategies use the same signal analysis with each strategy's own prompt; with `LLM_SHADOW_REVIEW` on, the same request is also made for the entries of the 4-hour strategies without LLM, and the answer is only recorded and scored (`docs/06-strategy-and-learning.md`, *LLM Shadow Reviews*). For `llm_only_strategy` it directly recommends `long`, `short`, or `hold`; only `long` and `short` become trade ideas. The `basic_strategy` does not use the LLM at all.
 
 ---
 

@@ -99,6 +99,11 @@ type TradeIdea struct {
 	StopOrInvalidation     string         `json:"stop_or_invalidation"`
 	PositionSizingProposal float64        `json:"position_sizing_proposal"` // fraction of equity
 	ModeEligibility        []TradingMode  `json:"mode_eligibility"`
+	// Exit marks a sell whose only purpose is to close a held long (the
+	// 4-hour strategies' exit rules). Fully automated trading never drops it
+	// for MIN_SIGNAL_CONFIDENCE, and with nothing held it is ignored rather
+	// than opening a paper short.
+	Exit bool `json:"exit,omitempty"`
 }
 
 // RiskDecision is the risk engine's verdict on a TradeIdea.

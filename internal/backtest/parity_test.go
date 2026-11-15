@@ -1,6 +1,7 @@
 package backtest
 
 import (
+	"fmt"
 	"math"
 	"reflect"
 	"strconv"
@@ -19,8 +20,8 @@ import (
 // candle of the interval holding tick. Kraken always returns that forming
 // row, so when the interval has had no trade yet it is flat at the last
 // close with zero volume; synthetic reports whether that happened. Only the
-// newest marketdata.CandleLimit are returned.
-func naiveCandles(bars []histdata.Bar, tick time.Time, interval time.Duration) (out []domain.Candle, synthetic bool) {
+// newest limit are returned.
+func naiveCandles(bars []histdata.Bar, tick time.Time, interval time.Duration, limit int) (out []domain.Candle, synthetic bool) {
 	for _, b := range bars {
 		if !b.Start.Before(tick) {
 			break
@@ -42,10 +43,20 @@ func naiveCandles(bars []histdata.Bar, tick time.Time, interval time.Duration) (
 		out = append(out, domain.Candle{T: current, O: last, H: last, L: last, C: last})
 		synthetic = true
 	}
-	if len(out) > marketdata.CandleLimit {
-		out = out[len(out)-marketdata.CandleLimit:]
+	if len(out) > limit {
+		out = out[len(out)-limit:]
 	}
 	return out, synthetic
+}
+
+// barsFrom returns the bars that start at or after from.
+func barsFrom(bars []histdata.Bar, from time.Time) []histdata.Bar {
+	for i, b := range bars {
+		if !b.Start.Before(from) {
+			return bars[i:]
+		}
+	}
+	return nil
 }
 
 // naiveVolume sums the base volume of bars that started in the 24 hours before tick.
@@ -85,76 +96,85 @@ func gappyBars(seed uint64, n int, start time.Time, price float64, gapFrom, gapT
 // TestReplayInputParity covers that the replay builds the strategy input the
 // live loop builds from the same ticks and candles.
 func TestReplayInputParity(t *testing.T) {
-	t.Run("GIVEN markets with pre-start history, gaps and a late listing WHEN replayed THEN candles omit untraded intervals but always end with the forming one, and each tick's strategy input equals the live builder fed with naive live-equivalent data", func(t *testing.T) {
-		pre := 26 * time.Hour
-		const ticks = 1400
-		reader := memReader{bars: map[string][]histdata.Bar{
-			// Trades from 26 h before the start, with a 40-minute gap after it.
-			"BTC/EUR": gappyBars(31, int((pre+ticks*histdata.BarInterval)/histdata.BarInterval), t0.Add(-pre), 50000, tick(300), tick(380)),
-			// Trades from 10 h before the start.
-			"ETH/EUR": randomWalkBars(32, int((10*time.Hour+ticks*histdata.BarInterval)/histdata.BarInterval), t0.Add(-10*time.Hour), 3000, 0.003),
-			// Listed one hour after the start.
-			"SOL/EUR": randomWalkBars(33, ticks-120, tick(120), 140, 0.003),
-		}}
-		settings := testSettings()
-		settings.MomentumLookbackTicks = 7
-		cfg := testConfig([]string{"BTC/EUR", "ETH/EUR", "SOL/EUR"}, ticks)
-		cfg.Settings = settings
-		cfg.Settings.TargetTradeAmount = 0 // let ordinary signals size themselves
-		history := map[string][]float64{}
-		checked, synthetic := 0, 0
-		cfg.observe = func(o TickObservation) {
-			for _, m := range cfg.Markets {
-				bars := reader.bars[m]
-				price, priced := naiveLastPrice(bars, o.Time)
-				if priced {
-					history[m] = append(history[m], price)
+	for _, interval := range []int{30, 120} {
+		t.Run(fmt.Sprintf("GIVEN markets with pre-start history, gaps and a late listing and a %d s strategy interval WHEN replayed THEN candles omit untraded intervals but always end with the forming one, and each strategy tick's input equals the live builder fed with naive live-equivalent data", interval), func(t *testing.T) {
+			pre := 26 * time.Hour
+			const ticks = 1400
+			reader := memReader{bars: map[string][]histdata.Bar{
+				// Trades from 26 h before the start, with a 40-minute gap after it.
+				"BTC/EUR": gappyBars(31, int((pre+ticks*histdata.BarInterval)/histdata.BarInterval), t0.Add(-pre), 50000, tick(300), tick(380)),
+				// Trades from 10 h before the start.
+				"ETH/EUR": randomWalkBars(32, int((10*time.Hour+ticks*histdata.BarInterval)/histdata.BarInterval), t0.Add(-10*time.Hour), 3000, 0.003),
+				// Listed one hour after the start.
+				"SOL/EUR": randomWalkBars(33, ticks-120, tick(120), 140, 0.003),
+			}}
+			settings := testSettings()
+			settings.MomentumLookbackTicks = 7
+			cfg := testConfig([]string{"BTC/EUR", "ETH/EUR", "SOL/EUR"}, ticks)
+			cfg.Settings = settings
+			cfg.Settings.TargetTradeAmount = 0 // let ordinary signals size themselves
+			cfg = withInterval(cfg, interval)
+			stride := interval / 30
+			// The naive history gets one price per strategy tick, as live appends one per tick.
+			history := map[string][]float64{}
+			checked, synthetic := 0, 0
+			cfg.observe = func(o TickObservation) {
+				for _, m := range cfg.Markets {
+					bars := reader.bars[m]
+					price, priced := naiveLastPrice(bars, o.Time)
+					if priced {
+						history[m] = append(history[m], price)
+					}
+					got, has := o.MarketData[m]
+					if o.MarketData == nil {
+						continue // warming up: nothing is built
+					}
+					if has != priced {
+						t.Fatalf("%s at %v: replay has data %v, naive priced %v", m, o.Time, has, priced)
+					}
+					if !priced {
+						continue
+					}
+					hist := history[m]
+					if len(hist) > marketdata.PriceHistoryTicks {
+						hist = hist[len(hist)-marketdata.PriceHistoryTicks:]
+					}
+					vol := naiveVolume(bars, o.Time)
+					c5, synth5 := naiveCandles(bars, o.Time, 5*time.Minute, marketdata.CandleLimit)
+					c15, synth15 := naiveCandles(bars, o.Time, 15*time.Minute, marketdata.CandleLimit)
+					// The replay reads nothing before the pre-roll, so its 4-hour window
+					// (longer than the pre-roll) starts there; live Kraken rows go further back.
+					c240, _ := naiveCandles(barsFrom(bars, cfg.Start.Add(-PreRoll)), o.Time, 4*time.Hour, marketdata.TrendCandleLimit)
+					if synth5 || synth15 {
+						synthetic++
+					}
+					want := marketdata.Build(marketdata.Input{
+						Price:   price,
+						Volume:  &vol,
+						History: append([]float64(nil), hist...),
+						OHLC5:   c5,
+						OHLC15:  c15,
+						OHLC240: c240,
+					}, settings.MomentumLookbackTicks)
+					if got.Volume == nil || !near(*got.Volume, vol, 1e-9*math.Max(1, vol)) {
+						t.Fatalf("%s at %v: 24h volume %v, want %v", m, o.Time, got.Volume, vol)
+					}
+					got.Volume, want.Volume = nil, nil
+					if !reflect.DeepEqual(got, want) {
+						t.Fatalf("%s at %v: strategy input differs from the live builder's\n got %+v\nwant %+v", m, o.Time, summarise(got), summarise(want))
+					}
+					checked++
 				}
-				got, has := o.MarketData[m]
-				if o.MarketData == nil {
-					continue // warming up: nothing is built
-				}
-				if has != priced {
-					t.Fatalf("%s at %v: replay has data %v, naive priced %v", m, o.Time, has, priced)
-				}
-				if !priced {
-					continue
-				}
-				hist := history[m]
-				if len(hist) > marketdata.PriceHistoryTicks {
-					hist = hist[len(hist)-marketdata.PriceHistoryTicks:]
-				}
-				vol := naiveVolume(bars, o.Time)
-				c5, synth5 := naiveCandles(bars, o.Time, 5*time.Minute)
-				c15, synth15 := naiveCandles(bars, o.Time, 15*time.Minute)
-				if synth5 || synth15 {
-					synthetic++
-				}
-				want := marketdata.Build(marketdata.Input{
-					Price:   price,
-					Volume:  &vol,
-					History: append([]float64(nil), hist...),
-					OHLC5:   c5,
-					OHLC15:  c15,
-				}, settings.MomentumLookbackTicks)
-				if got.Volume == nil || !near(*got.Volume, vol, 1e-9*math.Max(1, vol)) {
-					t.Fatalf("%s at %v: 24h volume %v, want %v", m, o.Time, got.Volume, vol)
-				}
-				got.Volume, want.Volume = nil, nil
-				if !reflect.DeepEqual(got, want) {
-					t.Fatalf("%s at %v: strategy input differs from the live builder's\n got %+v\nwant %+v", m, o.Time, summarise(got), summarise(want))
-				}
-				checked++
 			}
-		}
-		mustRun(t, reader, cfg)
-		if checked < 2*ticks {
-			t.Fatalf("only %d market-ticks were compared", checked)
-		}
-		if synthetic == 0 {
-			t.Fatal("no tick fell in an interval without trades, so the forming-row rule is untested")
-		}
-	})
+			mustRun(t, reader, cfg)
+			if checked < 2*ticks/stride {
+				t.Fatalf("only %d market-ticks were compared", checked)
+			}
+			if synthetic == 0 {
+				t.Fatal("no tick fell in an interval without trades, so the forming-row rule is untested")
+			}
+		})
+	}
 }
 
 // krakenRows returns the rows Kraken's REST OHLC endpoint would return at
@@ -217,7 +237,7 @@ func krakenRows(bars []histdata.Bar, tick time.Time, interval time.Duration, emp
 // liveCandles converts Kraken OHLC rows to candles the way the live market
 // adapter does (internal/kraken parseOHLCResult, then GetOHLC's limit of the
 // newest marketdata.CandleLimit rows).
-func liveCandles(t *testing.T, rows [][]any) []domain.Candle {
+func liveCandles(t *testing.T, rows [][]any, limit int) []domain.Candle {
 	t.Helper()
 	field := func(v any) float64 {
 		switch x := v.(type) {
@@ -237,8 +257,8 @@ func liveCandles(t *testing.T, rows [][]any) []domain.Candle {
 	for _, r := range rows {
 		candles = append(candles, domain.Candle{T: int64(field(r[0])), O: field(r[1]), H: field(r[2]), L: field(r[3]), C: field(r[4]), V: field(r[6])})
 	}
-	if len(candles) > marketdata.CandleLimit {
-		candles = candles[len(candles)-marketdata.CandleLimit:]
+	if len(candles) > limit {
+		candles = candles[len(candles)-limit:]
 	}
 	return candles
 }
@@ -292,8 +312,9 @@ func TestLiveInputParity(t *testing.T) {
 					Price:   price,
 					Volume:  got.Volume, // 24 h volume is covered by TestReplayInputParity
 					History: append([]float64(nil), hist...),
-					OHLC5:   liveCandles(t, krakenRows(bars, o.Time, 5*time.Minute, fill)),
-					OHLC15:  liveCandles(t, krakenRows(bars, o.Time, 15*time.Minute, fill)),
+					OHLC5:   liveCandles(t, krakenRows(bars, o.Time, 5*time.Minute, fill), marketdata.CandleLimit),
+					OHLC15:  liveCandles(t, krakenRows(bars, o.Time, 15*time.Minute, fill), marketdata.CandleLimit),
+					OHLC240: liveCandles(t, krakenRows(bars, o.Time, 4*time.Hour, fill), marketdata.TrendCandleLimit),
 				}, cfg.Settings.MomentumLookbackTicks)
 				if !reflect.DeepEqual(got, want) {
 					t.Fatalf("at %v the replay input differs from the live builder's\n got %+v\nwant %+v", o.Time, summarise(got), summarise(want))
@@ -325,6 +346,6 @@ func TestLiveInputParity(t *testing.T) {
 func summarise(md strategy.MarketData) map[string]any {
 	return map[string]any{
 		"price": md.Price, "previous": md.PreviousPrice, "history_len": len(md.PriceHistory),
-		"indicators": md.Indicators, "htf": md.HigherTimeframe,
+		"indicators": md.Indicators, "htf": md.HigherTimeframe, "trend_candles": len(md.TrendCandles),
 	}
 }

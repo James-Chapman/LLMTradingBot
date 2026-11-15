@@ -199,6 +199,22 @@ type monthBuffer struct {
 // coverFrom, when set, declares the source complete from that instant (REST
 // spools); otherwise coverage starts at the first kept trade's bar.
 func (c *Cache) importStream(ctx context.Context, source, market string, r io.Reader, opts ImportOptions, coverFrom time.Time) (FileSummary, error) {
+	if !opts.DryRun {
+		// Another process may import into the same cache: hold the lock for
+		// the whole source and start from the manifest on disk, so its
+		// entries are merged into rather than overwritten by a copy loaded
+		// before it wrote them.
+		release, err := acquireLock(ctx, c.Dir)
+		if err != nil {
+			return FileSummary{Source: source, Market: market}, err
+		}
+		defer release()
+		m, err := LoadManifest(c.Dir)
+		if err != nil {
+			return FileSummary{Source: source, Market: market}, err
+		}
+		c.manifest = m
+	}
 	from, to := opts.From.Truncate(BarInterval), opts.To.Truncate(BarInterval)
 	hash := sha256.New()
 	rows := newTradeCSV(io.TeeReader(r, hash))

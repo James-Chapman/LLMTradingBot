@@ -57,7 +57,8 @@ If markets are configured but none can be validated (Kraken unreachable at start
 11. Record portfolio value         → recordEquitySnapshot (cash + marked value of open positions)
 12. Trim old rows                  → every 10 ticks (~5 min): price ticks, equity snapshots, activity
 13. Warm-up guard                  → indicator-only: wait for 35 ticks; LLM strategies: wait for price ticks and news
-14. Strategy evaluation            → selected strategy only (LLM analysis/veto happens inside the strategy)
+14. Strategy evaluation            → selected strategy only (LLM analysis/veto happens inside the strategy);
+                                     a 4-hour strategy's new entries are queued for a background LLM shadow review
 15. Learner adjustment             → learner.AdjustConfidence() per idea
 16. Risk evaluation + persistence  → risk.EvaluateTrade(), repo.SaveTradeIdea() with full signal context
 17. Mode routing                   → manual / semi_automated / fully_automated
@@ -132,6 +133,7 @@ The loop evaluates the single strategy selected in control state (`evaluateStrat
 
 - `basic_strategy` uses technical indicators only and requires the indicator consensus gates to pass.
 - `basic_and_llm_strategy` uses `BasicAndLLMStrategy.Evaluate()` with indicator consensus, briefing sentiment, and the LLM signal-analysis/veto pass, which runs inside the strategy.
+- The six 4-hour strategies without LLM evaluate their candles; with `LLM_SHADOW_REVIEW` on, their new entries are also sent to the LLM in the background, exactly as their LLM versions would send them, and the answer is only recorded (`queueShadowReviews`, `docs/06-strategy-and-learning.md`). The tick does not wait for these calls; `App.Wait` does at shutdown.
 - `llm_only_strategy` uses `LLMOnlyStrategy.Evaluate()` and asks the LLM directly for `long`, `short`, or `hold`; indicators are passed into the LLM prompt but do not gate the trade locally.
 
 Only one strategy is active at a time. The strategy chosen in the dashboard's Trading settings dialog writes `control.State.SelectStrategy()`, and the next tick applies that strategy to all markets. If the selected ID is unknown, the loop falls back to `basic_and_llm_strategy`. LLM strategies receive the news cache, the analyser, the latest briefing, and the current portfolio in `strategy.Input`.
@@ -169,7 +171,7 @@ For `basic_strategy`, no LLM pass runs. For `llm_only_strategy`, the strategy ha
 
 ### Mode Routing
 
-After risk evaluation (`handleIdea`). A rejected decision is logged, stored in `risk_rejections`, and triggers a `daily_loss_limit_hit` alert when the reason mentions the daily loss limit. Approved decisions are routed by mode:
+After risk evaluation (`handleIdea`). A rejected decision is logged, stored in `risk_rejections`, and triggers a `daily_loss_limit_hit` alert when the reason mentions the daily loss limit. A **rule exit** (`TradeIdea.Exit`, set on every sell of the 4-hour strategies) with no long held is ignored in every mode ("exit with no long held"), so it never opens a paper short or an approval. Approved decisions are routed by mode:
 
 **`manual`:** Log to activity feed. No action.
 
@@ -178,7 +180,7 @@ After risk evaluation (`handleIdea`). A rejected decision is logged, stored in `
 2. Otherwise call `approvals.Submit(idea, decision)`; it returns `false` when an approval is already pending for this market → skip
 
 **`fully_automated`:**
-1. Skip (and drop from the signal panel) if confidence is below `MIN_SIGNAL_CONFIDENCE`
+1. Skip (and drop from the signal panel) if confidence is below `MIN_SIGNAL_CONFIDENCE`. A rule exit of a held long is exempt: the learner can scale a 0.95 exit down to 0.475, and dropping it would keep the position open after its strategy said to sell
 2. Check if a same-direction position already exists → skip silently
 3. Skip with a warning if there is no live price
 4. Compute position size (`sizeInBase`): `decision.ProposedSize / marketPrice`, or `PositionSizingProposal * equity / marketPrice` when the risk engine proposed no amount
@@ -242,12 +244,12 @@ The latest briefing is also restored from the `llm_briefings` table at start-up 
 
 ## OHLC Loop (`ohlcLoop`)
 
-**Interval:** 120 seconds per full cycle, with 1 second between the two interval fetches per market, and 2.5 seconds between markets  
-**Purpose:** Populate both candlestick chart caches (5-min and 15-min) without exceeding Kraken's public API rate limit.
+**Interval:** 120 seconds per full cycle, with 1 second between the interval fetches of a market, and 2.5 seconds between markets  
+**Purpose:** Populate the candle caches (5-min, 15-min and 4-hour) without exceeding Kraken's public API rate limit.
 
 ### Design Rationale
 
-The OHLC data serves the dashboard charts and the indicator calculations (5-minute candles for ATR/volume indicators, 15-minute candles for the higher-timeframe filter). Fetching it inside the strategy loop would either slow each tick significantly or rate-limit the exchange ticker calls. A separate slow loop decouples candle refresh from signal generation.
+The OHLC data serves the dashboard charts and the indicator calculations (5-minute candles for ATR/volume indicators, 15-minute candles for the higher-timeframe filter, 4-hour candles for the 4-hour strategies: trend, Donchian, RSI dip, MACD, squeeze and rotation, and their LLM versions). Fetching it inside the strategy loop would either slow each tick significantly or rate-limit the exchange ticker calls. A separate slow loop decouples candle refresh from signal generation.
 
 ### Execution Sequence
 
@@ -257,12 +259,14 @@ The OHLC data serves the dashboard charts and the indicator calculations (5-minu
     a. refreshOHLC(market, 5)  → market.GetOHLC(ctx, market, 5, 100)  → ohlc5[market]
     b. Sleep 1 second (inter-interval gap)
     c. refreshOHLC(market, 15) → market.GetOHLC(ctx, market, 15, 100) → ohlc15[market]
-    d. Sleep 2.5 seconds (inter-market gap)
+    d. Sleep 1 second (inter-interval gap)
+    e. refreshOHLC(market, 240) → market.GetOHLC(ctx, market, 240, 720) → ohlc240[market]
+    f. Sleep 2.5 seconds (inter-market gap)
 3.  Sleep 120 seconds
 4.  Repeat
 ```
 
-Failed or empty fetches leave the previous cache entry in place. The `GET /api/ohlc/{market}?interval=5` and `?interval=15` endpoint reads from `ohlc5` and `ohlc15` respectively. If a market has not yet been cached, an empty candle list is returned and the chart waits gracefully.
+Failed or empty fetches leave the previous cache entry in place. The `GET /api/ohlc/{market}?interval=5` and `?interval=15` endpoint reads from `ohlc5` and `ohlc15` respectively. If a market has not yet been cached, an empty candle list is returned and the chart waits gracefully. The 4-hour candles (`marketdata.TrendCandleLimit` = 720 rows, 120 days, the most Kraken returns) are not charted; the strategy loop passes them to every strategy as `MarketData.TrendCandles`, and only `trend_strategy` reads them. A 4-hour candle that closes is therefore seen by the strategy up to one cycle (about 2–4 minutes with many markets) after it closes.
 
 ---
 

@@ -163,6 +163,7 @@ func (h *handler) routes() *http.ServeMux {
 
 	// Misc
 	mux.HandleFunc("GET /api/learning", h.learning)
+	mux.HandleFunc("GET /api/shadow-reviews", h.shadowReviews)
 	mux.HandleFunc("GET /api/ohlc/{market...}", h.ohlc)
 	mux.HandleFunc("GET /api/trades", h.trades)
 	mux.HandleFunc("GET /api/rejected-trades", h.rejectedTrades)
@@ -471,6 +472,17 @@ func (h *handler) reloadStrategies(w http.ResponseWriter, _ *http.Request) {
 // learning returns the learner summary.
 func (h *handler) learning(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, nonNil(h.app.LearningSummary()))
+}
+
+// shadowReviews returns the LLM shadow verdicts scored against the trades
+// they reviewed.
+func (h *handler) shadowReviews(w http.ResponseWriter, r *http.Request) {
+	report, err := h.app.ShadowReviews(r.Context())
+	if err != nil {
+		writeDetail(w, http.StatusInternalServerError, "Could not read the shadow reviews: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
 }
 
 // ohlc returns cached candles; interval is 5 (default) or 15 minutes.

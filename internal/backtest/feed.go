@@ -13,8 +13,8 @@ import (
 
 // marketFeed turns one market's ticks from histdata.MergeTicks into what the
 // live bot sees at each 30-second tick: the last traded price (carried
-// forward when nothing traded), the price history, clock-aligned 5- and
-// 15-minute candles ending with the forming one, and the rolling 24-hour
+// forward when nothing traded), the price history, clock-aligned 5-minute,
+// 15-minute and 4-hour candles ending with the forming one, and the rolling 24-hour
 // volume. It also keeps the bar of the current tick, which prices fills
 // decided on the previous tick, and the market's measured half-spread.
 type marketFeed struct {
@@ -26,21 +26,25 @@ type marketFeed struct {
 	lastBar histdata.Bar // the most recent bar with trades (bar.Start is the market's last trade interval)
 	volume  float64      // base volume of the 24 hours before this tick
 
-	c5, c15 *histdata.CandleAggregator
-	vol     *histdata.RollingVolume
-	spread  spreadEstimator
-	hist    priceWindow
+	c5, c15, c240 *histdata.CandleAggregator
+	vol           *histdata.RollingVolume
+	spread        spreadEstimator
+	hist          priceWindow
 }
+
+// trendInterval is the length of the 4-hour trend candles.
+const trendInterval = marketdata.TrendCandleMinutes * time.Minute
 
 // newMarketFeed returns an empty feed for market.
 func newMarketFeed(market string, spreadWindow int) *marketFeed {
 	c5, err5 := histdata.NewCandleAggregator(5*time.Minute, marketdata.CandleLimit)
 	c15, err15 := histdata.NewCandleAggregator(15*time.Minute, marketdata.CandleLimit)
-	if err := errors.Join(err5, err15); err != nil {
+	c240, err240 := histdata.NewCandleAggregator(trendInterval, marketdata.TrendCandleLimit)
+	if err := errors.Join(err5, err15, err240); err != nil {
 		panic(err) // constant arguments: cannot fail
 	}
 	return &marketFeed{
-		market: market, c5: c5, c15: c15,
+		market: market, c5: c5, c15: c15, c240: c240,
 		vol:    histdata.NewRollingVolume(24 * time.Hour),
 		spread: spreadEstimator{ring: make([]float64, spreadWindow)},
 		hist:   priceWindow{limit: marketdata.PriceHistoryTicks},
@@ -53,7 +57,7 @@ func newMarketFeed(market string, spreadWindow int) *marketFeed {
 func (f *marketFeed) observe(tick time.Time, mp *histdata.MarketPrice) error {
 	f.setPrice(mp)
 	if f.hasBar {
-		if err := errors.Join(f.c5.Add(f.bar), f.c15.Add(f.bar)); err != nil {
+		if err := errors.Join(f.c5.Add(f.bar), f.c15.Add(f.bar), f.c240.Add(f.bar)); err != nil {
 			return fmt.Errorf("%s: %w", f.market, err)
 		}
 		f.vol.Add(f.bar)
@@ -107,15 +111,16 @@ func (f *marketFeed) volume24h() *float64 {
 // With fillEmpty, every interval without trades between the first candle and
 // tick gets such a flat candle too (the --fill-empty-candles sensitivity:
 // whether Kraken's REST OHLC returns rows for empty intervals is not verified).
-func candles(agg *histdata.CandleAggregator, tick time.Time, interval time.Duration, fillEmpty bool) []domain.Candle {
+// At most limit candles, the newest, are returned (the live loop's window).
+func candles(agg *histdata.CandleAggregator, tick time.Time, interval time.Duration, limit int, fillEmpty bool) []domain.Candle {
 	rows, forming := agg.Candles(tick)
 	out := make([]domain.Candle, 0, len(rows)+1)
 	step := int64(interval / time.Second)
 	current := tick.Truncate(interval).Unix()
-	// Only the newest CandleLimit intervals can be returned, so flat candles
-	// are only generated from there on (an illiquid market's 100 traded
-	// candles can span weeks).
-	earliest := current - int64(marketdata.CandleLimit-1)*step
+	// Only the newest limit intervals can be returned, so flat candles are
+	// only generated from there on (an illiquid market's 100 traded candles
+	// can span weeks).
+	earliest := current - int64(limit-1)*step
 	var prev domain.Candle // the newest candle so far, kept or not
 	hasPrev := false
 	fill := func(upTo int64) {
@@ -143,8 +148,8 @@ func candles(agg *histdata.CandleAggregator, tick time.Time, interval time.Durat
 		last := prev.C
 		out = append(out, domain.Candle{T: current, O: last, H: last, L: last, C: last})
 	}
-	if len(out) > marketdata.CandleLimit {
-		out = out[len(out)-marketdata.CandleLimit:]
+	if len(out) > limit {
+		out = out[len(out)-limit:]
 	}
 	return out
 }

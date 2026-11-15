@@ -1225,6 +1225,80 @@
                     </div>
                 </div>
 
+                <!-- LLM shadow reviews -->
+                <div class="panel">
+                    <div class="panel-head">
+                        <h2 class="panel-title">LLM Shadow Reviews</h2>
+                        <span class="panel-meta" :class="{ neg: shadowReviews.error }" x-text="shadowReviews.state === 'ready' && !shadowReviews.data.enabled ? 'Off · Settings → Signals' : resourceStatus(shadowReviews, '')"></span>
+                    </div>
+                    <div class="table-wrap">
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>Strategy</th>
+                                    <th class="num" title="Entries the LLM answered">Reviewed</th>
+                                    <th class="num" title="Answered entries below the veto threshold">Would veto</th>
+                                    <th class="num" title="Closed trades entered under an answered review">Scored trades</th>
+                                    <th class="num" title="Share of the vetoed trades that lost money">Veto accuracy</th>
+                                    <th class="num" title="Share of all scored trades that lost money: the accuracy of vetoes picked at random">Random veto</th>
+                                    <th class="num" title="Veto accuracy at which vetoes neither help nor hurt: average win ÷ (average win + average loss)">Break-even</th>
+                                    <th class="num" title="What skipping the vetoed trades would have changed: their total P&amp;L with the sign turned round, so a loss avoided shows as a saving">Vetoes would save</th>
+                                    <th>Verdict</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="row in shadowReviews.data.strategies" :key="row.strategy_id">
+                                    <tr>
+                                        <td class="nowrap" x-text="_strategyLabel(row.strategy_id)"></td>
+                                        <td class="num" x-text="row.reviewed"></td>
+                                        <td class="num" x-text="row.would_veto"></td>
+                                        <td class="num" x-text="row.scored_trades"></td>
+                                        <td class="num" x-text="fmtShare(row.veto_accuracy)"></td>
+                                        <td class="num" x-text="fmtShare(row.loser_rate)"></td>
+                                        <td class="num" x-text="fmtShare(row.break_even)"></td>
+                                        <td class="num" :class="pnlClass(-row.vetoed_pnl)" x-text="fmtSignedMoney(-row.vetoed_pnl, currencySymbol)"></td>
+                                        <td><span class="pill" :class="shadowVerdict(row).cls" x-text="shadowVerdict(row).label"></span></td>
+                                    </tr>
+                                </template>
+                                <tr x-show="!shadowReviews.data.strategies.length" class="empty-row">
+                                    <td colspan="9">No shadow reviews yet: they start when a 4-hour strategy without LLM is selected and makes an entry</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="table-wrap" x-show="shadowReviews.data.recent.length">
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>Reviewed</th>
+                                    <th>Strategy</th>
+                                    <th>Market</th>
+                                    <th>LLM answer</th>
+                                    <th class="num">Trades</th>
+                                    <th class="num">P&amp;L</th>
+                                    <th>Reasoning</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="r in shadowReviews.data.recent" :key="r.strategy_id + r.market + r.candle">
+                                    <tr>
+                                        <td class="nowrap" x-text="fmtDateTime(parseUtc(r.reviewed_at))"></td>
+                                        <td class="nowrap" x-text="_strategyLabel(r.strategy_id)"></td>
+                                        <td class="cell-strong" x-text="r.market"></td>
+                                        <td class="nowrap" :class="{ neg: r.would_veto, muted: !r.llm_used }" x-text="shadowAnswer(r)"></td>
+                                        <td class="num" x-text="r.trades"></td>
+                                        <td class="num" :class="pnlClass(r.pnl)" x-text="r.pnl === null ? 'not closed' : fmtSignedMoney(r.pnl, currencySymbol)"></td>
+                                        <td x-text="r.reasoning"></td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="panel-foot">
+                        <p class="muted">While a 4-hour strategy without LLM runs, the LLM is asked about each new entry exactly as its LLM version would ask, and its answer is only recorded. Each closed trade is scored against that answer. Vetoes help when their accuracy beats the break-even; when the random veto already beats it, the strategy is losing money on most entries anyway. Trades in one candle share one answer, and a vetoed trade would also have freed cash for others, so treat small differences as noise.</p>
+                    </div>
+                </div>
+
                 <!-- News -->
                 <div class="panel">
                     <div class="panel-head">

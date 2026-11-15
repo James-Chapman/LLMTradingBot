@@ -2,10 +2,15 @@ package backtest
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
+	"time"
 
 	"github.com/James-Chapman/LLMTradingBot/internal/config"
 	"github.com/James-Chapman/LLMTradingBot/internal/control"
+	"github.com/James-Chapman/LLMTradingBot/internal/histdata"
+	"github.com/James-Chapman/LLMTradingBot/internal/marketdata"
+	"github.com/James-Chapman/LLMTradingBot/internal/strategy"
 )
 
 // Assumption biases.
@@ -95,8 +100,15 @@ func assumptions(cfg Config, x ExchangeConfig, learnerOn bool, res *Result) []As
 		riskFee,
 		{Name: "spot_only", Value: "no shorts", Bias: BiasNeutral,
 			Note: "A sell signal exits a held long or is ignored, as on the live spot account (paper trading would open a paper short)."},
-		{Name: "candles", Value: "5 and 15 min, clock-aligned, forming candle included, no refresh lag", Bias: BiasUnknown,
+		{Name: "candles", Value: "5 min, 15 min and 4 h, clock-aligned, forming candle included, no refresh lag", Bias: BiasUnknown,
 			Note: "Built by histdata.CandleAggregator. Kraken's live OHLC always ends with the forming row, so when the current interval has had no trade yet the replay appends a flat candle at the last close with zero volume. Live refreshes candles every 120 s, so its forming candle can be up to 2 min stale; the replay's is current."},
+		intervalAssumption(cfg),
+		{Name: "trend_candles", Value: fmt.Sprintf("4 h candles from the %s pre-roll on, at most %d", PreRoll, marketdata.TrendCandleLimit), Bias: BiasPessimistic,
+			Note: fmt.Sprintf("Live fetches %d 4-hour candles (120 days) from Kraken at once; the replay only has the candles built since its pre-roll, so each 4-hour strategy waits for its warm-up after the start "+
+				"(trend %d days, squeeze %d, MACD %d, Donchian %d, rotation %d, RSI dip %d), and its indicators and breakout or dip state are computed on a shorter history during the first months.",
+				marketdata.TrendCandleLimit, candleDays(strategy.TrendMinClosedCandles), candleDays(strategy.SqueezeMinClosedCandles),
+				candleDays(strategy.MACDMinClosedCandles), candleDays(strategy.DonchianEntryCandles+1),
+				candleDays(strategy.RotationMinClosedCandles), candleDays(strategy.RSIDipMinClosedCandles))},
 		{Name: "empty_candles", Value: candleValue, Bias: BiasUnknown,
 			Note: "Kraken's downloadable OHLCVT files have no row for an interval without trades; whether Kraken's REST OHLC, which the live bot uses, returns rows for empty intervals is NOT verified. " +
 				"For illiquid pairs this changes how much real time 100 candles span, and so ATR, the stochastic and the higher-timeframe filter. Run with --fill-empty-candles (or the sensitivity command) to measure it."},
@@ -126,3 +138,22 @@ func everyOrMonth(every string) string {
 	}
 	return every
 }
+
+// intervalAssumption states the strategy interval the replay used and how it
+// compares with the live default.
+func intervalAssumption(cfg Config) Assumption {
+	d, err := strategyInterval(cfg)
+	if err != nil {
+		d = histdata.BarInterval // unreachable: the run validated it
+	}
+	value := fmt.Sprintf("%d s", int(d/time.Second))
+	if !slices.Contains(cfg.ExplicitSettings, "STRATEGY_INTERVAL_SECONDS") {
+		return Assumption{Name: "strategy_interval", Value: value + " (backtest default)", Bias: BiasUnknown,
+			Note: fmt.Sprintf("The strategy, its price history and the stops run every 30-second bar. Live runs them every STRATEGY_INTERVAL_SECONDS (default %d s), and indicators count ticks, so their windows cover a different time; set STRATEGY_INTERVAL_SECONDS in the settings file to replay the live interval.", config.Defaults().StrategyIntervalSeconds)}
+	}
+	return Assumption{Name: "strategy_interval", Value: value + " (STRATEGY_INTERVAL_SECONDS)", Bias: BiasNeutral,
+		Note: "The strategy, its price history, the stops, equity and risk run every interval from the start, as the live loop does; orders still fill on the 30-second bar after the decision, and candles and volume take in every bar."}
+}
+
+// candleDays is how many days n finished 4-hour candles take, rounded up.
+func candleDays(n int) int { return (n*4 + 23) / 24 }

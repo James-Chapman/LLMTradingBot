@@ -162,7 +162,7 @@ Change the mode in the dashboard: click the mode badge in the header to open **T
 |------|-----------|
 | `manual` | Signals appear in dashboard only. No orders placed. |
 | `semi_automated` | Approved signals are queued. User clicks Approve/Reject within 30 minutes. |
-| `fully_automated` | Signals execute immediately after passing risk checks. Signals below `MIN_SIGNAL_CONFIDENCE` (default 65%) are skipped and logged. No human step. |
+| `fully_automated` | Signals execute immediately after passing risk checks. Signals below `MIN_SIGNAL_CONFIDENCE` (default 65%) are skipped and logged, except a 4-hour strategy's exit of a held long, which always executes. No human step. |
 
 Start in `manual` mode to observe signal quality before enabling execution.
 

@@ -37,6 +37,7 @@ type Settings struct {
 	FeeAndSlippage          float64
 	MinSignalConfidence     float64
 	LLMVetoThreshold        float64
+	LLMShadowReview         bool // ask the LLM about non-LLM 4-hour entries and only record its verdict
 	Min24hVolume            float64
 	AlertWebhookURL         string
 
@@ -120,6 +121,7 @@ func Defaults() Settings {
 		FeeAndSlippage:          0.0036,
 		MinSignalConfidence:     0.65,
 		LLMVetoThreshold:        0.70,
+		LLMShadowReview:         true,
 		Min24hVolume:            0.0,
 		TradingMode:             "manual",
 		TradingEnvironment:      "paper",

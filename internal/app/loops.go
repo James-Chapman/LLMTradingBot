@@ -227,9 +227,11 @@ func (a *App) strategyTick(ctx context.Context) (skipped bool, err error) {
 	}
 	ohlc5 := map[string][]domain.Candle{}
 	ohlc15 := map[string][]domain.Candle{}
+	ohlc240 := map[string][]domain.Candle{}
 	for _, ps := range ordered {
 		ohlc5[ps.symbol] = a.ohlc5[ps.symbol].Candles
 		ohlc15[ps.symbol] = a.ohlc15[ps.symbol].Candles
+		ohlc240[ps.symbol] = a.ohlc240[ps.symbol].Candles
 	}
 	a.mu.Unlock()
 	warmingUp := ticksCollected <= strategy.LookbackTicks
@@ -245,7 +247,7 @@ func (a *App) strategyTick(ctx context.Context) (skipped bool, err error) {
 		a.activity.Info(fmt.Sprintf("Tick #%d - prices fetched", tick), priceSummary)
 	}
 
-	marketData := a.buildMarketData(ordered, histories, ohlc5, ohlc15)
+	marketData := a.buildMarketData(ordered, histories, ohlc5, ohlc15, ohlc240)
 
 	a.mu.Lock()
 	a.currentPrices = copyPrices(livePrices)
@@ -349,7 +351,7 @@ func (a *App) strategyTick(ctx context.Context) (skipped bool, err error) {
 
 // buildMarketData assembles the per-market strategy context for this tick
 // with the builder the backtest replay shares (internal/marketdata).
-func (a *App) buildMarketData(ordered []pricedSnapshot, histories map[string][]float64, ohlc5, ohlc15 map[string][]domain.Candle) map[string]strategy.MarketData {
+func (a *App) buildMarketData(ordered []pricedSnapshot, histories map[string][]float64, ohlc5, ohlc15, ohlc240 map[string][]domain.Candle) map[string]strategy.MarketData {
 	briefing := a.analyser.LatestBriefing()
 	lookbackTicks := a.cfg().MomentumLookbackTicks
 	out := make(map[string]strategy.MarketData, len(ordered))
@@ -360,6 +362,7 @@ func (a *App) buildMarketData(ordered []pricedSnapshot, histories map[string][]f
 			History:      histories[ps.symbol],
 			OHLC5:        ohlc5[ps.symbol],
 			OHLC15:       ohlc15[ps.symbol],
+			OHLC240:      ohlc240[ps.symbol],
 			LLMSentiment: briefingSentimentForMarket(briefing, ps.symbol),
 		}, lookbackTicks)
 	}
@@ -409,7 +412,8 @@ func (a *App) checkStops(ctx context.Context, prices map[string]float64) {
 	}
 }
 
-// evaluateStrategy runs the selected strategy (falling back to the default).
+// evaluateStrategy runs the selected strategy (falling back to the default)
+// and queues the shadow LLM reviews of its new entries (shadow.go).
 func (a *App) evaluateStrategy(ctx context.Context, marketData, llmMarketData map[string]strategy.MarketData) []domain.TradeIdea {
 	active := a.strategyByID(a.control.SelectedStrategyID())
 	if active == nil {
@@ -432,7 +436,9 @@ func (a *App) evaluateStrategy(ctx context.Context, marketData, llmMarketData ma
 		in.Analyser = a.analyser
 		in.Briefing = a.analyser.LatestBriefing()
 	}
-	return active.Evaluate(ctx, in)
+	ideas := active.Evaluate(ctx, in)
+	a.queueShadowReviews(ctx, active, ideas, in)
+	return ideas
 }
 
 // strategyPositions returns the open positions the strategy sees: for each
@@ -571,6 +577,11 @@ func (a *App) handleIdea(ctx context.Context, idea *domain.TradeIdea, marketData
 			a.alertDailyLossOnce(idea.Market, decision.Reason)
 		}
 
+	case idea.Exit && !a.sameDirectionOpen(idea.Market, "long", isLive):
+		// A rule exit only closes a held long; with nothing held it must not
+		// become a paper short or an approval request.
+		a.activity.Info(fmt.Sprintf("Signal %s %s - ignored (exit with no long held)", idea.Market, label), idea.Thesis)
+
 	case a.control.EmergencyStop():
 		// The stop is only checked when a tick starts; a slow evaluation can
 		// still be running when the operator presses it.
@@ -593,8 +604,10 @@ func (a *App) handleIdea(ctx context.Context, idea *domain.TradeIdea, marketData
 		}
 
 	case mode == string(domain.ModeFullyAutomated):
-		// Gate 1: the configurable confidence threshold.
-		if idea.Confidence < a.cfg().MinSignalConfidence {
+		// Gate 1: the configurable confidence threshold. A rule exit of a
+		// held long (checked above) is exempt: dropping it would keep the
+		// position open after its strategy has said to sell.
+		if !idea.Exit && idea.Confidence < a.cfg().MinSignalConfidence {
 			a.activity.Info(fmt.Sprintf("Signal %s %s skipped - confidence %s below threshold %s",
 				idea.Market, label, pct0(idea.Confidence), pct0(a.cfg().MinSignalConfidence)), "")
 			return SignalView{}, false, nil
@@ -1003,8 +1016,9 @@ func (a *App) ohlcLoop(ctx context.Context) {
 	}
 }
 
-// ohlcCycle refreshes both candle intervals for every enabled market once,
-// pausing between requests; it stops early when ctx is cancelled.
+// ohlcCycle refreshes the 5-minute, 15-minute and 4-hour candles for every
+// enabled market once, pausing between requests; it stops early when ctx is
+// cancelled.
 func (a *App) ohlcCycle(ctx context.Context) {
 	for _, market := range a.ActiveMarkets() {
 		if !a.control.IsMarketEnabled(market) {
@@ -1015,15 +1029,24 @@ func (a *App) ohlcCycle(ctx context.Context) {
 			return
 		}
 		a.refreshOHLC(ctx, market, 15)
+		if !sleepCtx(ctx, a.intervals.OHLCIntervalGap) {
+			return
+		}
+		a.refreshOHLC(ctx, market, marketdata.TrendCandleMinutes)
 		if !sleepCtx(ctx, a.intervals.OHLCMarketGap) {
 			return
 		}
 	}
 }
 
-// refreshOHLC fetches one market's candles for interval and caches non-empty results.
+// refreshOHLC fetches one market's candles for interval and caches non-empty
+// results. The 4-hour interval keeps a longer window than the others.
 func (a *App) refreshOHLC(ctx context.Context, market string, interval int) {
-	candles, err := a.market.GetOHLC(ctx, market, interval, ohlcCandleLimit)
+	limit := ohlcCandleLimit
+	if interval == marketdata.TrendCandleMinutes {
+		limit = marketdata.TrendCandleLimit
+	}
+	candles, err := a.market.GetOHLC(ctx, market, interval, limit)
 	if err != nil {
 		a.logger.Error(fmt.Sprintf("OHLC %dm fetch failed", interval), "market", market, "error", err.Error())
 		return
@@ -1033,9 +1056,12 @@ func (a *App) refreshOHLC(ctx context.Context, market string, interval int) {
 	}
 	a.mu.Lock()
 	payload := OHLCPayload{Symbol: market, Interval: interval, Candles: candles}
-	if interval == 15 {
+	switch interval {
+	case 15:
 		a.ohlc15[market] = payload
-	} else {
+	case marketdata.TrendCandleMinutes:
+		a.ohlc240[market] = payload
+	default:
 		a.ohlc5[market] = payload
 	}
 	a.mu.Unlock()

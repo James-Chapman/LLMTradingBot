@@ -2,12 +2,16 @@
 /*
  * Intelligence: the LLM market briefing and hourly reflection, signals (with
  * the signal detail dialog, also opened from Overview, Markets and Trading),
- * news with source filters, strategy selection and the learner's summary.
+ * news with source filters, strategy selection, the learner's summary and
+ * the LLM shadow reviews (would the LLM's vetoes have helped a strategy?).
  * New signals also raise a desktop notification when the browser allows it.
  */
 
 // How often the news list is refreshed while Intelligence is shown.
 const NEWS_REFRESH_MS = 300000;
+
+// How often the LLM shadow reviews are refreshed while Intelligence is shown.
+const SHADOW_REFRESH_MS = 60000;
 
 // How many market outlooks the briefing shows before "Show all".
 const OUTLOOK_PREVIEW = 9;
@@ -35,6 +39,7 @@ function biasText(bias) {
 
 Dashboard.register('intelligence', {
     news: resource([]),          // /api/news
+    shadowReviews: resource({ enabled: false, strategies: [], recent: [] }), // /api/shadow-reviews
     newsSources: [],             // sources picked in the filter; empty = all
     signalModal: null,           // the signal shown in the detail dialog
     signalBreakdown: null,
@@ -49,6 +54,7 @@ Dashboard.register('intelligence', {
             Notification.requestPermission();
         }
         this.pollWhileShown('intelligence', NEWS_REFRESH_MS, () => this.loadNews());
+        this.pollWhileShown('intelligence', SHADOW_REFRESH_MS, () => this.loadShadowReviews());
     },
 
     // Collapses the outlook list again when the operator leaves the view.
@@ -160,6 +166,33 @@ Dashboard.register('intelligence', {
         return [...this.learning].sort((a, b) => b.trades - a.trades);
     },
 
+    // ── LLM shadow reviews ───────────────────────────────────────────────────
+
+    // Loads the LLM shadow verdicts and their scores.
+    loadShadowReviews() {
+        return this.fetchResource(this.shadowReviews, '/api/shadow-reviews');
+    },
+
+    // A share (0-1) as a whole percentage, or '—' when there is none yet.
+    fmtShare(value) {
+        return value === null || value === undefined ? '—' : Math.round(value * 100) + '%';
+    },
+
+    // The verdict pill for one strategy's shadow score.
+    shadowVerdict(row) {
+        const needed = this.shadowReviews.data.min_scored_vetoes || 0;
+        if (row.verdict === 'ahead') return { label: 'Vetoes would help', cls: 'pill-profit' };
+        if (row.verdict === 'behind') return { label: 'Vetoes would hurt', cls: 'pill-loss' };
+        return { label: `Too few vetoes (${row.scored_vetoes}/${needed})`, cls: 'pill-outline' };
+    },
+
+    // What the LLM said about one entry, in words.
+    shadowAnswer(review) {
+        if (!review.llm_used) return 'LLM unavailable';
+        const scale = '×' + review.confidence_scale.toFixed(2);
+        return review.would_veto ? `Would veto (${scale})` : `Would keep (${scale})`;
+    },
+
     // ── Signal detail dialog ─────────────────────────────────────────────────
 
     // Loads a signal and opens its detail dialog.
@@ -195,6 +228,12 @@ Dashboard.register('intelligence', {
         const labels = {
             basic_and_llm_strategy: 'Combined · Indicator + LLM', combined: 'Combined · Indicator + LLM',
             basic_strategy: 'Indicator Only', llm_only_strategy: 'LLM Only', llm: 'LLM Only',
+            trend_strategy: 'Trend · 4h EMA', trend_and_llm_strategy: 'Trend · 4h EMA + LLM',
+            donchian_strategy: 'Donchian · 4h breakout', donchian_and_llm_strategy: 'Donchian · 4h breakout + LLM',
+            rsi_dip_strategy: 'RSI Dip · 4h', rsi_dip_and_llm_strategy: 'RSI Dip · 4h + LLM',
+            macd_strategy: 'MACD · 4h momentum', macd_and_llm_strategy: 'MACD · 4h momentum + LLM',
+            squeeze_strategy: 'Squeeze · 4h Bollinger', squeeze_and_llm_strategy: 'Squeeze · 4h Bollinger + LLM',
+            rotation_strategy: 'Rotation · 14-day strength', rotation_and_llm_strategy: 'Rotation · 14-day strength + LLM',
         };
         return labels[strategyId] || strategyId;
     },

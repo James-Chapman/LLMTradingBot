@@ -1,7 +1,10 @@
 // Package strategy turns per-market price, indicator and news context into
-// trade ideas. Three strategies exist: basic_strategy (indicators only),
+// trade ideas. The original strategies are basic_strategy (indicators only),
 // basic_and_llm_strategy (indicator consensus + LLM signal analysis) and
-// llm_only_strategy (pure LLM trade recommendation).
+// llm_only_strategy (pure LLM trade recommendation). Six 4-hour candle
+// strategies follow: trend, donchian, rsi_dip, macd, squeeze and rotation,
+// each with an LLM version (LLMVersion) that sends its entries to the LLM
+// with the strategy's own prompt.
 package strategy
 
 import (
@@ -19,7 +22,20 @@ const (
 	BasicID       = "basic_strategy"
 	BasicAndLLMID = "basic_and_llm_strategy"
 	LLMOnlyID     = "llm_only_strategy"
-	DefaultID     = BasicAndLLMID
+	TrendID       = "trend_strategy"
+	TrendAndLLMID = "trend_and_llm_strategy"
+
+	DonchianID       = "donchian_strategy"
+	DonchianAndLLMID = "donchian_and_llm_strategy"
+	RSIDipID         = "rsi_dip_strategy"
+	RSIDipAndLLMID   = "rsi_dip_and_llm_strategy"
+	MACDID           = "macd_strategy"
+	MACDAndLLMID     = "macd_and_llm_strategy"
+	SqueezeID        = "squeeze_strategy"
+	SqueezeAndLLMID  = "squeeze_and_llm_strategy"
+	RotationID       = "rotation_strategy"
+	RotationAndLLMID = "rotation_and_llm_strategy"
+	DefaultID        = BasicAndLLMID
 )
 
 // MarketData is the per-market context built by the strategy loop each tick
@@ -32,6 +48,9 @@ type MarketData struct {
 	LLMSentiment    float64             `json:"llm_sentiment"`
 	HigherTimeframe analysis.Indicators `json:"higher_timeframe"` // 15-minute indicators, may be empty
 	Indicators      analysis.Indicators `json:"indicators"`
+	// TrendCandles are the 4-hour candles, oldest first; the newest is the
+	// forming one (Kraken always returns it). May be empty.
+	TrendCandles []domain.Candle `json:"trend_candles,omitempty"`
 }
 
 // Portfolio is the account context passed to LLM-backed strategies.
@@ -75,10 +94,16 @@ type Strategy interface {
 // (MACD needs slow_ema + signal - 1 = 34 bars) is computable (main.py _LOOKBACK_TICKS).
 const LookbackTicks = 34
 
-// All returns one instance of every strategy, in display order:
-// basic_strategy, basic_and_llm_strategy, llm_only_strategy.
+// All returns one instance of every strategy, in display order: the
+// original four (basic, basic_and_llm, llm_only, trend), then each 4-hour
+// strategy followed by its LLM version.
 func All(s config.Settings) []Strategy {
-	return []Strategy{NewBasic(s), NewBasicAndLLM(s), NewLLMOnly(s)}
+	return []Strategy{
+		NewBasic(s), NewBasicAndLLM(s), NewLLMOnly(s), NewTrend(s), NewTrendAndLLM(s),
+		NewDonchian(s), NewDonchianAndLLM(s), NewRSIDip(s), NewRSIDipAndLLM(s),
+		NewMACD(s), NewMACDAndLLM(s), NewSqueeze(s), NewSqueezeAndLLM(s),
+		NewRotation(s), NewRotationAndLLM(s),
+	}
 }
 
 // ByID returns the strategy with the given id (legacy ids are mapped to their

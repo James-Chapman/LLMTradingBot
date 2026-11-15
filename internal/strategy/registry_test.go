@@ -6,8 +6,10 @@ import "testing"
 func TestStrategyRegistry(t *testing.T) {
 	list := All(testSettings())
 
-	t.Run("GIVEN the registry WHEN all strategies are listed THEN they come in basic, basic_and_llm, llm_only order", func(t *testing.T) {
-		want := []string{BasicID, BasicAndLLMID, LLMOnlyID}
+	t.Run("GIVEN the registry WHEN all strategies are listed THEN the original four come first, then each 4-hour strategy followed by its LLM version", func(t *testing.T) {
+		want := []string{BasicID, BasicAndLLMID, LLMOnlyID, TrendID, TrendAndLLMID,
+			DonchianID, DonchianAndLLMID, RSIDipID, RSIDipAndLLMID, MACDID, MACDAndLLMID,
+			SqueezeID, SqueezeAndLLMID, RotationID, RotationAndLLMID}
 		if len(list) != len(want) {
 			t.Fatalf("got %d strategies", len(list))
 		}
@@ -23,6 +25,7 @@ func TestStrategyRegistry(t *testing.T) {
 			"basic_strategy":         BasicID,
 			"basic_and_llm_strategy": BasicAndLLMID,
 			"llm_only_strategy":      LLMOnlyID,
+			"trend_strategy":         TrendID,
 			"basic_trend":            BasicID,
 			"llm_only":               LLMOnlyID,
 		}
@@ -30,6 +33,20 @@ func TestStrategyRegistry(t *testing.T) {
 			got := ByID(list, id)
 			if got == nil || got.ID() != want {
 				t.Fatalf("ByID(%q) = %v, want %s", id, got, want)
+			}
+		}
+	})
+
+	t.Run("GIVEN every 4-hour strategy WHEN its LLM version is looked up THEN it wraps that strategy and uses the LLM, while the base does not", func(t *testing.T) {
+		pairs := map[string]string{TrendAndLLMID: TrendID, DonchianAndLLMID: DonchianID, RSIDipAndLLMID: RSIDipID,
+			MACDAndLLMID: MACDID, SqueezeAndLLMID: SqueezeID, RotationAndLLMID: RotationID}
+		for llmID, baseID := range pairs {
+			v, ok := ByID(list, llmID).(*LLMVersion)
+			if !ok || v.Base().ID() != baseID || !v.UsesLLM() {
+				t.Fatalf("%s: %v", llmID, ByID(list, llmID))
+			}
+			if base := ByID(list, baseID); base == nil || base.UsesLLM() {
+				t.Fatalf("%s must exist and not use the LLM", baseID)
 			}
 		}
 	})
@@ -47,8 +64,8 @@ func TestStrategyRegistry(t *testing.T) {
 	})
 
 	t.Run("GIVEN each strategy WHEN its LLM context requirement is checked THEN only LLM strategies need it", func(t *testing.T) {
-		if ByID(list, BasicID).UsesLLM() {
-			t.Fatalf("basic must not use LLM")
+		if ByID(list, BasicID).UsesLLM() || ByID(list, TrendID).UsesLLM() {
+			t.Fatalf("basic and trend must not use LLM")
 		}
 		if !ByID(list, BasicAndLLMID).UsesLLM() || !ByID(list, LLMOnlyID).UsesLLM() {
 			t.Fatalf("LLM strategies must report UsesLLM")

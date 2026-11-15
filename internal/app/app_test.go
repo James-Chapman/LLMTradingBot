@@ -27,6 +27,7 @@ type testEnv struct {
 	market   *apptest.Market
 	live     *apptest.Live
 	strategy *apptest.Strategy
+	llm      *apptest.LLM
 	logs     *bytes.Buffer
 }
 
@@ -58,6 +59,7 @@ func newEnv(t *testing.T, mutate func(*config.Settings), seed func(*storage.Repo
 		market:   apptest.NewMarket(map[string]float64{"BTC/EUR": 50000, "ETH/EUR": 3000}),
 		live:     &apptest.Live{},
 		strategy: &apptest.Strategy{StrategyID: strategy.BasicID},
+		llm:      &apptest.LLM{},
 		logs:     &bytes.Buffer{},
 	}
 	env.app = env.newApp(t, settings)
@@ -81,7 +83,7 @@ func (e *testEnv) newApp(t *testing.T, settings config.Settings) *App {
 	a, err := NewWithOptions(context.Background(), settings, e.repo, Options{
 		Market:          e.market,
 		Live:            e.live,
-		LLM:             &apptest.LLM{},
+		LLM:             e.llm,
 		Universe:        apptest.Universe{Markets: settings.FixedMarkets},
 		NewsAdapters:    []news.Adapter{},
 		StrategyFactory: func(config.Settings) []strategy.Strategy { return []strategy.Strategy{e.strategy} },

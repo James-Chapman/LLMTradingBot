@@ -130,6 +130,7 @@ type runner struct {
 	ex       ExchangeConfig
 	reader   histdata.Reader
 	st       strategy.Strategy
+	interval time.Duration // time between strategy ticks, a whole number of 30-second bars
 
 	clock   time.Time
 	paper   *paper.Engine
@@ -169,6 +170,21 @@ func Run(ctx context.Context, reader histdata.Reader, cfg Config) (*Result, erro
 		return nil, err
 	}
 	return r.res, nil
+}
+
+// strategyInterval returns the time between strategy ticks: the settings'
+// STRATEGY_INTERVAL_SECONDS when the settings file (or a sensitivity
+// variation) set it, otherwise one 30-second bar, the backtest's original
+// tick. The interval must be a whole number of bars.
+func strategyInterval(cfg Config) (time.Duration, error) {
+	if !slices.Contains(cfg.ExplicitSettings, "STRATEGY_INTERVAL_SECONDS") {
+		return histdata.BarInterval, nil
+	}
+	d := time.Duration(cfg.Settings.StrategyIntervalSeconds) * time.Second
+	if d <= 0 || d%histdata.BarInterval != 0 {
+		return 0, fmt.Errorf("STRATEGY_INTERVAL_SECONDS must be a positive multiple of 30 for a backtest, got %d", cfg.Settings.StrategyIntervalSeconds)
+	}
+	return d, nil
 }
 
 // resolveStrategy returns the registry strategy for id, refusing LLM ones.
@@ -216,16 +232,19 @@ func newRunner(reader histdata.Reader, cfg Config) (*runner, error) {
 		cfg.SettingsSource = DefaultSettingsSource
 	}
 	riskFee := alignRiskFee(&settings, cfg.Exchange, slices.Contains(cfg.ExplicitSettings, "FEE_AND_SLIPPAGE"))
+	interval, err := strategyInterval(cfg)
+	if err != nil {
+		return nil, err
+	}
 	st := cfg.strategy
 	if st == nil {
-		var err error
 		if st, err = resolveStrategy(cfg.StrategyID, settings); err != nil {
 			return nil, err
 		}
 	}
 
 	r := &runner{
-		cfg: cfg, settings: settings, ex: cfg.Exchange, reader: reader, st: st,
+		cfg: cfg, settings: settings, ex: cfg.Exchange, reader: reader, st: st, interval: interval,
 		clock: cfg.Start, feeds: map[string]*marketFeed{}, activeSet: map[string]bool{},
 		evaluated: map[string]bool{}, pendingMkt: map[string]int{}, exitPending: map[string]bool{},
 		entryOrder: map[string]int{}, stale: map[string]int{},
@@ -358,6 +377,12 @@ func (r *runner) run(ctx context.Context) error {
 		if !tick.Time.After(r.cfg.Start) {
 			continue // pre-roll: data only, no trading
 		}
+		if tick.Time.Sub(r.cfg.Start)%r.interval != 0 {
+			// Between strategy ticks orders still fill on every 30-second
+			// bar: live sends an order within seconds of its tick.
+			r.fillDue(k-1, tick.Time)
+			continue
+		}
 		// Every candidate's price history is market data, kept on every tick
 		// whether or not the market is in the universe, so a market that
 		// re-enters has a continuous history (as its candles and volume are).
@@ -426,8 +451,9 @@ func (r *runner) step(ctx context.Context, k int, tick time.Time) error {
 			Price:   f.last,
 			Volume:  f.volume24h(),
 			History: f.hist.window(),
-			OHLC5:   candles(f.c5, tick, 5*time.Minute, r.cfg.FillEmptyCandles),
-			OHLC15:  candles(f.c15, tick, 15*time.Minute, r.cfg.FillEmptyCandles),
+			OHLC5:   candles(f.c5, tick, 5*time.Minute, marketdata.CandleLimit, r.cfg.FillEmptyCandles),
+			OHLC15:  candles(f.c15, tick, 15*time.Minute, marketdata.CandleLimit, r.cfg.FillEmptyCandles),
+			OHLC240: candles(f.c240, tick, trendInterval, marketdata.TrendCandleLimit, r.cfg.FillEmptyCandles),
 		}, r.settings.MomentumLookbackTicks)
 	}
 	obs.MarketData = md
@@ -516,7 +542,8 @@ func (r *runner) checkStops(k int, tick time.Time, prices map[string]float64) {
 
 // handleIdea mirrors the live handleIdea in fully automated mode: learner
 // adjustment, risk evaluation, the spot-exit rule, the MinSignalConfidence
-// gate and the one-position-per-pair skip, then the order.
+// gate (which a rule exit of a held long skips) and the one-position-per-pair
+// skip, then the order.
 func (r *runner) handleIdea(k int, tick time.Time, idea domain.TradeIdea, md map[string]strategy.MarketData, prices map[string]float64, equity, cash float64) {
 	r.ideaSeq++
 	idea.ID = fmt.Sprintf("idea-%06d", r.ideaSeq) // replaces the random UUID
@@ -547,7 +574,8 @@ func (r *runner) handleIdea(k int, tick time.Time, idea domain.TradeIdea, md map
 		d.Outcome = OutcomeRiskRejected
 	case idea.Direction == domain.Short && !holding:
 		d.Outcome = OutcomeNoHolding // spot: a sell signal only exits a held long
-	case idea.Confidence < r.settings.MinSignalConfidence:
+	case idea.Confidence < r.settings.MinSignalConfidence && !idea.Exit:
+		// A rule exit of a held long is exempt from the gate, as live.
 		d.Outcome = OutcomeLowConfidence
 	case idea.Direction == domain.Long && holding:
 		d.Outcome = OutcomePositionOpen

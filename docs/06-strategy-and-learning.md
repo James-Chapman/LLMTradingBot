@@ -473,6 +473,158 @@ The LLM response must contain:
 
 ---
 
+## Trend Strategy (`internal/strategy/trend.go`)
+
+**Type:** `TrendStrategy`  
+**Strategy ID:** `"trend_strategy"` (`strategy.TrendID`)
+
+A slow, indicator-only trend follower on 4-hour candles, added because the backtest showed that every faster rule loses to the fees (see *Why 4-hour candles* below). No LLM, no news. It reads only `MarketData.TrendCandles`, the 4-hour candles the OHLC loop fetches from Kraken (720 rows, 120 days; see [03-background-loops.md](03-background-loops.md#ohlc-loop-ohlcloop)).
+
+For each market, in sorted order:
+
+1. Drop the newest candle: Kraken's OHLC response always ends with the forming one, and the replay reproduces that, so only finished candles are used.
+2. With fewer than `TrendMinClosedCandles` (160) closed candles, emit nothing (warm-up).
+3. Compute the EMA of the closes over `TrendFastEMA` (50 candles, about 8 days) and `TrendSlowEMA` (150 candles, 25 days) with `analysis.EMA`.
+4. Fast above slow and no long held → a **long** idea; fast below slow and a long held → a **sell** marked as a rule exit (`TradeIdea.Exit`). Otherwise (already held in an uptrend, nothing held in a downtrend, or equal EMAs) → nothing. The strategy reads the open positions from `Input.Portfolio`, which live and the replay both fill. Before 0.16.0 it emitted a long or a short every tick whatever was held; the loop ignored the repeats, but they filled the idea log, and in paper mode a sell with nothing held opened a paper short.
+
+Every idea has confidence `TrendConfidence` = 0.95 and `PositionSizingProposal` 0.20; the risk engine sizes it as usual (`TARGET_TRADE_AMOUNT`). The confidence is fixed and high on purpose: the learner can scale a confidence to between 0.5× and 1.5× from recent outcomes, and live records a signal exit under the closing idea's direction (`short`), so after a run of losing exits a lower confidence could fall below `MIN_SIGNAL_CONFIDENCE` (0.65) and the exit would be dropped, leaving the position open in a downtrend. At 0.95 that needs a learner quality below −0.63, and the 10-pair backtest showed it happens: exits were blocked on up to 448 market-days. Since 0.16.0 a rule exit of a held long is exempt from `MIN_SIGNAL_CONFIDENCE` (see *4-hour candle strategies* below).
+
+The strategy keeps no state of its own: after a stop-out nothing is held, so it buys again on the next tick if the trend is still up, so **a tight trailing stop multiplies fees instead of limiting losses**. Use wider stops with this strategy: the backtest used `STOP_LOSS_PCT` 0.10 and `TRAILING_STOP_PCT` 0.15 (`docs/backtest-settings/trend_strategy.json`). These are dashboard settings shared by all strategies; with the defaults (5 % and 3 %) the strategy was not tested.
+
+### Why 4-hour candles
+
+A screen of rule families on BTC/EUR and ETH/EUR 30-second bars (January–August 2026 to choose, September–November to check; 80 bp taker fee and 5 bp half-spread per side, so a round trip costs about 1.7 %) found:
+
+| Family | Result |
+|---|---|
+| EMA crosses and breakouts on 15-minute and 1-hour candles | lost on every variant: holding times of 3–27 hours do not move prices more than 1.7 % often enough |
+| Mean reversion (RSI below 25–35 and below the lower Bollinger band, exit at the middle band) on 15-minute to 4-hour candles | lost on every variant |
+| EMA 9/21 and 20/50 on 4-hour candles | negative out of sample; with a 3 % trailing stop, −85 % in sample from re-entries |
+| EMA 50/150 on 4-hour candles, wide stops | best in sample on **both** markets (BTC +1.5 %, ETH +23.8 %), positive out of sample on both (one trade each) |
+
+The parameters were chosen on the in-sample months only.
+
+### Backtest results (2026-01-01 to 2026-11-14, BTC/EUR and ETH/EUR)
+
+Settings: built-in defaults plus the stops above; capital 500 EUR, `TARGET_TRADE_AMOUNT` 100 EUR per trade, 80 bp fee (`kraken-base`). Over the period an equal-weight buy-and-hold of the two coins lost 30.17 %.
+
+| Run | Net P&L | Round trips | Notes |
+|---|---|---|---|
+| `basic_strategy` (baseline) | −34.96 EUR (−6.99 %) | 11 | fees 17.47 EUR |
+| `trend_strategy`, whole period | **+40.31 EUR (+8.06 %)** | 10 | fees 16.46 EUR; 8 losses of 1.4–7.1 %, then ETH Jul–Oct +44.90 and BTC Aug–Oct +19.61 |
+| `trend_strategy`, in sample (Jan–Aug) | +23.94 EUR (+4.79 %) | 10 | profit factor 1.82 |
+| `trend_strategy`, out of sample (Sep–Nov) | −10.26 EUR (−2.05 %) | 2 | both losses; see below |
+
+Sensitivity of the whole-period run (`backtest sensitivity`, one input varied at a time):
+
+| Varied | Values → net % | Sign survives |
+|---|---|---|
+| Fee (bp) | 26 → +10.28, 40 → +9.71, 80 → +8.06, 120 → +6.41 | yes; break-even above 120 bp |
+| Latency (ticks of 30 s) | 1 → +8.06, 2 → +7.97, 4 → +8.11, 10 → +8.10 | yes |
+| Minimum half-spread (bp) | 2 → +8.10, 5 → +8.06, 10 → +8.00, 20 → +7.89 | yes |
+| `TRAILING_STOP_PCT` | 0.03 → **−9.64** (24 trips), 0.08 → +3.96, 0.15 → +8.06, 0.25 → +8.40 | **no** at 0.03, the default |
+
+How to read this:
+
+- **The stops matter more than the costs.** Fees, latency and spread barely move the result because the strategy trades rarely; the default 3 % trailing stop turns it into a loss.
+- **Not statistically meaningful.** Ten round trips; the profit comes from two of them. The verdict says so, and a single different trend could flip the sign.
+- **The out-of-sample loss is mostly a restart effect, and also a real weakness.** The split's out-of-sample run starts flat with an empty 4-hour history, so it only leaves warm-up on 26 September, buys both coins at the end of the summer trend, and sells at the October reversals that the whole-period run sold for a profit. A live bot started late in a trend would do the same: the strategy enters whenever the trend is up, however late.
+- **It beats holding the coins** because it was in cash during most of the falls (January–February, May–June, late October–November), not because it predicts them.
+
+## 4-Hour Candle Strategies (`internal/strategy/candle_strategy.go`, `rotation.go`)
+
+Five more non-LLM strategies trade the same 4-hour candles as the trend strategy (`MarketData.TrendCandles`, 720 rows from Kraken). Each has an LLM version (below).
+
+| Strategy ID | Rule (finished 4-hour candles only) | Warm-up |
+|---|---|---|
+| `donchian_strategy` | Buy a close above the highest high of the previous 90 candles (15 days); sell a close below the lowest low of the previous 30 (5 days). | 91 candles, ~16 days |
+| `rsi_dip_strategy` | Buy when the 14-candle RSI is below 20 **and** the close is at least 10 % under the 20-candle EMA (a capitulation); sell when RSI recovers above 50, or after 18 candles (3 days). | 40 candles, ~7 days |
+| `macd_strategy` | MACD 36/78/27 (the classic 12/26/9 stretched three times): buy while the MACD line is above zero and above its signal line; sell when the histogram turns negative. | 115 candles, ~20 days |
+| `squeeze_strategy` | Bollinger bands of 40 candles at 2 SD: after the band width falls to its lowest 20 % of the last 120 candles (within the 6 candles before), buy a close above the upper band that is also above the 100-candle EMA; sell a close below the middle band. | 160 candles, ~27 days |
+| `rotation_strategy` | Rank every watched market by its 14-day (84-candle) return; hold the 3 strongest while their return is positive. Rank 4 is a buffer (no idea, so a market at the edge is not bought and sold on every swap); a held market below rank 4 or with a negative return is sold. | 85 candles, ~15 days |
+
+Shared behaviour (`CandleStrategy`, `actionable` in `candle_strategy.go`):
+
+- **Finished candles only.** The newest candle is Kraken's forming one and is dropped, as in the trend strategy.
+- **No stored state.** Rules that need "in a trade" state (breakout, dip, squeeze) rebuild it from the candle history on every evaluation (`latch`). A rule's decision is memoised per market until a new candle closes (`decide`), so evaluating every 30-second tick costs nothing; each idea still reports the current price.
+- **Only actionable ideas.** A long is emitted only for a market with no long held, and a sell only for a held long. Every sell is marked `TradeIdea.Exit` (a *rule exit*). Open positions come from `Input.Portfolio`, which live and the replay both fill. The trend strategy does the same since 0.16.0.
+- **Rule exits skip `MIN_SIGNAL_CONFIDENCE`.** All ideas have confidence 0.95 (`CandleConfidence`), but the learner can scale it to 0.475. In the first 10-pair backtest that blocked exits of held positions on up to 448 market-days, leaving them to the stop-loss. The live loop and the replay now execute a rule exit of a held long whatever its confidence, and ignore one with nothing held (never a paper short). Entries still need the threshold.
+- **Wide stops.** Like the trend strategy, these re-enter on the next tick after a stop-out while the rule is still long. They were tested with `STOP_LOSS_PCT` 0.10 and `TRAILING_STOP_PCT` 0.15 (`docs/backtest-settings/candle_strategies.json`).
+
+**How the parameters were chosen.** A Python screen of each family (`research4.py`/`research5.py`, not in the repository; 80 bp fee, 5 bp half-spread, fills on the next bar, the bot's stops) on BTC/EUR, ETH/EUR and HYPE/EUR over 2026-01-01..2026-11-15 picked one variant per family; for rotation the screen was meaningless on three markets and the parameters are a common default. So for those three markets the whole of 2026 is in-sample; the other seven pairs were never looked at while choosing. Nothing was re-tuned after the 10-pair runs below.
+
+## LLM Versions (`internal/strategy/llm_version.go`)
+
+Every 4-hour strategy has an LLM version: `trend_and_llm_strategy`, `donchian_and_llm_strategy`, `rsi_dip_and_llm_strategy`, `macd_and_llm_strategy`, `squeeze_and_llm_strategy` and `rotation_and_llm_strategy`. `LLMVersion` wraps the base strategy:
+
+1. The base strategy evaluates as usual; its ideas are relabelled with the LLM version's id.
+2. **Exits are passed on unchanged, without an LLM call**, so an LLM outage or veto can never keep a position open. So are entries for a market already held.
+3. Each new entry is sent to `LLMAnalyser.AnalyseSignal` with the strategy's **own prompt** (`llm.StrategyPrompt`): its name, its instructions (what the signal means, what would make it more or less likely to work, when to oppose it), and its data (the idea's supporting signals: channel levels, RSI and EMA gap, MACD values, band width, rank and return). The prompt also carries what `basic_and_llm_strategy` sends: the market briefing, the latest reflection, the tick indicators, the portfolio and up to five recent news items for the asset. "Momentum" in the prompt is the 24-hour change of the 4-hour candles.
+4. The reply's `confidence_scale` (0.5–2.0) multiplies the entry's confidence, capped at 0.95; a scale below `LLM_VETO_THRESHOLD` (0.70) drops the entry. The `llm_sentiment`, `llm_confidence_scale` and `llm_reasoning` supporting signals are set as for `basic_and_llm_strategy` (nil when the LLM was not used), and the reasoning is appended to the thesis.
+5. **One LLM call per market per closed 4-hour candle.** The verdict (including a veto) is reused until the market's last finished candle changes, so a 60-second strategy interval does not ask the LLM 240 times about the same signal. A reply made without the LLM (unavailable, unparsable) is not kept, so it is retried on the next tick; meanwhile the base entry stands with its own confidence.
+
+Like every LLM strategy, the LLM versions wait for news before evaluating (`llmStrategyDataReady`) and **cannot be backtested**: a replay cannot reproduce what the LLM would have said on a past date. Their only difference from the base strategy is which entries the LLM lets through, so judge them against the base strategy's backtest and on paper.
+
+### Backtest results: 10 pairs, 2026-01-01 to 2026-11-14
+
+Markets: the top 10 EUR pairs by volume on 2026-11-14 (BTC, ETH, SOL, XRP, ZEC, HYPE, NEAR, AVAX, LINK, ADA), chosen today, so the selection is **survivorship-biased** (pairs that did well are more likely to be in today's top 10). HYPE/EUR starts at its listing on 28 January. 500 EUR capital, `TARGET_TRADE_AMOUNT` 100 EUR, 80 bp fee; the 4-hour strategies use the stops above, `basic_strategy` the defaults. An equal-weight buy-and-hold of the ten returned −0.4 %. "Jan–Aug" and "Sep–Nov" are the two halves of `backtest split --split 2026-09-01`, each starting flat with an empty history.
+
+| Strategy | Net % (30 s) | Net % (120 s) | Round trips | Win % | Profit factor | Max DD % | Fees EUR | Pairs positive | Jan–Aug % (trips) | Sep–Nov % (trips) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `basic_strategy` | −23.4 | −33.4 | 62 | 19 | 0.26 | 25.9 | 99 | 1/10 | −23.4 (62) | −11.1 (68) |
+| `trend_strategy` | −4.8 | +19.5 | 87 | 26 | 0.94 | 30.5 | 135 | 3/10 | +4.4 (69) | −34.3 (26) |
+| `donchian_strategy` | **+42.6** | **+52.0** | 85 | 31 | 1.72 | 17.5 | 134 | 5/10 | +27.2 (58) | +1.9 (19) |
+| `rsi_dip_strategy` | −6.5 | −8.4 | 27 | 41 | 0.72 | 18.9 | 42 | 4/10 | −6.5 (27) | 0.0 (0) |
+| `macd_strategy` | +5.5 | +19.8 | 140 | 26 | 1.06 | 33.1 | 218 | 6/10 | +1.2 (109) | −10.4 (23) |
+| `squeeze_strategy` | −3.4 | −2.7 | 100 | 28 | 0.95 | 25.1 | 157 | 4/10 | +4.6 (76) | −13.5 (12) |
+| `rotation_strategy` | −56.8 | −41.9 | 225 | 19 | 0.66 | 56.8 | 352 | 1/10 | −45.2 (171) | −8.7 (57) |
+
+Net P&L per pair (EUR, 30 s run):
+
+| Strategy | ADA | AVAX | BTC | ETH | HYPE | LINK | NEAR | SOL | XRP | ZEC |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `basic_strategy` | −14.2 | −11.9 | −17.7 | −17.3 | −13.8 | −8.4 | −7.6 | −10.5 | +0.9 | −16.5 |
+| `trend_strategy` | −41.9 | −3.1 | −3.7 | +38.1 | −16.7 | +20.2 | −26.3 | +17.9 | −7.4 | −1.3 |
+| `donchian_strategy` | −41.0 | −7.8 | −5.6 | +17.9 | +64.3 | −1.6 | +85.5 | +10.1 | −24.8 | +116.0 |
+| `rsi_dip_strategy` | −14.8 | −6.7 | +7.3 | +3.6 | 0.0 | +10.2 | −5.6 | −17.5 | +9.5 | −18.7 |
+| `macd_strategy` | −41.6 | +6.0 | −25.0 | −28.8 | +46.7 | +1.4 | +45.3 | +0.2 | −35.6 | +58.8 |
+| `squeeze_strategy` | +1.4 | +11.3 | −20.7 | −14.0 | +40.0 | −7.6 | −20.0 | −13.7 | −31.8 | +38.1 |
+| `rotation_strategy` | −72.8 | −14.1 | −28.8 | −49.6 | −16.7 | −57.3 | +87.4 | −59.8 | −16.3 | −56.2 |
+
+How to read this:
+
+- **No strategy wins on every pair, and only Donchian is positive in both halves.** Its profit comes from three pairs (ZEC, NEAR, HYPE); it lost on five. The Sep–Nov half is +1.9 % on 19 trades, which is not evidence of anything.
+- **The tick interval should not matter for 4-hour rules, but it does (trend −4.8 % vs +19.5 %).** With 500 EUR and 100 EUR per trade the bot can hold about four positions; whichever market signals first takes the cash, and stops are checked on a different sample of prices. One trade decides a lot: trend's 18 August ZEC buy was stopped out on 22 August for +33 EUR when stops were checked every 30 s, and rode to 10 September for +114 EUR when checked every 120 s. Treat differences of this size as noise.
+- **Rotation churns.** 225 round trips paid 352 EUR in fees on 500 EUR of capital; ranks change too often at a 14-day window for an 80 bp fee.
+- **RSI dip rarely trades** (27 trips, none after June) and loses on average: dips in this falling year kept falling.
+- **A single period of 10.5 months, with today's top 10, is not enough.** The plan is to repeat these runs over 2022–2026 with each year's point-in-time top 20 EUR pairs before drawing conclusions.
+- **Thin pairs fill late.** A market order is rejected when the next 30-second bar has no trade and retried on the next tick; AVAX/EUR traded in only 16 % of 30-second intervals. This delays entries and exits on the quieter pairs (pessimistic).
+
+## LLM Shadow Reviews (`internal/strategy/shadow.go`, `internal/shadow`, `internal/app/shadow.go`)
+
+The LLM versions cannot be backtested, so the only way to learn whether their vetoes help is to watch them live. Shadow reviews do that without letting the LLM touch a trade. While `LLM_SHADOW_REVIEW` is on (the default) and the selected strategy is one of the six 4-hour strategies **without** LLM:
+
+1. After each evaluation, `ShadowReviewer.Claim` picks the entries the strategy's LLM version would have sent to the LLM: longs for a market not held, with a closed 4-hour candle, not yet reviewed for that market's last closed candle. Exits and other strategies are never reviewed.
+2. The review runs **in the background** (`queueShadowReviews`, tracked by `App.Wait`): the tick goes on to trade the entry exactly as before and does not wait for the LLM. One batch asks the LLM at a time.
+3. The LLM is asked through `askLLM`, the same function the LLM versions use, with the strategy's own prompt, the news, the briefing, the indicators and the portfolio as they were before the entry. So the verdict is exactly what the LLM version would have been told.
+4. The answer is stored in `llm_shadow_reviews`, one row per strategy, market and closed candle, and noted in the activity feed (*Shadow review BTC/EUR - LLM would veto (scale 0.55 < 0.70), trade unaffected*). A scale below `LLM_VETO_THRESHOLD` is a *would-veto*. If the LLM cannot answer, the row says so and the claim is released, so a repeat of the entry on a later tick is asked again; a later answer replaces the unanswered row, but an answer is never replaced.
+
+No review is made without news (the LLM version would still be waiting for it), without an LLM that can be tried, or while an LLM strategy is selected (that strategy asks the LLM itself).
+
+**Scoring** (`shadow.Summarise`, read through `GET /api/shadow-reviews`). Each closed long of the reviewed strategy (`signal_outcomes`) is matched to the newest review of its strategy and market whose candle had closed before the entry and opened at most 12 hours before it (`MatchWindow`: the candle, the next one in which the entry is made, and 4 hours of slack for late candle data and approvals). Several trades entered under one verdict (a stop-out and re-entry) all count for it, since the LLM version would have kept the same verdict for the whole candle. Trades without a matching review, and reviews the LLM could not answer, are not scored. Per strategy:
+
+| Field | Meaning |
+|---|---|
+| Veto accuracy | Share of the vetoed trades that lost money (P&L ≤ 0, after fees). |
+| Random veto (`loser_rate`) | Share of all scored trades that lost money: what vetoes picked at random would hit. |
+| Break-even | Average win ÷ (average win + average loss): the veto accuracy at which vetoes neither help nor hurt. |
+| Vetoes would save | Minus the total P&L of the vetoed trades. |
+| Verdict | *Too few* until 10 vetoed trades have closed (`DefaultMinScoredVetoes`); then *would help* when the vetoed trades lost money in total, else *would hurt*. |
+
+The LLM is worth using with a strategy when its veto accuracy is above the break-even, and clearly above the random veto. From the 2026 backtest trades, the break-evens are about 51 % for RSI dip, 71–75 % for squeeze, trend, MACD and rotation, and 80 % for Donchian, whose profit came from a few large trades that a veto could remove. These are estimates: a vetoed trade would also have freed its cash for another one, which this scoring cannot see.
+
+---
+
 ## Backtest Replay (`internal/backtest`)
 
 `backtest.Run` replays cached 30-second bars through the strategy, the shared `marketdata.Build`, the risk engine, the learner (fed only trades the run has closed) and the paper engine, tick by tick in the live loop's order, with a simulated exchange that fills each order on the next tick's bar at taker-side prices plus Kraken fees and order rules. Stops are checked on each tick's last price, as live. The full description, every assumption and its bias are in [14-backtesting.md](14-backtesting.md).

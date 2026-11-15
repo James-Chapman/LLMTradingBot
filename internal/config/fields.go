@@ -89,9 +89,10 @@ var fields = []Field{
 	floatField("MIN_24H_VOLUME", "Minimum 24h volume", GroupRisk, true, "Skip markets trading less than this in 24 hours (0 = off).", atLeast(0), func(s *Settings) *float64 { return &s.Min24hVolume }),
 
 	// Signals (live)
-	intField("STRATEGY_INTERVAL_SECONDS", "Strategy interval (s)", GroupSignals, true, "Seconds between strategy runs (30-600). Indicators count price ticks, so a longer interval also makes their windows and the warm-up last longer. Backtests always use 30-second ticks.", MinStrategyIntervalSeconds, MaxStrategyIntervalSeconds, func(s *Settings) *int { return &s.StrategyIntervalSeconds }),
+	intField("STRATEGY_INTERVAL_SECONDS", "Strategy interval (s)", GroupSignals, true, "Seconds between strategy runs (30-600). Indicators count price ticks, so a longer interval also makes their windows and the warm-up last longer. Backtests run every 30 s unless a settings file sets this value.", MinStrategyIntervalSeconds, MaxStrategyIntervalSeconds, func(s *Settings) *int { return &s.StrategyIntervalSeconds }),
 	floatField("MIN_SIGNAL_CONFIDENCE", "Minimum signal confidence", GroupSignals, true, "Fully automated mode only trades signals at or above this (0–1).", between(0, 1), func(s *Settings) *float64 { return &s.MinSignalConfidence }),
 	floatField("LLM_VETO_THRESHOLD", "LLM veto threshold", GroupSignals, true, "The combined strategy drops signals the LLM rates below this (0–1).", between(0, 1), func(s *Settings) *float64 { return &s.LLMVetoThreshold }),
+	boolField("LLM_SHADOW_REVIEW", "LLM shadow reviews", GroupSignals, true, "While a 4-hour strategy without LLM is selected, ask the LLM about each new entry as its LLM version would, and only record the answer. Intelligence → LLM Shadow Reviews shows whether its vetoes would have helped. Trades are never changed.", func(s *Settings) *bool { return &s.LLMShadowReview }),
 	intField("MOMENTUM_LOOKBACK_TICKS", "Momentum lookback (ticks)", GroupSignals, true, "Price ticks used for the momentum calculation (1-199; the bot keeps 200 ticks per market).", 1, PriceHistoryTicks-1, func(s *Settings) *int { return &s.MomentumLookbackTicks }),
 	intField("LLM_ONLY_MAX_CONCURRENCY", "LLM-only concurrency", GroupSignals, true, "Markets the LLM-only strategy analyses at once (1-16).", 1, 16, func(s *Settings) *int { return &s.LLMOnlyMaxConcurrency }),
 

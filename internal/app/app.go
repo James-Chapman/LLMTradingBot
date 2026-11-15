@@ -35,7 +35,7 @@ import (
 )
 
 // Version is the application version reported by /health and the dashboard.
-const Version = "0.14.0"
+const Version = "0.17.0"
 
 // Name is the application display name.
 const Name = "Kraken Trading Bot"
@@ -65,6 +65,19 @@ var StrategyLabels = map[string]string{
 	strategy.BasicID:       "Basic Strategy (Just market indicators, no LLM)",
 	strategy.BasicAndLLMID: "Basic + LLM Combined (LLM analysis augments indicator-based signals)",
 	strategy.LLMOnlyID:     "All LLM (LLM generates signals from price, indicators, and news — no indicator consensus gate)",
+	strategy.TrendID:       "Trend Strategy (4-hour EMA trend following, no LLM)",
+	strategy.TrendAndLLMID: "Trend + LLM (4-hour EMA trend; the LLM reviews each entry)",
+
+	strategy.DonchianID:       "Donchian Breakout (4-hour 90/30 channel breakout, no LLM)",
+	strategy.DonchianAndLLMID: "Donchian Breakout + LLM (the LLM reviews each breakout)",
+	strategy.RSIDipID:         "RSI Dip (buys 4-hour capitulation dips, sells the bounce, no LLM)",
+	strategy.RSIDipAndLLMID:   "RSI Dip + LLM (the LLM reviews each dip)",
+	strategy.MACDID:           "MACD Momentum (slow 4-hour MACD 36/78/27, no LLM)",
+	strategy.MACDAndLLMID:     "MACD Momentum + LLM (the LLM reviews each entry)",
+	strategy.SqueezeID:        "Bollinger Squeeze (4-hour squeeze breakout, no LLM)",
+	strategy.SqueezeAndLLMID:  "Bollinger Squeeze + LLM (the LLM reviews each breakout)",
+	strategy.RotationID:       "Relative Strength Rotation (holds the 3 strongest markets by 14-day return, no LLM)",
+	strategy.RotationAndLLMID: "Relative Strength Rotation + LLM (the LLM reviews each entry)",
 }
 
 // MarketSource is the Kraken public market-data surface the app uses.
@@ -175,6 +188,8 @@ type App struct {
 	learner      *learner.PerformanceLearner
 	llmClient    LLMClient
 	analyser     *llm.LLMAnalyser
+	shadow       *strategy.ShadowReviewer // LLM shadow reviews of non-LLM 4-hour entries (shadow.go)
+	shadowMu     sync.Mutex               // one shadow batch asks the LLM at a time
 	market       MarketSource
 	live         LiveEngine
 	universe     UniverseSource
@@ -207,6 +222,7 @@ type App struct {
 	briefedNewsIDs   map[string]bool
 	ohlc5            map[string]OHLCPayload
 	ohlc15           map[string]OHLCPayload
+	ohlc240          map[string]OHLCPayload // 4-hour trend candles
 	sessionTick      int
 	priceHistory     map[string][]float64 // oldest first
 	equityHistory    []portfolio.EquityPoint
@@ -257,6 +273,7 @@ func NewWithOptions(ctx context.Context, settings config.Settings, repo *storage
 		briefedNewsIDs:  map[string]bool{},
 		ohlc5:           map[string]OHLCPayload{},
 		ohlc15:          map[string]OHLCPayload{},
+		ohlc240:         map[string]OHLCPayload{},
 		priceHistory:    map[string][]float64{},
 		latestSignals:   []SignalView{},
 		riskRejections:  []storage.RiskRejection{},
@@ -267,6 +284,7 @@ func NewWithOptions(ctx context.Context, settings config.Settings, repo *storage
 	a.strategies = a.strategyFactory(settings)
 
 	a.analyser = llm.NewAnalyser(a.llmClient, a.currencySymbol)
+	a.shadow = strategy.NewShadowReviewer()
 	a.risk = risk.NewEngine(settings, nil)
 	a.approvals = approval.NewService(approval.DefaultTTL, approvalStore{repo: repo}, nil)
 	a.paper = paper.NewEngine(settings.StartingCapital, paperStore{repo: repo}, nil)

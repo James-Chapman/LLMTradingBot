@@ -25,6 +25,12 @@ const (
 	TickSeconds = analysis.DefaultTickSecs
 	// HigherTimeframeSeconds is the tick the 15-minute indicators assume.
 	HigherTimeframeSeconds = 900
+	// TrendCandleMinutes is the Kraken OHLC interval of the trend candles (4 hours).
+	TrendCandleMinutes = 240
+	// TrendCandleLimit is how many 4-hour candles the live loop keeps per
+	// market (120 days, Kraken's maximum of 720 rows), the newest being the
+	// forming candle, so the trend strategy's 150-candle EMA has settled.
+	TrendCandleLimit = 720
 )
 
 // Input is one market's raw data at a strategy tick.
@@ -34,6 +40,7 @@ type Input struct {
 	History      []float64       // price ticks, oldest first, newest last (includes Price)
 	OHLC5        []domain.Candle // 5-minute candles, oldest first; may be empty
 	OHLC15       []domain.Candle // 15-minute candles, oldest first; may be empty
+	OHLC240      []domain.Candle // 4-hour candles, oldest first, newest forming; may be empty
 	LLMSentiment float64         // latest briefing score for the market, -1..1
 }
 
@@ -41,7 +48,7 @@ type Input struct {
 // tick momentumLookbackTicks ticks back (the current price while the history
 // is shorter); price-history indicators run on the 30-second ticks with the
 // 5-minute candles for ATR and Stochastic; the higher timeframe runs on the
-// 15-minute candles.
+// 15-minute candles. The 4-hour candles are passed through as they are.
 func Build(in Input, momentumLookbackTicks int) strategy.MarketData {
 	lookback := momentumLookbackTicks + 1
 	prev := in.Price
@@ -64,5 +71,6 @@ func Build(in Input, momentumLookbackTicks int) strategy.MarketData {
 		LLMSentiment:    in.LLMSentiment,
 		HigherTimeframe: htf,
 		Indicators:      analysis.ComputeAll(in.History, TickSeconds, in.OHLC5),
+		TrendCandles:    in.OHLC240,
 	}
 }

@@ -289,6 +289,21 @@ var createTableStatements = []string{
 	timestamp DATETIME,
 	PRIMARY KEY (id)
 )`,
+	`CREATE TABLE IF NOT EXISTS llm_shadow_reviews (
+	strategy_id VARCHAR NOT NULL,
+	market VARCHAR NOT NULL,
+	candle DATETIME NOT NULL,
+	reviewed_at DATETIME,
+	trade_idea_id VARCHAR,
+	base_confidence FLOAT,
+	llm_used BOOLEAN NOT NULL,
+	confidence_scale FLOAT,
+	sentiment FLOAT,
+	reasoning TEXT,
+	would_veto BOOLEAN NOT NULL,
+	veto_threshold FLOAT,
+	PRIMARY KEY (strategy_id, market, candle)
+)`,
 }
 
 // indexDef describes one SQLAlchemy-generated index.

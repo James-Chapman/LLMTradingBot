@@ -494,6 +494,27 @@ One row per hourly reflection. Loaded at start-up by `LLMAnalyser.LoadFromDB()` 
 
 ---
 
+### Table: `llm_shadow_reviews`
+
+One row per LLM shadow verdict (`internal/storage/shadow.go`): what a 4-hour strategy's LLM version would have said about an entry. Primary key `(strategy_id, market, candle)`. An unanswered row (`llm_used = 0`) is replaced by a later answer for the same candle; an answer is never replaced. Scored against `signal_outcomes` when read.
+
+| Column | Type | Notes |
+|---|---|---|
+| `strategy_id` | VARCHAR | The non-LLM strategy whose entry was reviewed |
+| `market` | VARCHAR | |
+| `candle` | DATETIME | Start of the last closed 4-hour candle the entry was decided on |
+| `reviewed_at` | DATETIME | When the LLM answered |
+| `trade_idea_id` | VARCHAR | The first idea reviewed for this candle |
+| `base_confidence` | FLOAT | The idea's confidence before any learner adjustment |
+| `llm_used` | BOOLEAN | `0` when the LLM could not answer |
+| `confidence_scale` | FLOAT | The LLM's scale (0.5–2.0) |
+| `sentiment` | FLOAT | The LLM's sentiment (−1 to 1) |
+| `reasoning` | TEXT | The LLM's reason |
+| `would_veto` | BOOLEAN | Scale below `veto_threshold` |
+| `veto_threshold` | FLOAT | `LLM_VETO_THRESHOLD` at the time |
+
+---
+
 ### Supporting Tables (structural / low activity)
 
 | Table | Purpose |

@@ -199,7 +199,19 @@ The response carries an `ETag` header holding the dashboard version counter, whi
     "strategies": [
         {"id": "basic_strategy",         "label": "Basic Strategy (Just market indicators, no LLM)", "enabled": false, "selected": false},
         {"id": "basic_and_llm_strategy", "label": "Basic + LLM Combined (...)",                      "enabled": false, "selected": false},
-        {"id": "llm_only_strategy",      "label": "All LLM (...)",                                   "enabled": true,  "selected": true}
+        {"id": "llm_only_strategy",      "label": "All LLM (...)",                                   "enabled": true,  "selected": true},
+        {"id": "trend_strategy",         "label": "Trend Strategy (4-hour EMA trend following, no LLM)", "enabled": false, "selected": false},
+        {"id": "trend_and_llm_strategy", "label": "Trend + LLM (4-hour EMA trend; the LLM reviews each entry)", "enabled": false, "selected": false},
+        {"id": "donchian_strategy", "label": "Donchian Breakout (4-hour 90/30 channel breakout, no LLM)", "enabled": false, "selected": false},
+        {"id": "donchian_and_llm_strategy", "label": "Donchian Breakout + LLM (the LLM reviews each breakout)", "enabled": false, "selected": false},
+        {"id": "rsi_dip_strategy", "label": "RSI Dip (buys 4-hour capitulation dips, sells the bounce, no LLM)", "enabled": false, "selected": false},
+        {"id": "rsi_dip_and_llm_strategy", "label": "RSI Dip + LLM (the LLM reviews each dip)", "enabled": false, "selected": false},
+        {"id": "macd_strategy", "label": "MACD Momentum (slow 4-hour MACD 36/78/27, no LLM)", "enabled": false, "selected": false},
+        {"id": "macd_and_llm_strategy", "label": "MACD Momentum + LLM (the LLM reviews each entry)", "enabled": false, "selected": false},
+        {"id": "squeeze_strategy", "label": "Bollinger Squeeze (4-hour squeeze breakout, no LLM)", "enabled": false, "selected": false},
+        {"id": "squeeze_and_llm_strategy", "label": "Bollinger Squeeze + LLM (the LLM reviews each breakout)", "enabled": false, "selected": false},
+        {"id": "rotation_strategy", "label": "Relative Strength Rotation (holds the 3 strongest markets by 14-day return, no LLM)", "enabled": false, "selected": false},
+        {"id": "rotation_and_llm_strategy", "label": "Relative Strength Rotation + LLM (the LLM reviews each entry)", "enabled": false, "selected": false}
     ],
     "warmup_ticks_remaining": 0,
     "learning": [
@@ -444,7 +456,7 @@ Toggles whether orders for a market route to Kraken live execution instead of th
 
 ### `POST /api/control/strategies/{strategy_id}/select`
 
-Selects the single strategy used for future signal evaluation. Current strategy IDs are `"basic_strategy"`, `"basic_and_llm_strategy"`, and `"llm_only_strategy"`; legacy IDs are mapped to their canonical form. Returns `404` (`"Strategy not found"`) for an unknown ID.
+Selects the single strategy used for future signal evaluation. Current strategy IDs are `"basic_strategy"`, `"basic_and_llm_strategy"`, `"llm_only_strategy"`, `"trend_strategy"`, `"trend_and_llm_strategy"`, `"donchian_strategy"`, `"donchian_and_llm_strategy"`, `"rsi_dip_strategy"`, `"rsi_dip_and_llm_strategy"`, `"macd_strategy"`, `"macd_and_llm_strategy"`, `"squeeze_strategy"`, `"squeeze_and_llm_strategy"`, `"rotation_strategy"` and `"rotation_and_llm_strategy"`; legacy IDs are mapped to their canonical form. Returns `404` (`"Strategy not found"`) for an unknown ID.
 
 **Response:**
 
@@ -469,7 +481,7 @@ Rebuilds the strategy instances from the current settings.
 **Response:**
 
 ```json
-{"status": "reloaded", "strategies": ["basic_strategy", "basic_and_llm_strategy", "llm_only_strategy"]}
+{"status": "reloaded", "strategies": ["basic_strategy", "basic_and_llm_strategy", "llm_only_strategy", "trend_strategy", "trend_and_llm_strategy", "donchian_strategy", "donchian_and_llm_strategy", "rsi_dip_strategy", "rsi_dip_and_llm_strategy", "macd_strategy", "macd_and_llm_strategy", "squeeze_strategy", "squeeze_and_llm_strategy", "rotation_strategy", "rotation_and_llm_strategy"]}
 ```
 
 ---
@@ -582,6 +594,61 @@ Returns the performance learner's statistics per `(strategy, market, direction)`
     }
 ]
 ```
+
+---
+
+### `GET /api/shadow-reviews`
+
+The LLM shadow reviews (`docs/06-strategy-and-learning.md`, *LLM Shadow Reviews*): whether they are on, and each reviewed strategy's verdicts scored against its closed trades. Ratios are `null` until there is something to divide. `recent` is the newest 20 reviews with the trades entered under them (`pnl` is `null` while none has closed). `500` with a `detail` when the database cannot be read.
+
+**Response:**
+
+```json
+{
+    "enabled": true,
+    "veto_threshold": 0.7,
+    "min_scored_vetoes": 10,
+    "strategies": [
+        {
+            "strategy_id":     "rotation_strategy",
+            "reviewed":        120,
+            "llm_unavailable": 0,
+            "would_veto":      30,
+            "scored_trades":   90,
+            "losing_trades":   70,
+            "scored_vetoes":   22,
+            "vetoed_losers":   19,
+            "veto_accuracy":   0.864,
+            "loser_rate":      0.778,
+            "break_even":      0.73,
+            "vetoed_pnl":      -41.0,
+            "kept_pnl":        -80.0,
+            "verdict":         "ahead"
+        }
+    ],
+    "recent": [
+        {
+            "strategy_id":      "rotation_strategy",
+            "market":           "ZEC/EUR",
+            "candle":           "2026-11-16T08:00:00Z",
+            "reviewed_at":      "2026-11-16T12:00:40Z",
+            "trade_idea_id":    "4f6c…",
+            "base_confidence":  0.95,
+            "llm_used":         true,
+            "confidence_scale": 0.55,
+            "sentiment":        -0.4,
+            "reasoning":        "Rally driven by a one-off listing rumour",
+            "would_veto":       true,
+            "veto_threshold":   0.7,
+            "trades":           1,
+            "pnl":              -4.2
+        }
+    ]
+}
+```
+
+- `candle` is the start of the last closed 4-hour candle the entry was decided on.
+- `verdict` is `too_few` (fewer than `min_scored_vetoes` vetoed trades closed), `ahead` (the vetoed trades lost money in total) or `behind`.
 
 ---
 

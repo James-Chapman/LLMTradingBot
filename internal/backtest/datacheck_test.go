@@ -162,6 +162,18 @@ func TestDisclosures(t *testing.T) {
 		}
 	})
 
+	t.Run("GIVEN any run WHEN its assumptions are listed THEN the shorter 4-hour trend window and its warm-up are stated as pessimistic", func(t *testing.T) {
+		res := mustRun(t, oneMarket(flatSeries(80, 100)), testConfig([]string{"BTC/EUR"}, 79))
+		if got := assumptionBias(res, "trend_candles"); got != BiasPessimistic {
+			t.Fatalf("trend_candles bias = %q, want %q", got, BiasPessimistic)
+		}
+		for _, a := range res.Assumptions {
+			if a.Name == "candles" && !strings.Contains(a.Value, "4 h") {
+				t.Fatalf("candles assumption %q does not list the 4-hour candles", a.Value)
+			}
+		}
+	})
+
 	t.Run("GIVEN a run with a settings file WHEN summarised THEN the file is named", func(t *testing.T) {
 		reader := oneMarket(flatSeries(80, 100))
 		cfg := testConfig([]string{"BTC/EUR"}, 79)

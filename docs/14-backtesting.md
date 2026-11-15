@@ -8,7 +8,7 @@ Code: `internal/backtest` (replay, exchange, result), `internal/marketdata` (sha
 
 ## How a replay works
 
-Time advances in 30-second ticks, the live strategy interval, taken from `histdata.MergeTicks`. Tick `τ` sees only the bars with `Start < τ`, each fed to the candles and the volume only at its own tick, so the last price is the close of the bar `[τ-30s, τ)` — the last trade before the sample. Ticks run from `--start + 30s` to the end of the `--end` day. The 25 hours before the start are a **pre-roll**: they feed candles, the rolling 24 h volume and the last price, but the strategy is not called and nothing trades; the price history starts empty, as after a live start-up.
+Time advances in 30-second ticks taken from `histdata.MergeTicks`. By default the strategy runs on every tick (30 s). When the settings file (or a `--vary`) sets `STRATEGY_INTERVAL_SECONDS` explicitly, the strategy runs only on ticks at `--start` + a whole number of intervals; the value must be a positive multiple of 30 or the run is refused. Between strategy ticks only step 1 below runs, so an order still fills on the next 30-second bar after its decision, as live sends it within seconds. The price history, stops, equity points and the per-tick metrics (drawdown, utilisation, `ticks`) then count strategy ticks, as the live loop and stop checker run once per interval. The interval used is recorded as the `strategy_interval` assumption. Tick `τ` sees only the bars with `Start < τ`, each fed to the candles and the volume only at its own tick, so the last price is the close of the bar `[τ-30s, τ)` — the last trade before the sample. Ticks run from `--start + 30s` to the end of the `--end` day. The 25 hours before the start are a **pre-roll**: they feed candles, the rolling 24 h volume and the last price, but the strategy is not called and nothing trades; the price history starts empty, as after a live start-up.
 
 Each tick mirrors the live strategy loop and stop checker (`internal/app/loops.go`), in this order:
 
@@ -17,9 +17,9 @@ Each tick mirrors the live strategy loop and stop checker (`internal/app/loops.g
 3. Stops: each open long is checked against its stop-loss and trailing stop on the tick's last price (never on intra-bar highs or lows), as the live checker does. A breach schedules a sell.
 4. Equity is recorded and passed to `risk.Engine.UpdateEquity`; the daily loss limit resets at UTC midnight of the replay clock.
 5. Warm-up: while no market has more than 34 prices, the strategy is not called (live's gate).
-6. `marketdata.Build` assembles each market's inputs from the price history, the 5 and 15 minute candles, the 24 h volume and a sentiment of 0 (no news, no LLM). Candles come from `histdata.CandleAggregator` (clock-aligned, at most 100, intervals without trades have none); because Kraken's live OHLC response always ends with the forming row, the replay appends a flat candle at the last close with zero volume when the current interval has had no trade yet. That last rule is an assumption about the live endpoint for illiquid pairs, not verified. Whether Kraken also returns flat zero-volume rows for *past* intervals without trades is not documented either: by default the replay leaves them out (as the aggregator does); `--fill-empty-candles` inserts a flat row at the previous close for every empty interval inside the last 100, and the `empty-candles` sensitivity dimension runs both. The 24 h volume is `histdata.RollingVolume` at the tick.
+6. `marketdata.Build` assembles each market's inputs from the price history, the 5 and 15 minute candles, the 24 h volume and a sentiment of 0 (no news, no LLM). Candles come from `histdata.CandleAggregator` (clock-aligned, at most 100, intervals without trades have none); because Kraken's live OHLC response always ends with the forming row, the replay appends a flat candle at the last close with zero volume when the current interval has had no trade yet. That last rule is an assumption about the live endpoint for illiquid pairs, not verified. Whether Kraken also returns flat zero-volume rows for *past* intervals without trades is not documented either: by default the replay leaves them out (as the aggregator does); `--fill-empty-candles` inserts a flat row at the previous close for every empty interval inside the last 100, and the `empty-candles` sensitivity dimension runs both. The 24 h volume is `histdata.RollingVolume` at the tick. The **4-hour candles** (`MarketData.TrendCandles`, read by `trend_strategy` and the other 4-hour strategies) come from a third aggregator that keeps `marketdata.TrendCandleLimit` = 720, with the same forming-row and empty-interval rules. Because nothing before the pre-roll is read, the replay's 4-hour window starts 25 h before `--start`, whereas live fetches 120 days of them from Kraken at once: each 4-hour strategy therefore waits for its warm-up after the start (`trend_strategy` about 27 days for its 160 closed candles, `squeeze_strategy` the same, `rsi_dip_strategy` about 7), and computes its EMAs on a shorter history during the first months (assumption `trend_candles`, pessimistic).
 7. The strategy evaluates; the learner adjusts each idea's confidence from trades this run has closed; `risk.Engine.EvaluateTrade` decides with the paper engine's available cash.
-8. The fully automated gates follow, as live: a sell with no long held is ignored (spot), an idea below `MIN_SIGNAL_CONFIDENCE` is dropped, a market with an open position in the same direction or a pending order is skipped. Every outcome is logged in `decisions`.
+8. The fully automated gates follow, as live: a sell with no long held is ignored (spot), an idea below `MIN_SIGNAL_CONFIDENCE` is dropped unless it is a rule exit (`TradeIdea.Exit`) of a held long, a market with an open position in the same direction or a pending order is skipped. Every outcome is logged in `decisions`.
 9. An approved idea is sized with the live `sizeInBase` rule and sent to the simulated exchange.
 
 Fills are accounted by the paper engine, with the simulated exchange's fill price and fee: a signal exit goes through `paper.Engine.Execute` (as `autoExecute` does), a stop exit through `ClosePosition` (as the stop checker does). Each close is passed to `risk.Engine.RecordTradeResult` and the learner. Live records a signal exit under the closing idea's direction (`short`) and a stop exit under the position's direction (`long`); the replay keeps that quirk so the learner behaves as it would live.
@@ -69,7 +69,11 @@ go run ./cmd/backtest run --markets BTC/EUR,ETH/EUR --start 2025-01-01 --end 202
     --capital 10000 --strategy basic_strategy --fees kraken-base --pair-rules data/assetpairs.json
 go run ./cmd/backtest run --universe top:20 --universe-every month --start 2025-01-01 --end 2025-12-31 `
     --settings my-settings.json --output results/top20-2025
+go run ./cmd/backtest run --markets BTC/EUR,ETH/EUR --start 2026-01-01 --end 2026-11-14 --strategy trend_strategy `
+    --settings docs/backtest-settings/trend_strategy.json --output results/trend-2026
 ```
+
+`docs/backtest-settings/trend_strategy.json` holds the wider stops `trend_strategy` was tested with (`STOP_LOSS_PCT` 0.10, `TRAILING_STOP_PCT` 0.15); with the defaults (5 % and 3 %) the trailing stop cuts its trends short. Results: [06-strategy-and-learning.md](06-strategy-and-learning.md#trend-strategy-internalstrategytrendgo).
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -220,6 +224,8 @@ Duplicates are flagged, not dropped: dropping them would be a silent fix. If a d
 
 ### Manifest
 
+Imports are serialised by a lock file, `.lock` in the cache directory, created exclusively (`O_EXCL`) and holding the pid and start time. Under the lock an import reloads `manifest.json` from disk before merging its months, so several `data fetch` or `data import` processes on one cache (for example one per market, in parallel) each add to the manifest instead of overwriting what another wrote. A waiting import retries every 250 ms until its context ends. The holder refreshes the lock's modification time every 30 s; a lock not refreshed for 2 minutes is treated as left by a crashed import and taken over. A dry run takes no lock. If a process is killed, the stale `.lock` is cleared by the next import after 2 minutes; deleting it by hand is safe when no import is running.
+
 `manifest.json` (written atomically after each source file; keys sorted) holds the tool version (`histdata/1.0.0`), the build's VCS revision when known, the bar file version, and for each market and month:
 
 - the month file's path, SHA-256 and bar count;
@@ -325,6 +331,8 @@ A single run cannot show a lasting advantage, and the verdict never says it does
 | Empty candles (`empty_candles`) | Whether live OHLC includes flat rows for intervals without trades is not documented; compare `--fill-empty-candles` in the sensitivity run. | unknown |
 | Duplicate trades (`duplicate_trades`) | Trades flagged `duplicate_trade_id` at import stay in the bars, so volume and liquidity can be overstated. | optimistic |
 | Price history starts empty (`price_history_start`) | Live restores saved ticks at start-up; the replay starts empty, so the first ~35 trading ticks make no decision. | pessimistic (small) |
+| Strategy interval (`strategy_interval`) | 30 s unless `STRATEGY_INTERVAL_SECONDS` is set explicitly; the live default is the dashboard setting. Fills between strategy ticks happen on every 30-second bar. | unknown at the default, neutral when set |
+| 4-hour window starts at the pre-roll (`trend_candles`) | Live has 120 days of 4-hour candles at once; the replay builds them from the pre-roll on, so `trend_strategy` makes no decision for about 27 days after `--start`. | pessimistic |
 
 Verdict rules, in order:
 

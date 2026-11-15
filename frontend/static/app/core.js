@@ -556,6 +556,18 @@ function dashboardCore() {
                 basic_strategy: 'Indicator Only',
                 basic_and_llm_strategy: 'Combined',
                 llm_only_strategy: 'LLM Only',
+                trend_strategy: 'Trend (4h)',
+                trend_and_llm_strategy: 'Trend + LLM',
+                donchian_strategy: 'Donchian (4h)',
+                donchian_and_llm_strategy: 'Donchian + LLM',
+                rsi_dip_strategy: 'RSI Dip (4h)',
+                rsi_dip_and_llm_strategy: 'RSI Dip + LLM',
+                macd_strategy: 'MACD (4h)',
+                macd_and_llm_strategy: 'MACD + LLM',
+                squeeze_strategy: 'Squeeze (4h)',
+                squeeze_and_llm_strategy: 'Squeeze + LLM',
+                rotation_strategy: 'Rotation',
+                rotation_and_llm_strategy: 'Rotation + LLM',
                 combined: 'Combined',   // legacy alias
                 llm: 'LLM Only',        // legacy alias
             };

@@ -154,6 +154,40 @@ type SignalRequest struct {
 	Cash           float64
 	OpenPositions  []domain.PositionRecord
 	TickSeconds    int // length of one indicator tick; 0 means 30
+	// Strategy is the strategy's own prompt (its LLM version sets it);
+	// nil keeps the generic indicator-consensus prompt.
+	Strategy *StrategyPrompt
+}
+
+// StrategyPrompt is the part of a signal prompt a strategy writes itself:
+// what the signal means, what the LLM should weigh, and the strategy's data.
+type StrategyPrompt struct {
+	Name         string            // e.g. "Donchian breakout (4-hour candles)"
+	Instructions string            // how to judge this strategy's signal
+	Data         map[string]string // the strategy's own values, listed in key order
+}
+
+// strategyBlock renders the strategy prompt, or "" when there is none.
+// Each data value is flattened to one line so it cannot add prompt lines.
+func strategyBlock(p *StrategyPrompt) string {
+	if p == nil {
+		return ""
+	}
+	keys := make([]string, 0, len(p.Data))
+	for k := range p.Data {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	b.WriteString("Strategy: " + promptText(p.Name) + "\n")
+	b.WriteString(strings.TrimSpace(p.Instructions) + "\n")
+	if len(keys) > 0 {
+		b.WriteString("Strategy data:\n")
+		for _, k := range keys {
+			b.WriteString("  " + promptText(k) + ": " + promptText(p.Data[k]) + "\n")
+		}
+	}
+	return b.String() + "\n"
 }
 
 // RecommendationRequest is the input to RecommendTrade.
@@ -405,6 +439,7 @@ func (a *LLMAnalyser) AnalyseSignal(ctx context.Context, req SignalRequest) Sign
 	userMsg := "Signal: " + req.Market + " " + strings.ToUpper(req.Direction) + "\n" +
 		"Confidence: " + fmtPercent(req.BaseConfidence, 0) + " | Momentum: " + fmtSigned(req.MomentumPct, 2) + "%" +
 		priceStr + "\n" +
+		strategyBlock(req.Strategy) +
 		briefingBlock(briefing, req.Market) +
 		reflectionBlock(reflection, "Apply this advice when assessing the current signal.\n") + "\n" +
 		"Technical indicators (" + strconv.Itoa(tickSeconds(req.TickSeconds)) + "s ticks):\n" + formatIndicators(req.Indicators) + "\n\n" +

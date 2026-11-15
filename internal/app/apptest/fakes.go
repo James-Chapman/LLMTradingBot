@@ -240,21 +240,44 @@ func (l *Live) ExecutedCount() int {
 	return len(l.Executed)
 }
 
-// LLM is a fake LLM client that is never available.
-type LLM struct{ Rechecks int }
+// LLM is a fake LLM client. With Answer unset it is never available; with
+// Answer set every chat succeeds with that JSON reply, and the user prompts
+// are recorded.
+type LLM struct {
+	Rechecks int
+	Answer   map[string]any
 
-// Available reports false.
-func (f *LLM) Available() bool { return false }
+	mu      sync.Mutex
+	prompts []string
+}
 
-// CanAttempt reports false.
-func (f *LLM) CanAttempt() bool { return false }
+// Available reports whether an answer is configured.
+func (f *LLM) Available() bool { return f.Answer != nil }
 
-// Probe reports false.
-func (f *LLM) Probe(context.Context) bool { return false }
+// CanAttempt reports whether an answer is configured.
+func (f *LLM) CanAttempt() bool { return f.Answer != nil }
 
-// Chat always fails with llm.ErrUnavailable.
-func (f *LLM) Chat(context.Context, []llm.Message, bool) (llm.Reply, error) {
-	return llm.Reply{}, llm.ErrUnavailable
+// Probe reports whether an answer is configured.
+func (f *LLM) Probe(context.Context) bool { return f.Answer != nil }
+
+// Chat returns the configured answer, or llm.ErrUnavailable without one.
+func (f *LLM) Chat(_ context.Context, msgs []llm.Message, _ bool) (llm.Reply, error) {
+	if f.Answer == nil {
+		return llm.Reply{}, llm.ErrUnavailable
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(msgs) > 0 {
+		f.prompts = append(f.prompts, msgs[len(msgs)-1].Content)
+	}
+	return llm.Reply{JSON: f.Answer}, nil
+}
+
+// Prompts returns the user prompts of every successful chat so far.
+func (f *LLM) Prompts() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.prompts...)
 }
 
 // ModelName returns a fixed display name.
