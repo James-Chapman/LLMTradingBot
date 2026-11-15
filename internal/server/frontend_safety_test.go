@@ -12,17 +12,9 @@ import (
 // so checks for raw patterns do not trip over the helper that wraps them.
 func withoutFunction(t *testing.T, text, signature string) string {
 	t.Helper()
-	i := strings.Index(text, signature)
-	if i < 0 {
-		t.Fatalf("helper %q not found", signature)
-	}
-	// The helper ends at the first closing brace indented like its signature.
-	indent := text[strings.LastIndex(text[:i], "\n")+1 : i]
-	j := strings.Index(text[i:], "\n"+indent+"}")
-	if j < 0 {
-		t.Fatalf("end of helper %q not found", signature)
-	}
-	return text[:i] + text[i+j:]
+	body := funcBody(t, text, signature)
+	i := strings.Index(text, body)
+	return text[:i] + text[i+len(body):]
 }
 
 // mustAppearBefore fails unless first occurs in text before second.
@@ -38,116 +30,121 @@ func mustAppearBefore(t *testing.T, what, text, first, second string) {
 func TestFrontendSafety(t *testing.T) {
 	index := readFrontend(t, "index.html")
 	approvals := readFrontend(t, "approvals.html")
+	scripts := appScripts(t)
+	core := scripts["core.js"]
+	settings := scripts["settings.js"]
+	all := dashboardSource(t)
 
-	t.Run("GIVEN server strings rendered via innerHTML WHEN the dashboard source is inspected THEN each passes through esc()", func(t *testing.T) {
-		for name, page := range map[string]string{"index": index, "approvals": approvals} {
+	t.Run("GIVEN server strings WHEN the dashboard renders them THEN Alpine text bindings are used and no HTML is built from them", func(t *testing.T) {
+		// The dashboard renders through x-text, which never parses HTML. Nothing
+		// assigns innerHTML or uses x-html, so no server string can become markup.
+		mustNotContain(t, "dashboard", all, "x-html", ".innerHTML", "insertAdjacentHTML", "document.write(")
+		// esc() stays available (and correct) for any view that must build HTML.
+		for name, page := range map[string]string{"core.js": core, "approvals": approvals} {
 			mustContain(t, name, page, "function esc(", ".replace(/&/g, '&amp;')", ".replace(/</g, '&lt;')",
 				".replace(/>/g, '&gt;')", `.replace(/"/g, '&quot;')`, ".replace(/'/g, '&#39;')")
 		}
+		// The fields that used to be escaped by hand are bound as text.
 		mustContain(t, "index", index,
-			// news
-			"${esc(n.title)}", "${esc(n.source)}",
-			// signals
-			"${esc(s.market)}", "${esc(s.thesis)}", "esc(s.risk_reason)",
-			// dashboard approval cards
-			"${esc(a.market)}", "${esc(a.thesis)}", "${esc(a.entry_plan)}", "${esc(a.exit_plan)}",
-			// markets, positions, ledger, closed trades, P&L, charts
-			"${esc(m.symbol)}", "${esc(p.market)}", "${esc(t.market)}", "${esc(t.source)}", "${esc(t.status)}",
-			"${esc(label)}", "${esc(market)}", "${esc(statusLabel)}", "${esc(sourceLabel)}", "${esc(srcLabel)}",
-		)
-		// Desktop notifications are plain text, so only the innerHTML signal cards must escape.
-		signalCards := between(t, index, "el.innerHTML = signals.map", "renderPositions(positions) {")
-		mustNotContain(t, "signal cards", signalCards, "${s.market}", "${s.thesis}", "+ s.risk_reason")
-		mustNotContain(t, "index", index,
-			"${n.title}", "${n.source}", "${a.market}", "${a.thesis}",
-			"${a.entry_plan}", "${a.exit_plan}", "${m.symbol}", "${p.market}", "${t.market}", "${t.source}",
-			"${t.status}", ">${label}<", ">${market}<", ">${s}</button>", "${m}</button>",
-			// a name embedded in an inline JS string can break out of the attribute
-			"{detail:'${esc}'}", "window._toggleMarket('${m.symbol}')")
+			`x-text="n.title"`, `x-text="n.source"`, // news
+			`x-text="s.market"`, `x-text="s.thesis"`, "s.risk_reason", // signals
+			`x-text="a.market"`, `x-text="a.thesis"`, `x-text="a.entry_plan"`, `x-text="a.exit_plan"`, // approval cards
+			`x-text="m.symbol"`, `x-text="p.market"`, `x-text="t.market"`, `x-text="t.source"`, `x-text="t.status"`, // tables
+			`x-text="label"`, `x-text="closedSourceLabel(t)"`, `x-text="positionStatusLabel(p)"`, `x-text="source"`)
+		// No server value is spliced into an inline handler.
+		mustNotContain(t, "index", index, "onclick=", "{detail:'${esc}'}", "window._toggleMarket(")
 		mustContain(t, "approvals", approvals, "${esc(a.market)}", "${esc(a.thesis)}", "${esc(a.entry_plan)}",
 			"${esc(a.exit_plan)}", "${esc(a.risk_reason)}", "${esc(a.strategy_id)}")
 		mustNotContain(t, "approvals", approvals, "${a.market}", "${a.thesis}", "${a.entry_plan}", "${a.exit_plan}",
 			"${a.risk_reason}", "${a.strategy_id}")
 	})
 
-	t.Run("GIVEN news filter chips WHEN a source is clicked THEN the source travels in a data attribute, not inline script", func(t *testing.T) {
-		strip := between(t, index, "_renderNewsFilterStrip() {", "_applyNewsFilter() {")
-		mustContain(t, "news strip", strip, `data-filter-event="news-filter-toggle"`, `data-filter-detail="${esc(s)}"`)
+	t.Run("GIVEN news filter chips WHEN a source is clicked THEN the source goes to a component method, not inline script", func(t *testing.T) {
+		strip := between(t, index, `id="news-source-filter"`, "</template>")
+		mustContain(t, "news strip", strip, `@click="toggleNewsSource(source)"`, `x-text="source"`)
 		mustNotContain(t, "news strip", strip, "onclick=")
-		mustContain(t, "index", index, "e.target.closest('[data-filter-event]')", "chip.dataset.filterDetail")
+		mustContain(t, "intelligence.js", scripts["intelligence.js"], "toggleNewsSource(source) {", "filteredNews() {")
 	})
 
 	t.Run("GIVEN a news article WHEN its link is rendered THEN only http(s) URLs become the href", func(t *testing.T) {
-		mustContain(t, "index", index, "function safeUrl(", `/^https?:\/\//i`, `href="${esc(safeUrl(n.url))}"`)
-		mustNotContain(t, "index", index, `href="${n.url || '#'}"`)
+		mustContain(t, "core.js", core, "function safeUrl(", `/^https?:\/\//i`)
+		mustContain(t, "index", index, `:href="safeUrl(n.url)"`)
+		if n, safe := strings.Count(index, ":href="), strings.Count(index, `:href="safeUrl(`); n != safe {
+			t.Errorf("every bound href must go through safeUrl: %d bound, %d through safeUrl", n, safe)
+		}
+		mustNotContain(t, "index", index, `href="${n.url || '#'}"`, `:href="n.url"`)
 	})
 
 	t.Run("GIVEN the emergency stop WHEN it is activated THEN the stopped state is shown only after the server confirms", func(t *testing.T) {
-		stop := between(t, index, "async activateStop() {", "// ── Trading settings")
-		mustContain(t, "activateStop", stop, "await fetch('/api/control/emergency-stop'", "response.ok", "catch", "FAILED")
+		stop := funcBody(t, core, "async activateStop() {")
+		mustContain(t, "activateStop", stop, "await fetch('/api/control/emergency-stop'", "response.ok", "catch", "FAILED", "alert(")
 		mustAppearBefore(t, "activateStop", stop, "response.ok", "this.emergencyStop = true")
 	})
 
 	t.Run("GIVEN a stopped bot WHEN resume is clicked THEN the operator confirms and a failure is reported", func(t *testing.T) {
-		resume := between(t, index, "async resumeBot() {", "async selectStrategy(id) {")
-		mustContain(t, "resumeBot", resume, "confirm(", "await fetch('/api/control/resume'", "response.ok", "catch", "FAILED")
+		resume := funcBody(t, core, "async resumeBot() {")
+		mustContain(t, "resumeBot", resume, "confirm(", "await fetch('/api/control/resume'", "response.ok", "catch", "FAILED", "alert(")
 		mustAppearBefore(t, "resumeBot", resume, "confirm(", "fetch(")
 		mustAppearBefore(t, "resumeBot", resume, "response.ok", "this.emergencyStop = false")
 	})
 
 	t.Run("GIVEN the server's LLM backend names WHEN the LLM panel renders THEN each has a readable label", func(t *testing.T) {
-		mustContain(t, "index", index,
+		mustContain(t, "core.js", core,
 			"llmBackend === '"+llm.BackendLMStudio+"' ? 'LM Studio'",
 			"llmBackend === '"+llm.BackendRemote+"' ? 'Remote'",
 			"'None'")
-		mustNotContain(t, "index", index, "llmBackend === 'openai'", "llmBackend === 'transformers'")
+		mustNotContain(t, "dashboard", all, "llmBackend === 'openai'", "llmBackend === 'transformers'")
 	})
 
 	t.Run("GIVEN naive UTC storage timestamps WHEN the pages parse them THEN parseUtc is always used", func(t *testing.T) {
 		rawDate := regexp.MustCompile(`new Date\([^)]`)
-		for name, page := range map[string]string{"index": index, "approvals": approvals} {
+		for name, page := range map[string]string{"dashboard": all, "approvals": approvals} {
 			mustContain(t, name, page, "function parseUtc(", "/(Z|[+-]\\d{2}:?\\d{2})$/i", "+ 'Z'")
 			rest := withoutFunction(t, page, "function parseUtc(")
 			for _, m := range rawDate.FindAllStringIndex(rest, -1) {
-				line := rest[strings.LastIndex(rest[:m[0]], "\n")+1 : m[1]+40]
+				line := rest[strings.LastIndex(rest[:m[0]], "\n")+1 : min(m[1]+40, len(rest))]
 				t.Errorf("%s: server timestamp parsed without parseUtc: %s", name, strings.TrimSpace(line))
 			}
 		}
-		mustNotContain(t, "index", index, "created_at+'Z'")
-		mustContain(t, "index", index, "parseUtc(llmBriefing.generated_at)", "parseUtc(r.timestamp)",
-			"parseUtc(n.published_at)", "parseUtc(t.exit_at)", "parseUtc(t.entry_at)", "parseUtc(timestamp)",
-			"parseUtc(signalModal.created_at)", "parseUtc(openedRaw)", "parseUtc(t.timestamp)")
+		mustNotContain(t, "dashboard", all, "created_at+'Z'")
+		mustContain(t, "dashboard", all, "parseUtc(llmBriefing.generated_at)", "parseUtc(r.timestamp)",
+			"parseUtc(n.published_at)", "parseUtc(t.exit_at)", "parseUtc(t.entry_at)", "parseUtc(entry.timestamp)",
+			"parseUtc(signalModal.created_at)", "parseUtc(openedRaw)", "parseUtc(t.timestamp)", "parseUtc(a.expires_at)",
+			"parseUtc(trade.exit_at)", "parseUtc(stopSince)")
 		mustContain(t, "approvals", approvals, "parseUtc(a.expires_at)")
 	})
 
 	t.Run("GIVEN a refused reset WHEN positions are reset THEN the server's detail is shown instead of a count", func(t *testing.T) {
-		reset := between(t, index, "async resetPositions() {", "timeAgo(date) {")
+		reset := funcBody(t, scripts["trading.js"], "async resetPositions() {")
 		mustContain(t, "resetPositions", reset, "r.ok", "detail")
 		mustAppearBefore(t, "resetPositions", reset, "r.ok", "Cleared ${d.cleared}")
 	})
 
 	t.Run("GIVEN an approval decision WHEN the server does not execute a real order THEN the operator is told", func(t *testing.T) {
-		dash := between(t, index, "renderApprovals(approvals) {", "renderChart(history) {")
+		dash := funcBody(t, scripts["overview.js"], "async decideApproval(")
 		page := between(t, approvals, "async function decide(", "load();\nsetInterval")
-		for name, src := range map[string]string{"dashboard": dash, "approvals page": page} {
-			mustContain(t, name, src, ".ok", "r.status === 409", "order_status === 'rejected'", "alert(", "catch")
-		}
-		mustNotContain(t, "dashboard", dash, "window._approveTrade('${a.id}')", "window._rejectTrade('${a.id}')")
+		mustContain(t, "dashboard", dash, ".ok", "r.status === 409", "order_status === 'rejected'", "this.notify('error'", "catch")
+		mustContain(t, "approvals page", page, ".ok", "r.status === 409", "order_status === 'rejected'", "alert(", "catch")
+		mustNotContain(t, "dashboard", all, "window._approveTrade(", "window._rejectTrade(")
+	})
+
+	t.Run("GIVEN dashboard feedback WHEN an action fails THEN a sticky error toast is shown", func(t *testing.T) {
+		notify := funcBody(t, core, "notify(level, message, sticky = level === 'error' || level === 'warning') {")
+		mustContain(t, "notify", notify, "this.toasts.push(", "if (!sticky) setTimeout(")
+		mustContain(t, "index", index, `x-for="t in toasts"`, `:role="t.level === 'error' ? 'alert' : 'status'"`, "dismissToast(t.id)")
 	})
 
 	t.Run("GIVEN settings and control requests WHEN they fail or the network drops THEN the error is surfaced", func(t *testing.T) {
-		mode := between(t, index, "async setTradingMode(mode) {", "async setTradingEnvironment(")
-		env := between(t, index, "async setTradingEnvironment(", "// ── Settings dialog")
-		strategy := between(t, index, "async selectStrategy(id) {", "_strategyLabelParts(strategy) {")
-		for name, src := range map[string]string{"setTradingMode": mode, "setTradingEnvironment": env, "selectStrategy": strategy} {
-			mustContain(t, name, src, "catch", "this.tradingSettingsError =")
+		for _, fn := range []string{"async setTradingMode(mode) {", "async setTradingEnvironment(", "async selectStrategy(id) {"} {
+			mustContain(t, fn, funcBody(t, settings, fn), "catch", "this.tradingSettingsError =")
 		}
-		load := between(t, index, "async loadSettings() {", "closeSettings() {")
-		mustContain(t, "loadSettings", load, "throw new Error(", "catch", "this.settingsError =")
-		save := between(t, index, "async saveSettings() {", "async resumeBot() {")
-		mustContain(t, "saveSettings", save, "catch", "this.settingsError =")
-		toggle := between(t, index, "async toggleMarket(market) {", "renderMarkets(markets, disabledMarkets) {")
-		mustContain(t, "toggleMarket", toggle, "response.ok", "catch", "alert(")
+		mustContain(t, "loadSettings", funcBody(t, settings, "async loadSettings() {"), "throw new Error(")
+		mustContain(t, "openSettings", funcBody(t, settings, "async openSettings() {"), "catch", "this.settingsError =")
+		mustContain(t, "saveSettings", funcBody(t, settings, "async saveSettings() {"), "catch", "this.settingsError =")
+		toggle := funcBody(t, scripts["markets.js"], "async toggleMarket(market) {")
+		mustContain(t, "toggleMarket", toggle, "response.ok", "catch", "this.notify('error'")
+		show := funcBody(t, scripts["intelligence.js"], "async showSignal(tradeIdeaId) {")
+		mustContain(t, "showSignal", show, "encodeURIComponent(tradeIdeaId)", "r.ok", "catch", "this.notify('error'")
 	})
 
 	t.Run("GIVEN the approvals page WHEN the API refuses THEN an error replaces Loading and the hint names the dashboard", func(t *testing.T) {
@@ -160,12 +157,25 @@ func TestFrontendSafety(t *testing.T) {
 
 	t.Run("GIVEN CDN scripts WHEN the dashboard loads THEN every version is pinned", func(t *testing.T) {
 		mustNotContain(t, "index", index, "alpinejs@3.x.x", `src="https://cdn.jsdelivr.net/npm/chart.js"`)
-		pinned := regexp.MustCompile(`alpinejs@3\.\d+\.\d+/`)
-		if !pinned.MatchString(index) {
-			t.Error("Alpine.js must be pinned to an exact 3.x version")
+		for name, pattern := range map[string]string{
+			"Alpine.js":          `alpinejs@3\.\d+\.\d+/`,
+			"Chart.js":           `chart\.js@4\.\d+\.\d+`,
+			"Lightweight Charts": `lightweight-charts@4\.\d+\.\d+/`,
+		} {
+			if !regexp.MustCompile(pattern).MatchString(index) {
+				t.Errorf("%s must be pinned to an exact version", name)
+			}
 		}
-		if !regexp.MustCompile(`chart\.js@4\.\d+\.\d+`).MatchString(index) {
-			t.Error("Chart.js must be pinned to an exact 4.x version")
+	})
+
+	t.Run("GIVEN the dialogs WHEN they open THEN focus moves in, Tab stays inside and Escape closes them", func(t *testing.T) {
+		for _, marker := range []string{`id="trading-settings"`, `id="settings-dialog"`, "<!-- ── Signal Detail Modal"} {
+			dialog := between(t, index, marker, `role="dialog"`)
+			mustContain(t, marker, dialog, "@keydown.escape.window=", "focusDialog($el)")
 		}
+		if n := strings.Count(index, `@keydown.tab="trapTab($event)"`); n != 3 {
+			t.Errorf("expected the three dialogs to trap Tab, got %d", n)
+		}
+		mustContain(t, "trapTab", funcBody(t, core, "trapTab(event) {"), "event.preventDefault()", "first.focus()", "last.focus()")
 	})
 }

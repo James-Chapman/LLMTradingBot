@@ -1,11 +1,13 @@
 'use strict';
 /**
- * Kraken Bot — Service Worker
+ * LLM Trading Bot — Service Worker
  *
  * Strategy
  * ────────
  * • Dashboard HTML → network-first           (cached copy only when the bot is down)
- * • Static assets  → stale-while-revalidate  (instant load, background refresh)
+ * • App code       → network-first           (/static/app/*.js and /static/styles.css:
+ *                                             a deploy is picked up on the next load)
+ * • Other static   → stale-while-revalidate  (instant load, background refresh)
  * • API endpoints  → network only            (never cached: old data must not look live)
  *
  * The page applies the responses of its own requests. When an API request
@@ -15,7 +17,7 @@
  * { type: 'API_OFFLINE', endpoint: '/api/dashboard', ts: 1234567890 }
  */
 
-const CACHE  = 'trading-bot-v0.11.0';  // update this to invalidate old caches
+const CACHE  = 'trading-bot-v0.12.0';  // update this to invalidate old caches
 
 /**
  * Polled GET endpoints whose failures are reported to the requesting page.
@@ -27,7 +29,17 @@ const LIVE_ENDPOINTS = new Set([
     '/api/closed-trades',
     '/api/rejected-trades',
     '/api/news',
+    '/api/pnl-summary',
 ]);
+
+/**
+ * The dashboard's own code. It must match the HTML that loads it, so it is
+ * fetched network-first like the HTML; the cached copy is only for when the
+ * bot is down.
+ */
+function isAppAsset(path) {
+    return path.startsWith('/static/app/') || path === '/static/styles.css';
+}
 
 // ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -62,6 +74,12 @@ self.addEventListener('fetch', event => {
     if (req.mode === 'navigate' || acceptsHtml) {
         // Dashboard documents must be network-first so old HTML does not keep
         // running stale inline scripts after frontend fixes are deployed.
+        event.respondWith(networkFirst(req));
+        return;
+    }
+
+    if (isAppAsset(path)) {
+        // Old scripts must not run against new HTML (or the other way round)
         event.respondWith(networkFirst(req));
         return;
     }
@@ -103,6 +121,7 @@ function cacheable(response) {
     return response.ok && !response.redirected;
 }
 
+// Fetches from the bot and keeps a copy; the copy is served only when the bot cannot be reached.
 async function networkFirst(request) {
     const cache = await caches.open(CACHE);
     try {
@@ -114,6 +133,7 @@ async function networkFirst(request) {
     }
 }
 
+// Serves the cached copy at once and refreshes it in the background for the next visit.
 async function staleWhileRevalidate(request) {
     const cache  = await caches.open(CACHE);
     const cached = await cache.match(request);

@@ -794,6 +794,125 @@ Returns the in-memory news cache: the 60 most recent articles across all sources
 
 ---
 
+## Backtests
+
+Read-only viewer of the result directories written by `go run ./cmd/backtest ... --output results/<name>` (see [14-backtesting.md](14-backtesting.md#reports-and-metrics)). Code: `internal/server/backtests.go`. The server never imports `internal/backtest`: it reads the files as files, decodes only the fields the list shows, and passes `summary.json`, `run.json` and `costs.json` through unchanged, so new report fields reach the dashboard without server changes. Nothing is ever written.
+
+The results folder is `Options.BacktestResultsDir` (default `results`, relative to the working directory, like the frontend folder; no start-up flag). A missing folder is not an error (the list is empty) and is not created. The routes sit behind the same Host, CORS and access-token checks as the rest of `/api/`.
+
+**Ids.** A run's `id` is its directory relative to the results folder, with `/` separators (`btc_q1`, `2026/split_btc`, `split_btc/runs/02_out_of_sample`). Ids from the URL are refused with `404 {"detail": "Backtest not found"}` unless every segment is a plain name: no `..`, `.`, empty segment, leading `/`, backslash, `:` (drive letters), NUL or other control character, Windows reserved name (`NUL`, `CON`, ...), and at most 512 bytes. Every file is then opened through an `os.Root` on the results folder, which refuses any path, including a symlink or junction target, that resolves outside it. Only the fixed names `summary.json`, `run.json`, `costs.json`, `summary.md`, `equity.csv`, `trades.csv`, `orders.csv` are ever opened; an id must name a directory holding `summary.json`. Error details never contain a filesystem path. (ServeMux itself redirects a path containing `.`/`..` segments to its cleaned form, which then gets the same checks.)
+
+**Limits.** CSV files over 256 MB and JSON/Markdown files over 64 MB get `413 {"detail": "<file> is larger than N bytes"}`. CSV files are parsed as a stream (`encoding/csv`); a malformed file gets `422 {"detail": "<file> is not a valid ..."}`.
+
+### `GET /api/backtests`
+
+Lists the run directories found under the results folder (up to 8 levels deep), newest `summary.json` modification time first, ties by `id`. A directory holding any file the backtester writes is one entry and is not descended into: a multi-run parent (`split`, `walkforward`, `regimes`, `sensitivity`) is one entry with its `runs/NN_label` directories as `children` (each addressable by id, not listed at top level). Folders without report files only group runs. Symlinks and junctions are not followed. A run directory whose `summary.json` is missing, unreadable, not JSON or has no `kind` is left out and counted in `skipped`.
+
+```json
+{
+    "backtests": [
+        {
+            "id": "split_btc",
+            "kind": "split",
+            "strategy": "basic",
+            "markets": ["BTC/EUR"],
+            "start": "2024-01-01T00:00:00Z",
+            "end": "2025-12-31T00:00:00Z",
+            "net_return_pct": 0.42,
+            "net_pnl": 42,
+            "round_trips": 31,
+            "verdict": "The out-of-sample result keeps its sign.",
+            "verdict_rule": "oos_holds",
+            "has_warnings": false,
+            "modified": "2026-11-02T00:00:00Z",
+            "children": ["split_btc/runs/01_in_sample", "split_btc/runs/02_out_of_sample"]
+        },
+        {
+            "id": "btc_q1",
+            "kind": "run",
+            "strategy": "basic_strategy",
+            "markets": ["BTC/EUR", "ETH/EUR"],
+            "start": "2025-01-01T00:00:00Z",
+            "end": "2025-03-31T00:00:00Z",
+            "net_return_pct": 1.2,
+            "net_pnl": 120,
+            "round_trips": 3,
+            "verdict": "Too few round trips to judge.",
+            "verdict_rule": "too_few_trades",
+            "has_warnings": false,
+            "modified": "2026-11-01T00:00:00Z",
+            "children": []
+        }
+    ],
+    "skipped": 0
+}
+```
+
+| Field | Source |
+|---|---|
+| `kind`, `strategy` (`strategy_id`), `start`, `end` | `summary.json` |
+| `markets` | `summary.json` `markets`, else `run.json` `markets` (multi-run) or `initial_markets` |
+| `net_return_pct`, `net_pnl`, `round_trips` | the headline row: `metrics` (run), `out_of_sample` (split), `run` (regimes), `baseline` (sensitivity), `aggregate.compounded_return_pct` / `aggregate.round_trips` (walkforward, `net_pnl` is `null`); `null` when absent |
+| `verdict`, `verdict_rule` | text and rule of the first verdict line (`""` when none) |
+| `has_warnings` | `reconciliation.warning`, an honesty line containing `WARNING` (accounting or data warning), the headline row's `reconcile_warning` or `data_warnings`; a multi-run parent also when any child has one |
+| `modified` | `summary.json` modification time, UTC RFC 3339 |
+| `children` | sorted ids of `runs/*` directories; `[]` for a single run |
+
+### `GET /api/backtests/{id...}`
+
+Without `part`: the run's stored JSON.
+
+```json
+{
+    "id": "btc_q1",
+    "kind": "run",
+    "summary": { "kind": "run", "strategy_id": "basic_strategy", "honesty": {"lines": ["..."]}, "verdict": [{"rule": "...", "text": "..."}], "metrics": {"net_pnl": 120}, "...": "summary.json as stored" },
+    "run": { "seed": 1, "...": "run.json as stored" },
+    "costs": { "...": "costs.json as stored" },
+    "children": []
+}
+```
+
+`run` and `costs` are `null` when the file is missing (a multi-run parent has no `costs.json`). Unknown id, an id naming a file, or a directory without `summary.json`: `404`.
+
+The query parameter `part` selects one part instead; any other value of `part` (including empty) is `400`. Integer parameters that are not integers or are below their minimum are `400`; values above the cap are lowered to it (the response states the value used). Other query parameters are ignored. A missing file is `404 {"detail": "<file> not found for this backtest"}`.
+
+**`?part=equity[&max_points=N]`** — `equity.csv` as columns and rows. `max_points` defaults to 2000, minimum 2, cap 20000. Longer curves are downsampled: the first and last points are kept and the interior is cut into `(max_points − 2) / 2` equal buckets, of which the lowest-equity and highest-equity point each survive, in time order, so a drawdown inside a bucket is never smoothed away.
+
+```json
+{
+    "id": "btc_q1",
+    "columns": ["time", "equity", "cash", "positions_value", "peak", "drawdown", "drawdown_pct", "min_equity", "open_positions"],
+    "points": [
+        ["2025-01-01T00:00:00Z", 10000, 10000, 0, 10000, 0, 0, 10000, 0],
+        ["2025-03-31T00:00:00Z", 10100, 10100, 0, 10100, 0, 0, 10050, 0]
+    ],
+    "downsampled": false,
+    "original_points": 2,
+    "max_points": 2000
+}
+```
+
+**`?part=trades[&limit=&offset=]`** and **`?part=orders[&limit=&offset=&status=]`** — `trades.csv` / `orders.csv` rows as objects keyed by column. `limit` defaults to 500 (minimum 1, cap 5000), `offset` to 0. `status` (orders only) keeps the orders with that exact status (`filled`, `rejected`, `cancelled`). `total` counts every row (matching `status`). Typing: the text columns (`time`, `id`, `position_id`, `market`, `side`, `reason`, `strategy_id`, `idea_id`, `*_time`, `price_source`, `status`, `reject_reason`, `exit_reason`) stay strings; every other column is a number, or `null` when empty (e.g. `realised_pnl` of a buy).
+
+```json
+{
+    "id": "btc_q1",
+    "part": "orders",
+    "columns": ["id", "market", "side", "...", "realised_pnl", "status", "reject_reason"],
+    "rows": [
+        {"id": "o3", "market": "ETH/EUR", "side": "buy", "requested_qty": 5, "filled_qty": 0, "position_id": "", "realised_pnl": null, "status": "rejected", "reject_reason": "insufficient_funds", "...": "..."}
+    ],
+    "total": 1,
+    "limit": 500,
+    "offset": 0
+}
+```
+
+**`?part=summary_md`** — `summary.md` as `text/markdown; charset=utf-8` with `X-Content-Type-Options: nosniff`. The dashboard shows it as preformatted text, never as HTML.
+
+---
+
 ## Position Management
 
 ### `POST /api/positions/{position_id}/close`
@@ -913,13 +1032,13 @@ All error responses use the FastAPI-compatible `{"detail": ...}` format. Operati
 Common HTTP status codes:
 - `304` — Dashboard unchanged since the `ETag` sent in `If-None-Match`
 - `303` — Page requested without a session on a non-loopback bot (redirect to `/login`)
-- `400` — Malformed request body or invalid value
+- `400` — Malformed request body or invalid value (including a backtest `part` or paging parameter)
 - `401` — Access token missing or wrong (non-loopback bot only)
 - `403` — Host not allowed, cross-origin state change, or position reset called in live mode
-- `404` — Resource not found (unknown route, approval, position, strategy, signal or market)
+- `404` — Resource not found (unknown route, approval, position, strategy, signal, market, backtest id or backtest file)
 - `409` — Approval refused by the risk re-check, a live short with nothing to sell, a live position whose order is still pending or that was removed as dust, forgetting a paper position, or switching to paper / turning a market's live flag off while a live position is open
 - `502` — Kraken rejected the sell for a live position close
-- `413` — Request body over the endpoint's limit
-- `422` — Invalid `interval` query parameter on `/api/ohlc`
+- `413` — Request body over the endpoint's limit, or a backtest file over its size cap
+- `422` — Invalid `interval` query parameter on `/api/ohlc`, or a malformed backtest file
 - `500` — Unexpected error (`{"detail": "Internal Server Error"}`, logged to the application log)
 - `503` — Emergency stop active (approvals), or no live price available for an approval (it stays pending) or a manual close

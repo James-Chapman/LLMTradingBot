@@ -1,578 +1,269 @@
 # Frontend Architecture
 
-**Files:** `frontend/index.html`, `frontend/approvals.html`, `frontend/static/styles.css`
+**Files**
 
-A single-page application served directly by the Go HTTP server (`internal/server`), from the directory given by the `-frontend` flag (default `frontend`). Uses **Alpine.js** for reactive UI state, chart libraries from CDNs, and a shared local stylesheet at `/static/styles.css` for theme, utility classes, responsive layout, panels, buttons, grids, tables, and charts. No build step, bundler, or Node.js toolchain is required.
+| File | Purpose |
+|---|---|
+| `frontend/index.html` | The dashboard: header, navigation, the markup of every view, the dialogs and the toast stack. No inline script. |
+| `frontend/static/app/core.js` | Shared helpers, the Alpine root component (`dashboard()`), navigation and hash routing, polling, connection state, header actions, toasts and dialog focus. |
+| `frontend/static/app/overview.js` | Overview view: key figures, equity graph, approvals. |
+| `frontend/static/app/markets.js` | Markets view: market table, filters, toggles and the selected market's candle charts. |
+| `frontend/static/app/trading.js` | Trading view: positions, closed positions, ledger, rejected trades, risk rejections, P&L; position actions. |
+| `frontend/static/app/intelligence.js` | Intelligence view: briefing, reflection, signals and the signal detail dialog, news, learning summary. |
+| `frontend/static/app/activity.js` | Activity view: activity log and system health. |
+| `frontend/static/app/settings.js` | The Trading settings and Settings dialogs (opened from the header). |
+| `frontend/static/app/backtests.js` | Backtests view: read-only list of backtest results and a detail page per run (see [Backtests view](#backtests-view)). |
+| `frontend/static/styles.css` | The design system: tokens, components, view layouts, breakpoints. |
+| `frontend/approvals.html` | Stand-alone approvals page (plain script, same styles). |
+| `frontend/login.html` | Access-token form (only `styles.css`, which is served without a session). |
+| `frontend/sw.js` | Service worker. |
 
-The primary dashboard remains available at `/` and uses the `layout-ledger-glass` workspace promoted from the former trial layouts. The `/index2` through `/index9` trial theme shells have been removed, so the dashboard has a single maintained HTML entry point with the shared Alpine component, DOM IDs, API calls, and stylesheet.
-
----
-
-## Technology Stack
+The pages are served by the Go HTTP server (`internal/server`) from the `-frontend` directory (default `frontend`); `/static/` serves `frontend/static/` including `static/app/`. There is no build step, bundler or Node.js toolchain.
 
 | Library | Version | Purpose |
-|---------|---------|---------|
-| Alpine.js | 3.x (CDN) | Reactive component state and DOM binding |
-| Chart.js | 4.x (CDN) | Equity curve line chart |
-| Lightweight Charts | 4.x (CDN) | Candlestick price charts per market |
-| Shared CSS | `frontend/static/styles.css` | Theme variables, utility classes, responsive shells, panel layout, tables, charts, buttons |
+|---|---|---|
+| Alpine.js | 3.14.1 (CDN) | Reactive state and DOM binding |
+| Chart.js | 4.4.1 (CDN) | Equity graph |
+| Lightweight Charts | 4.1.3 (CDN) | Candlestick charts of the selected market |
+
+No web fonts and no CSS framework: plain CSS with a system font stack, and icons as an inline SVG sprite at the top of `index.html` (`<use href="#i-…">`).
 
 ---
 
-## Responsive Layout and Styling
+## Layout
 
-The dashboard and approvals page load `/static/styles.css`. This file contains the dark theme variables and the responsive layout primitives used across both pages:
+```
+┌ Header: brand · version │ PAPER/LIVE · mode ⚙ │ Live / Connection lost │ LLM · model │ Approvals n │ Settings │ Emergency stop ┐
+├ Nav ──────┬ Banners (connection lost · emergency stop · warm-up · restart needed) ────────────────────────────────────────────┤
+│ Overview  │                                                                                                                  │
+│ Markets   │   The active view (#/overview, #/markets/BTC-EUR, #/trading/ledger, …)                                         │
+│ Trading   │                                                                                                                  │
+│ Intellig. │                                                                                                                  │
+│ Backtests │                                                                                                                  │
+│ Activity  │                                                                                                                  │
+└───────────┴──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
 
-- Local utility classes such as `.sticky`, `.top-0`, `.z-50`, `.flex`, `.items-center`, `.justify-between`, and `.gap-*` replace the previous Tailwind browser CDN script.
-- `.app-shell` with `--page-gutter` replaces fixed-width page caps and uses the full viewport width minus gutters.
-- `.dashboard-grid` is a vertical flex stack for major page sections.
-- `.core-grid` is a responsive status workspace: Markets, P&L Summary, and Signals are equal 1/3-width panels until the small-mobile breakpoint, use the same fixed panel height, and scroll internally when content is taller than the row.
-- `.approval-details` and `.chart-grid` are vertical stacks so each block uses the full available width.
-- `.news-grid` is a responsive article-card grid inside the full-width News Feed panel.
-- `.chart-pair-grid` is the only content grid that may place items side by side; it is reserved for the 5-minute and 15-minute chart panes inside each market chart card.
-- `.panel`, `.panel-header`, `.panel-body`, `.responsive-table`, `.trade-table`, `.activity-list`, `.core-panel`, `.core-scroll`, `.llm-status`, and `.llm-row` standardise panel structure while preserving existing Alpine state and DOM IDs.
-- `.chart-pane` and `.equity-chart-shell` use `clamp()` so widescreen users get larger charts while mobile users avoid horizontal page scroll.
-- `.modal-backdrop` (fixed, full-screen flex box) and `.modal-panel` centre every dialog: trading settings, Settings and the signal detail (`.signal-panel`, 820 px wide).
-- Elements toggled with `x-show` must not set `display` in an inline `style`: when Alpine shows an element it removes the inline `display` property, so an inline `display:flex` turns into `display:block`. Put the layout in a CSS class instead (for example `.modal-backdrop`, `.live-indicator`).
-- `.area-charts` and `.area-news` share `--news-chart-panel-height`; Price Charts starts expanded, both panels are three times taller than the previous chart/news height, Price Charts scrolls vertically inside the panel, and the 5-minute and 15-minute panes stay side by side until the mobile breakpoint.
+**Header (always visible).** The PAPER / LIVE and mode badges are one button that opens Trading settings. The connection state shows *Live* while dashboard responses arrive and *Connection lost* when they stop (the *Live* indicator is hidden while stale). The LLM dot is green (available), amber (unavailable) or grey (not configured) with the model name. *Approvals n* links to `#/overview/approvals`. Settings opens the Settings dialog. Emergency stop / Resume is always the last control. In the live environment the header gets an orange top line. The LLM model name may be shortened; its tooltip and Activity › LLM show it in full.
 
-Breakpoint coverage used for layout verification:
+**Phone header (under 768 px): two rows.** Row 1: brand and the Emergency stop (full label, never hidden or shrunk). Row 2: one strip with PAPER / LIVE and the mode, the connection state, the LLM status dot, the approvals bell with its count, and Settings on the right. The version and the LLM model name are hidden there (both are in Activity); *Approvals* and *· real money* stay readable by screen readers (`.sr-only-sm`). The orange LIVE pill and the orange top line keep live trading unmistakable. Implementation: the header becomes a grid (`"brand stop stop" / "status status settings"`) and `.hdr-actions` uses `display: contents`, so Settings and the stop button are placed separately.
 
-| Viewport | Expected layout |
+**Views** (`#/<view>/<argument>`; an unknown hash becomes `#/overview`):
+
+| View | Contents |
 |---|---|
-| `390x844` | Single-column dashboard, wrapped header, no page-level horizontal scroll |
-| `768x1024` | Markets, P&L Summary, and Signals remain equal thirds; other major panels stack full-width |
-| `1366x768` | Full-width vertical panels with in-panel table scrolling |
-| `1920x1080` | Main content uses the monitor width; blocks remain stacked vertically |
-| `2560x1440` | Dashboard still uses the available width, with readable gutters and full-width blocks |
+| Overview | Bot status strip (running / stopped / warming up, environment, mode explained, *Change trading mode*). Key figures: total equity with change over the graph's window, available cash, realised P&L today (UTC), open positions with unrealised total, pending approvals, active strategy (the name without its description, wrapped onto a second line at a smaller size instead of cut off; the description is on Intelligence). Equity graph. Open positions (compact, with Close / Forget). Pending approvals with Approve / Reject. Latest 5 signals. Last 5 activity events (details clamped like the Activity view). `#/overview/approvals` scrolls to the approvals panel. |
+| Markets | Searchable market table with filter chips (all, trading on/off, with position, with signal, live) and, per row, price, current signal, position P&L, the trading switch and (live environment) the live switch. Beside it (below it under 1440 px) the selected market's detail: price and change, both switches, the 5-minute and 15-minute candle charts, the position (with Close), the latest signal (with detail) and the LLM outlook. The market is in the hash: `#/markets/BTC-EUR`. From 768 px the first market is selected automatically; between 768 and 1439 px choosing a market scrolls the detail into view when it is off screen. **Phones (under 768 px)** use a list → detail flow: `#/markets` shows the list alone (Signal and Position fold into one line under the symbol so the trading switch fits) and nothing is selected; tapping a market opens `#/markets/<slug>` with only its detail and a *← Markets* control. That control (and the browser's Back button) returns to the list where it was scrolled; the charts are removed when the detail is left. |
+| Trading | Tabs, each in the hash (`#/trading/<tab>`): Open positions (`positions`), Closed positions (`closed`), Trade ledger (`ledger`), Rejected trades (`rejected`), Risk rejections (`risk`), P&L summary (`pnl`). The view header has *Export closed trades (CSV)* (`/api/export/trades.csv`). Open positions, closed positions and the ledger have market and direction filter chips. Paper mode shows *Reset paper positions*. Every loaded table (closed positions, ledger, rejected trades, both P&L summary tables) shows *Loading…*, its load error and its empty message in the same empty-row style. |
+| Intelligence | In this order: the market briefing beside the signals (stacked under 1200 px), so signals are on the first screen at 1440 × 900; strategy selection (same confirmation as Trading settings) beside the hourly reflection; the learning summary per strategy, market and direction; news of the last 12 hours with source filter chips. The briefing shows its text, a count line (*9 bearish · 18 bullish · 28 neutral*) and the market outlooks bearish first, then bullish, then neutral (alphabetical within each; shades such as `mildly_bullish` count with their direction). Nine are shown (three columns, one on phones); *Show all N outlooks* / *Show fewer* toggles the rest and resets when the view is left. Each signal opens the signal detail dialog. |
+| Backtests | List of the backtester's result folders (`#/backtests`) and one run's detail (`#/backtests/<id>`). Read-only; see [Backtests view](#backtests-view). |
+| Activity | Activity log (last 60 events) with level filter chips and counts; each entry's detail is clamped to two lines with a *more* / *less* button when it is cut off (the full text stays in the page; the open state is kept per entry across polls). System health: LLM backend, model and status; dashboard feed; market data (markets priced); bot state; environment; mode; warm-up; version. |
 
-The CSS keeps the existing theme palette and visual treatment. Functional hooks such as `equity-chart`, `markets-list`, `signals-list`, `positions-list`, `approvals-queue`, `ledger-body`, `closed-body`, `candle-grid`, and `news-grid` are intentionally retained.
+**Where every old panel went:** Market briefing banner → Intelligence (and the per-market outlook also in the Markets detail). Mode banner → Overview status strip. Equity graph → Overview. Markets panel → Markets table. P&L summary → Trading › P&L summary (today's figure also on Overview). Signals → Overview (latest 5) and Intelligence (all). Open positions → Overview (compact) and Trading (all columns). Closed positions, trade ledger, rejected trades, risk rejections → Trading tabs. Pending approvals → Overview. Price charts (one card per market) → Markets detail (selected market only). News feed → Intelligence. Local LLM panel → header (status) and Activity › System health (backend, model, status) and Intelligence (briefing, reflection). Bot activity → Activity (and the last 5 on Overview). Learning summary → Intelligence.
 
-## Component Initialisation
+### Today's realised P&L
 
-The entire UI is a single Alpine.js component mounted on `<div x-data="dashboard()">`. The `dashboard()` factory function returns all state and methods. Alpine calls `init()` automatically when the component mounts.
+The Overview figure is `pnl-summary.by_day[<today's UTC date>]`. `/api/pnl-summary` groups closed trades by the UTC date of their exit, so this is the realised P&L of trades closed since 00:00 UTC; it is `0` when none closed today and shows `…` / *Unavailable* until the summary has loaded. Nothing is estimated from other data.
+
+---
+
+## Module contract
+
+`core.js` defines `window.Dashboard = { views: {}, register(name, mixin) }`. Each view file calls
 
 ```javascript
-function dashboard() {
-    return {
-        // --- State ---
-        mode:          'manual',
-        environment:   'paper',
-        equity:        '£0.00',
-        cash:          '0.00',
-        pendingCount:  0,
-        emergencyStop: false,
-        strategies:    [],
-        riskRejections: [],
-        activityLog:   [],
-        llmAvailable:  false,
-        llmModel:      '',
-        llmReflection: null,
-        llmBriefing:   null,
-        signalModal:     null,    // full signal object for the detail modal
-        signalBreakdown: null,    // computed confidence waterfall
-        signalVoteRows:  [],      // per-indicator vote rows
-        ledgerStatus:  '',
-        closedStatus:  '',
-        newsStatus:    '',
+Dashboard.register('markets', {
+    marketSearch: '',                       // state
+    initMarkets() { … },                    // optional hooks
+    onMarketsShown(arg) { … },
+    onMarketsHidden() { … },
+    onMarketsData(d) { … },
+    selectMarket(symbol) { … },             // methods
+});
+```
 
-        // Set of full position UUIDs currently open
-        _openPositionIds: new Set(),
+At start-up `dashboard()` (the `x-data` on `<body>`) merges `dashboardCore()` and every registered mixin into one Alpine component. Property descriptors are copied, so getters such as `settingsGroups` stay getters. All views share one namespace: a name defined twice is a console error (`Dashboard: "<key>" from view "<view>" is already defined`), and registering a view twice is too. A view may call another view's methods (for example `showSignal` or `closePosition` from Overview and Markets).
 
-        // Desktop notification deduplication
-        _seenSignalIds: new Set(),   // IDs already notified — prevents re-firing on each poll
-        _notifyReady:   false,       // true after first render; seeds set without firing on load
+| Hook (`<Name>` = view name, capitalised) | When |
+|---|---|
+| `init<Name>()` | Once, when the component starts (before the first dashboard load). |
+| `on<Name>Shown(arg)` | Every time the view becomes active; `arg` is the rest of the hash (`#/markets/BTC-EUR` → `BTC-EUR`). |
+| `on<Name>Hidden()` | When another view becomes active. |
+| `on<Name>Data(d)` | After every applied `/api/dashboard` response, on every view. |
 
-        // Connection state (stale banner)
-        connectionLost:       false,
-        lastDashboardAt:      null,  // Date of the last applied dashboard response
-        _dashboardRequestSeq: 0,     // numbers every dashboard request
-        _dashboardAppliedSeq: 0,     // number of the response currently shown
+Hooks are called inside `try/catch`, so one failing view does not stop the others.
 
-        // Equity chart instance (not reactive — managed imperatively)
-        _chart:        null,
-        _chartMarkets: [],   // markets in the current market list (chart card order)
-        _liveMarkets:  new Set(),    // markets toggled live
+**View data.** `/api/dashboard` is polled every 5 s on every view and fills the shared state in `core.js`. Anything else is loaded with
 
-        // --- Methods ---
-        init() { ... },
-        ...
-    }
+```javascript
+initTrading() {
+    this.pollWhileShown('trading', 15000, () => this.loadLedger());
 }
 ```
 
----
+A registered poll runs immediately when its view is shown (once the first dashboard response has arrived), then every `intervalMs` while that view stays shown and the browser tab is visible. Only `core.js` starts timers. Loaders use `fetchResource(res, url)` with a holder from `resource(initial)`: `{state: 'idle'|'loading'|'ready'|'error', error, at, seq, data}`. Each load is numbered so an older response is dropped, a failed refresh keeps the rows already shown (with *refresh failed* in the status line), and `resourceStatus(res, noun)` gives the panel's status line.
 
-## Service Worker Caching
+| Data | Endpoint | When |
+|---|---|---|
+| Dashboard state | `GET /api/dashboard` | Every 5 s, every view, and after every action |
+| Settings | `GET /api/settings` | Start-up and when the dialog opens |
+| P&L summary | `GET /api/pnl-summary` | Every 30 s on Overview and Trading |
+| Trade ledger | `GET /api/trades` | Every 15 s on Trading |
+| Closed positions | `GET /api/closed-trades` | Every 30 s on Trading |
+| Rejected trades | `GET /api/rejected-trades` | Every 30 s on Trading |
+| News | `GET /api/news` | Every 5 min on Intelligence |
+| Candles | `GET /api/ohlc/{market}?interval=5` and `?interval=15` | Selected market, on selection and every 60 s on Markets |
+| Signal detail | `GET /api/signals/{id}` | When a signal is opened |
 
-`/sw.js` uses a versioned cache (`trading-bot-v<app version>`, bumped with every release) and claims open tabs as soon as the new worker activates. Navigation and other `text/html` requests are network-first, so the dashboard shell does not keep running stale inline scripts after frontend fixes; non-HTML static assets use stale-while-revalidate.
+**Adding a view.** Add its name to `VIEWS` in `core.js`, a nav link in `index.html`, a `<section data-view="<name>" x-show="view === '<name>'" x-cloak class="view">` with an `<h1 tabindex="-1">`, and `static/app/<name>.js` (loaded after `core.js` and before `backtests.js`) that calls `Dashboard.register('<name>', {…})`. Load its data with `pollWhileShown` and add the view to `dashboardViews` in `internal/server/frontend_shell_test.go`.
 
-API responses are never cached and never broadcast. The page applies the response of its own request, so each dashboard poll is applied exactly once per tab and one tab's poll cannot overwrite another tab's state. When an API request to `/api/dashboard`, `/api/trades`, `/api/closed-trades`, `/api/rejected-trades` or `/api/news` fails because the bot is unreachable, the worker answers `503` (not the last cached data) and posts `{ type: 'API_OFFLINE', endpoint, ts }` to the requesting page only.
-
-## Connection Lost (Stale Data)
-
-If the bot stops answering, the page keeps the last data it received but makes clear that it is old:
-
-- A red banner under the header reads *Connection to the bot lost — showing data from HH:MM* (or *no data has been received yet*), the main area is dimmed (`.is-stale`), and the green **Live** indicator next to Equity Graph is hidden.
-- Three triggers set `connectionLost`: the service worker's `API_OFFLINE` message for `/api/dashboard`, a failed or non-OK dashboard fetch, and `_checkStale()` (every 5 s) when the last applied dashboard response is older than `STALE_AFTER_MS` (20 s). The time-based check also works without a service worker and catches requests that hang.
-- While stale, every action (resume, market on/off, per-market live, close position, forget live position, approve/reject, reset, trading mode, paper/live, strategy) first asks *Send the request anyway?* via `_actionAllowedWhileStale()`. The emergency stop is not delayed by this extra question.
-- The next successful dashboard response clears the banner (`_markConnected()`).
-
-Overlapping dashboard requests (the 5-second poll plus the refresh after an action) are numbered; a response older than the one already shown is dropped, so a slow pre-change response cannot overwrite a newer one.
-
----
-
-## Polling Architecture
-
-The frontend polls the backend on fixed intervals set up in `init()`. There is no WebSocket or server-sent event stream — all updates are pull-based.
-
-| Interval | Data | Endpoint |
-|----------|------|----------|
-| 5 seconds | Prices, signals, positions, equity, approvals, activity, LLM state | `GET /api/dashboard` |
-| 15 seconds | Full trade ledger | `GET /api/trades` |
-| 30 seconds | Closed trades | `GET /api/closed-trades` |
-| 30 seconds | Rejected trades register | `GET /api/rejected-trades` |
-| 300 seconds | News feed | `GET /api/news` |
-| 60 seconds | Price candlestick charts (both intervals) | `GET /api/ohlc/{market}?interval=5` and `?interval=15` |
-
-```javascript
-init() {
-    this._initialLoad();   // awaits loadDashboard(), then settings, news, ledger, closed trades, P&L, rejected trades
-    setInterval(() => this.loadDashboard(),      5_000);
-    setInterval(() => this._checkStale(),        5_000);
-    setInterval(() => this.loadNews(),         300_000);
-    setInterval(() => this.loadLedger(),        15_000);
-    setInterval(() => this.loadClosedTrades(),  30_000);
-    setInterval(() => this.loadPnlSummary(),    30_000);
-    setInterval(() => this.refreshCharts(),     60_000);
-    setInterval(() => this.loadRejectedTrades(), 30_000);
-}
-```
-
-The dashboard is loaded first so the currency symbol of the configured base currency is known before the ledger, closed trades and P&L summary render (the default `€` is only a placeholder).
+**Script order.** All scripts are `defer`, so they run in document order: Chart.js, Lightweight Charts, `core.js`, the view files, `settings.js`, `backtests.js`, Alpine last (so every view is registered before Alpine starts the component).
 
 ---
 
-## Dashboard Load Cycle (`loadDashboard`)
+## Navigation
 
-Called every 5 seconds and after each action. Fetches `/api/dashboard`; when the response is newer than the one shown, `_applyDashboard(d)` updates all reactive state properties and triggers `renderMarkets`, `renderSignals`, `renderPositions`, `renderApprovals`, `renderChart` and `_syncChartCards`. A failed request marks the connection as lost (see above). The sketch below shows the fields used; see `_applyDashboard` for the exact code.
+`_applyRoute()` reads `location.hash` on start-up and on every `hashchange`. `navigate(name, arg)` sets the hash, so the back button works and every view, tab and market can be bookmarked. `_showView()` calls the old view's `on<Name>Hidden`, the new view's `on<Name>Shown`, runs the new view's polls and, when the user navigated, scrolls to the top and moves focus to the view's heading.
 
-```javascript
-_applyDashboard(d) {
-
-    this.mode          = d.mode;
-    this.environment   = d.environment;
-    this.equity        = '£' + (d.equity ?? 0).toFixed(2);
-    this.cash          = (d.cash ?? 0).toFixed(2);
-    this.pendingCount  = (d.approvals ?? []).length;
-    this.emergencyStop = d.control?.emergency_stop ?? false;
-    this.strategies    = Object.entries(d.strategies ?? {})
-                               .map(([id, enabled]) => ({id, enabled}));
-    this.activeStrategyLabel = (d.strategies ?? []).find(s => s.selected)?.label ?? '';
-    this.riskRejections = d.risk_rejections ?? [];
-    this.activityLog    = d.activity ?? [];
-    this.llmAvailable   = d.llm?.available ?? false;
-    this.llmModel       = d.llm?.model ?? '';
-    this.llmBriefing    = d.llm?.briefing ?? null;
-    this.llmReflection  = d.llm?.reflection ?? null;
-    this._openPositionIds = new Set(d.open_position_ids ?? []);
-
-    this.renderMarkets(d.markets ?? [], d.control?.disabled_markets ?? []);
-    this.renderSignals(d.signals ?? []);
-    this.renderPositions(d.positions ?? []);
-    this.renderApprovals(d.approvals ?? []);
-    this.renderChart(d.equity_history ?? []);
-}
-```
+Navigation is a left sidebar from 1200 px, an icon rail (76 px) from 768 px, and a bottom tab bar below 768 px. The current item has `aria-current="page"`.
 
 ---
 
-## Panel Rendering
+## Design system (`styles.css`)
 
-Each panel is rendered by injecting HTML strings into a container element via `innerHTML`. This avoids complex `x-for` templating for tables and grids.
+**Tokens** (`:root`, `color-scheme: dark`):
 
-Because the strings become HTML, three rules apply to every panel (`TestFrontendSafety` in `internal/server/frontend_safety_test.go` checks them):
+| Group | Tokens |
+|---|---|
+| Surfaces | `--surface-page #0b0e14`, `--surface-panel #11151d`, `--surface-raised #171c26`, `--surface-overlay #1e2430` |
+| Borders | `--border #252c39`, `--border-strong #353e4f` |
+| Text | `--text #e6e9ef`, `--text-secondary #aab2c0`, `--text-muted #7d8799` (all at least 4.3:1 on the panel) |
+| Accent | `--accent #5b9dff`, `--accent-strong #2f6fdb` |
+| Meaning | `--profit #3ccf8e`, `--loss #ff6b6b`, `--warning #f5c451`, `--info #5bc8e8`, `--live #ff8a3d` (real money), `--danger #d13438` (emergency stop) |
+| Type | 12 / 13 / 14 / 16 / 20 / 28 px; tabular figures for numbers (`.num`) |
+| Spacing, radius, motion | `--space-1…8`, `--radius`, `--duration` |
 
-- **Escape server text.** Anything that came from the API (news headlines and feed names, LLM theses, market names, reasons) goes through `esc()`, which escapes `& < > " '`. News headlines and LLM text are written by third parties, so unescaped they could run script next to the Approve buttons.
-- **Links go through `safeUrl()`**, which returns the URL only when it starts with `http://` or `https://`, otherwise `#`.
-- **No server text in inline handlers.** Buttons and chips in generated rows carry their target in `data-*` attributes, and one click listener registered in `init()` dispatches them. The same rules apply to `approvals.html`.
+**Components:** app shell (`.app`, `.app-header`, `.app-nav`, `.app-main`), views (`.view`, `.view-head`), panels (`.panel`, `.panel-head`, `.panel-body`, `.panel-toolbar`), key figures (`.kpi-grid`, `.kpi`), status strip, tables (`.table`, `.table-wrap`, sticky header, zebra rows, right-aligned `td.num`, `tr.is-live`), pills (`.pill-profit/-loss/-warning/-info/-accent/-live/-outline`), buttons (`.btn-primary/-secondary/-danger/-danger-quiet/-ghost/-small/-icon`, `.btn-stop`, `.btn-resume`), switches (`role="switch"` + `aria-checked`), tabs (`role="tab"` + `aria-selected`), filter chips (`aria-pressed`), dialogs (`.modal-backdrop`, `.modal-panel`), banners and toasts, two-line clamps (`.is-clamped` with a `.more-toggle` button; `isClamped(el)` in `core.js` tells whether the text is cut off, measured with `afterReveal()` because `x-show` reveals elements one animation frame after `$nextTick`), lists that scroll inside their panel (`.scroll-list`), and visibility helpers for phones (`.hide-sm`, `.show-sm`, `.sr-only-sm`).
 
-Actions that change the bot (emergency stop, resume, approve, reject, reset, settings) wait for the server's answer, check it, and tell the operator when it failed or did not execute. The emergency-stop state in particular is shown only after the server confirms it.
+The current nav item's indicator never hides the keyboard focus ring (`.app-nav .nav-item:focus-visible`). A key-figure tile that is a link (`a.kpi`) keeps neutral text colour. Banners hidden by `x-show` take no space, so every view starts at the same height.
 
-### Market Briefing Banner
+**Breakpoints:** under 1440 px the Markets detail moves under the table; under 1200 px the navigation becomes an icon rail; under 768 px the navigation is a bottom tab bar, the header is two rows, the gutter is 16 px, multi-column grids stack, Markets becomes list → detail, tab strips wrap instead of scrolling out of sight, lists grow with the page instead of scrolling inside it, and a wide table's empty message starts at the left edge so it is on screen. Tables scroll inside their panel; the page never scrolls sideways. Under 768 px or on a coarse pointer every control is at least 36 px tall (switches keep their look and get an invisible 36 px tap area). `prefers-reduced-motion` turns off animations.
 
-A persistent banner rendered at the very top of `<main>`, above all other panels. Shown only when `llmBriefing` is non-null (`x-show="llmBriefing"`). Contains:
+**Rules:**
 
-- **Label:** "Market Briefing" in small caps
-- **Overall sentiment pill:** green "▲ Bullish" / red "▼ Bearish" / grey "— Neutral" based on `overall_sentiment` threshold (±0.1)
-- **Age + article count:** e.g. "12m ago · 4 articles", right-aligned
-- **Key insight:** `llmBriefing.key_insight` as body text — no per-market outlook pills
-
-The full per-market outlook breakdown remains available in the collapsible **LLM Intelligence** panel lower on the page.
-
----
-
-### Markets Panel (`renderMarkets`)
-
-Displays one row per active market showing the live price (from `price_value`, formatted by `fmtPrice`) and an enable/disable toggle button.
-
-```
-BTC/EUR           €85,420.00             [On]
-SHIB/EUR  LIVE    €0.00001234   [Live]   [On]     ← live environment only
-PEPE/EUR          €0.000008500  [Paper]  [On]
-```
-
-The On/Off buttons call `toggleMarket(market)` which POSTs to `/api/control/markets/{market}/toggle`.
-
-In the **live** environment each row also has a **Live / Paper** button and markets toggled live carry a red **LIVE** badge (the `live` flag of each market row). The button (`data-toggle-live`, dispatched by the delegated click listener) calls `toggleMarketLive(market)`, which asks for confirmation naming the market — turning live on says that real orders with real money will be sent to Kraken for it — and then POSTs to `/api/control/markets/{market}/live-toggle`. A refusal or network error is shown as an alert. In the paper environment the button is hidden, because live-toggled markets trade on paper there anyway.
-
-The top header shows **Active Strategy**, populated from the selected strategy in `/api/dashboard`, so the operator can see the current trading logic at a glance. The strategy is changed in the **Trading settings** dialog (below).
+- Elements toggled with `x-show` must not set `display` in an inline `style`: when Alpine shows an element it removes the inline `display`, so an inline `display:flex` becomes `display:block`. Put layout in a class (`.modal-backdrop` centres every dialog).
+- No utility-class shims (`.flex`, `.gap-2`, …): use the component classes.
+- Colours only through tokens; profit/loss colour comes from `pnlClass(value)`.
 
 ---
 
-### Signals Panel (`renderSignals`)
+## Safety rules
 
-Displays a rolling buffer of up to 12 signals, newest first. Signals persist across ticks — a signal stays visible until a new signal for the same market replaces it, or until it is pushed out when the buffer reaches 12 entries. Each signal shows:
-- Market + direction (color-coded: green for LONG, red for SHORT)
-- Confidence as a percentage with a horizontal progress bar
-- Thesis text
-- Risk status badge (green "Approved" or red "Rejected" with reason)
+`TestFrontendSafety`, `TestFrontendDashboard` and `TestFrontendShell` (in `internal/server/`) check these.
 
-The entire signal card is clickable (`sig-btn` class, `data-signal-id` attribute) — clicking opens the signal detail modal via the global click delegate. No separate "Detail" button exists.
-
-The buffer is managed in `internal/app` via `signalBufferMax = 12`. On each strategy tick that produces signals, `mergeSignals()` prepends the new entries and drops any existing entries for the same market.
-
-#### Desktop Notifications
-
-`init()` calls `Notification.requestPermission()` on page load (no-op if already decided).
-
-`renderSignals()` fires a native browser desktop notification for each signal whose `trade_idea_id` has not been seen before:
-- **On first render** — all current signal IDs are seeded into `_seenSignalIds` without firing, preventing a burst of notifications on page load.
-- **On subsequent renders** — any signal with an ID not in `_seenSignalIds` triggers a `new Notification(...)` and its ID is added to the set.
-
-Notification format:
-- **Title:** `BTC/EUR ▲ LONG — 72% confidence`
-- **Body:** Thesis (truncated to 120 chars) + risk approval status
-- **Tag:** `trade_idea_id` — ensures the OS deduplicates if the same signal appears in two consecutive polls
+- **Text, not HTML.** Every server, LLM and news string is bound with `x-text`. The dashboard has no `x-html` and never assigns `innerHTML`. `esc()` (escapes `& < > " '`) stays in `core.js` for any view that must build HTML, and `approvals.html` uses it for its cards.
+- **Links** go through `safeUrl()`: only `http://` / `https://`, otherwise `#`.
+- **No server values in inline handlers.** Alpine `@click` calls component methods with the row object; `approvals.html` carries ids in `data-*` attributes with one delegated listener.
+- **Timestamps** go through `parseUtc()` (stored times are naive UTC; it appends `Z` when no zone is present).
+- **Prices** use `fmtPrice()` (2 decimals from 1 upwards, otherwise 4 significant digits; also the candle price scale via `priceDecimals`). **Money** (equity, cash, value, P&L) uses `fmtMoney()` / `fmtSignedMoney()`: exactly 2 decimals.
+- **Every action is confirmed** (`confirm()`): emergency stop, resume, trading mode, paper (and typed `LIVE` for live), strategy, per-market live switch, close, forget (*No order is sent*), reset, settings save (lists every change). Market on/off is a single click, as before.
+- **Stale data.** Every action except the emergency stop starts with `_actionAllowedWhileStale()`, which asks *Send the request anyway?* while the connection is lost.
+- **Emergency stop / resume** show the new state only after the server confirms it; a failure is an `alert()` starting *EMERGENCY STOP FAILED* / *RESUME FAILED*. Other failures are sticky error toasts (`notify('error', …)`); success toasts disappear after 6 s.
+- **Approvals.** `503` → *Trade NOT executed – the approval is still pending*; `409` → the risk refusal; a `rejected` order names its environment. Buttons are disabled while a decision is being sent and while the emergency stop is active.
+- **Live positions** carry a LIVE badge and their status (*entry pending* / *exit pending*); Close is disabled while a Kraken order is pending; a live close says the sell was sent and the P&L follows once Kraken confirms; *Forget* removes a live position from the bot without sending an order.
+- **401 → `/login`.** `core.js` wraps `fetch` before anything else runs, as does `approvals.html`.
 
 ---
 
-### Positions Panel (`renderPositions`)
+## Connection lost (stale data)
 
-Full-width table with one single-line row per open position. Shows:
+The page keeps the last data it received but makes clear it is old:
 
-| Column | Content |
-|--------|---------|
-| Date Time | Position open timestamp from `opened_at`, falling back to the matching ledger open trade timestamp |
-| Opened | Elapsed time since open |
-| Market | Trading pair; a live position (`environment === 'live'`, a real Kraken holding) also carries a blue **LIVE** badge |
-| Direction | ▲ Long (green) / ▼ Short (red) |
-| Size | Units held |
-| Avg Price | Average entry price (`avg_price_value`, adaptive precision) |
-| Value | `size × avg_price`, 2 decimals |
-| Unrealised P&L | Current mark-to-market P&L, coloured green/red |
-| Strategy | Human-readable strategy label from the position payload or matching opening ledger row |
-| Source | Opening source from the position payload or matching opening ledger row |
-| Status | The position's `status`: **open**, or for a live position **entry pending** / **exit pending** (gold) while its Kraken buy or sell is open |
-| Pos ID | First 8 chars of position UUID |
-| Signal | `📊 Signal` button when linked |
-| Action | `✕ Close` button — calls `closePosition(position_id_full)` which confirms with the user then POSTs to `POST /api/positions/{position_id_full}/close`, and refreshes the dashboard, ledger, and closed trades panels on success. A paper close reports the fill price and cash; a live close (`status: "closing"`) says the sell order was sent and the P&L appears once Kraken confirms the fill. The button is disabled while a live position's entry or exit is pending. Live positions also get a grey **Forget** button (`data-forget-position`, delegated click → `forgetPosition(position_id_full)`): after a `confirm()` that says no order is sent and the Kraken holding is untouched, it POSTs `/api/positions/{position_id_full}/forget` and refreshes the dashboard; an error shows the server's `detail` in an alert. It is for a holding already sold on Kraken or too small to sell |
-
-`decideApproval()` (and `decide()` on the approvals page) explain an approval that did not execute: `503` means nothing was sent and the approval is still pending (no price, or the emergency stop); `409` shows the risk-check refusal detail; a `rejected` order names its `environment`.
-
-Also renders the "Reset Positions" button if `environment === 'paper'`. This button calls `resetPositions()` which POSTs to `/api/positions/reset`.
-
-The panel uses the same market and direction filter chip controls as Closed Positions. Rows use subtle alternate contrast through the shared `.trade-table` styling.
+- A banner reads *Connection to the bot lost — showing data from HH:MM* (or *no data has been received yet*), the views are dimmed, the header shows *Connection lost* and the *Live* indicator is hidden.
+- Triggers: the service worker's `API_OFFLINE` message for `/api/dashboard`, a failed or non-OK dashboard fetch, and `_checkStale()` (every 5 s) when the last applied response is older than `STALE_AFTER_MS` (20 s). The time-based check works without a service worker and catches requests that hang.
+- Dashboard requests are numbered; a response older than the one shown is dropped, and the failure of an old request does not hide a newer success. `_applyDashboard` is called from one place only.
+- The next applied dashboard response clears the state (`_markConnected()`).
 
 ---
 
-### Trade Ledger (`renderLedger`)
+## Charts
 
-Fetches `/api/trades` (200 most recent filled order records) and renders a table with columns. Rows use subtle alternate contrast through the shared `.trade-table` styling:
+**Equity graph** (Overview, Chart.js): one instance on `#equity-chart`, found again with `Chart.getChart(canvas)` and updated in place with `update('none')`. Hover uses index mode with `intersect: false`, a 12 px hit radius, a tooltip with date, time and equity, and the `equityCursorLine` plugin (dashed vertical guide). The y-axis autoscales with `grace: '35%'`. Colours come from the CSS tokens (`cssVar()`).
 
-| Column | Content |
-|--------|---------|
-| Date Time | UTC date and time of order fill |
-| Market | Trading pair |
-| Action | **Buy** when the asset was purchased (long); **Sell** when it was sold (short). An inline badge shows **Open** (green) or **Close** (orange) based on `trade_type` — independent of direction. |
-| Direction | **▲ Long** (green) / **▼ Short** (red) |
-| Size | Units |
-| Price | Fill price (adaptive precision) |
-| Value | `size × price` |
-| P&L | Realised close-order P&L and percentage, or `--` |
-| Strategy | Human-readable strategy label derived from the row's `strategy` ID |
-| Source | `auto` / `manual` / `stop-loss` coloured label |
-| Status | `filled` (green) or rejection reason (red) |
-| Pos ID | First 8 chars of position UUID — same value on paired open and close rows |
-| Signal | `📊 Signal` button — opens the signal detail modal. `—` if no signal is linked. |
+**Backtest equity curve** (Backtests, Chart.js): one instance on `#bt-equity-chart`, held in `backtestChart` outside Alpine. Equity and drawdown share one chart on two stacked y-axes (drawdown, subdued, beneath). `_renderBacktestChart()` destroys the previous chart before drawing; opening another run, returning to the list and leaving the view destroy it too.
 
-`trade_type` is determined in `get_trade_ledger()` by a two-pass algorithm: rows arrive newest-first, so iterating and overwriting a `position_id → order_id` map leaves the *oldest* order's id as the value (= the opener). Any other order for that `position_id` is a closer. This correctly handles short-opens (Sell · Open) and long-closes (Buy · Close) without relying on direction alone.
+**Candle charts** (Markets, Lightweight Charts): only the selected market has charts, in the two panes of `#candle-detail`.
+
+- Chart objects live outside Alpine in `candleCharts` (market → charts, series, resize observers) and `chartRequests` (market → request in flight), so they are not wrapped in reactive proxies.
+- Selecting another market removes the old charts (`chart.remove()`, observers disconnected) before the new market loads; leaving Markets removes them too.
+- `_loadChart(market)` allows one request per market: a second call shares the running promise.
+- `_fetchAndRender(market)` fetches both intervals in parallel, checks both responses are OK before parsing, and drops the result if the market is no longer selected or Markets is no longer shown. `toCandleSeries` keeps one candle per timestamp and sorts by time. The price scale's `priceFormat` (`precision`, `minMove`) follows the last price.
+- After `setData` each chart calls `timeScale().fitContent()`, so the candles fill its width; the resize observer refits after every size change (window resize, the sidebar becoming a rail, the layout stacking). The captions give the time each series covers (*5 min candles · 8h 20m*, from `candleSpan()`).
 
 ---
 
-### Closed Positions Panel (`renderClosedTrades`)
+## Dialogs
 
-Fetches `/api/closed-trades` (200 most recent signal outcomes) and renders a table with columns. Rows use subtle alternate contrast through the shared `.trade-table` styling:
+All three dialogs use `.modal-backdrop` + `.modal-panel`, close on Escape and on a backdrop click, move focus into the panel when they open (one frame after Alpine reveals them), keep Tab inside (`trapTab`) and give focus back to the control that opened them.
 
-| Column | Content |
-|--------|---------|
-| Date Time Closed | Exit timestamp (`exit_at`) |
-| Date Time Opened | Entry timestamp (`entry_at`) |
-| Duration | Time between open and close, formatted as `Xd Yh`, `Xh Ym`, `Xm Ys`, or `Xs` |
-| Market | Trading pair |
-| Direction | ▲ Long (green) / ▼ Short (red) |
-| Size | Units held |
-| Price | Entry price (avg price at open, adaptive precision) |
-| Value | `size × entry_price` (position value at open) |
-| P&L | Absolute P&L (£) and percentage return combined in one cell, coloured green/red |
-| Strategy | Human-readable strategy label derived from the row's `strategy` ID |
-| Source | Humanised exit reason: `Stop Loss` / `Auto` / `Manual` / `Reset` / `Rejected`; other reasons with underscores as spaces; `—` when the reason is missing |
-| Status | Static **Closed** badge |
-| Pos ID | First 8 chars of position UUID |
-| Open Signal | `📊 Open` button — opens signal detail for the signal that opened the position. `—` if unlinked. |
-| Close Signal | `📊 Close` button — opens signal detail for the SHORT signal that triggered the close. `—` for stop-loss, manual, or reset closes. |
+**Trading settings** (`#trading-settings`, `openTradingSettings()`): three sections in order — **Trading mode**, **Strategy**, **Money**. Strategy cards split `Name (description)` with `_strategyLabelParts()`. Each choice asks `confirm()` first; *Live — real money* opens a panel whose *Switch to live* stays disabled until `LIVE` is typed, and `setTradingEnvironment('live')` sends that text as `confirmation`. A refusal (for example missing Kraken API keys) shows the API's `detail` in the dialog (`tradingSettingsError`).
 
-Both signal buttons are `sig-btn` elements handled by the global click delegate in `initEventListeners`, so clicking them calls `showSignal(tradeIdeaId)`.
-
----
-
-### Rejected Trades Register
-
-Fetches `/api/rejected-trades` (100 most recent execution-level rejections) and renders a collapsed-by-default zebra-striped table separate from the trade ledger. Rows show:
-
-| Column | Content |
-|--------|---------|
-| Date Time | Rejection timestamp |
-| Market | Trading pair |
-| Direction | Long/short pill |
-| Size | Requested base asset quantity |
-| Price | Price used when execution was attempted |
-| Value | `size x price` |
-| Strategy | Human-readable strategy label derived from the row's `strategy` ID |
-| Source | Rejection source, defaulting to `system` when the API has no source |
-| Status | Static **Rejected** badge |
-| Reason | Rejection reason with underscores shown as spaces |
-| Confidence | Signal confidence percentage, or `--` if unavailable |
-| Signal | Detail button linked by `trade_idea_id`, if present |
-
-This panel is for intents that never became trades, such as paper insufficient-funds blocks or Kraken submission errors. The main trade ledger remains limited to filled paper orders and accepted live orders.
-
----
-
-### Price Charts (`_syncChartCards` / `refreshCharts`)
-
-**Expanded by default.** Uses the **Lightweight Charts** library to render candlestick charts per market. The panel has the same fixed height as Crypto News, both are three times taller than before, and Price Charts scrolls internally when there are more market cards than fit on screen.
-
-Each market gets a single card containing **two side-by-side charts** — 5-min candles on the left and 15-min candles on the right. With up to 50 markets, charts are only built and refreshed for cards that are on screen.
-
-```
-┌─ BTC/EUR ──────────────────────────────────────── £84,201.12 +0.14% ─┐
-│  5 MIN                        │  15 MIN                               │
-│  [candlestick chart]          │  [candlestick chart]                  │
-└───────────────────────────────────────────────────────────────────────┘
-```
-
-**Lifecycle and data flow:**
-- Chart state is kept outside Alpine in two `Map`s (so the chart objects are not wrapped in reactive proxies): `candleCharts` (market → `{ card, visible, chart5, series5, chart15, series15, resizers }`) and `chartRequests` (market → the request in flight).
-- Every applied dashboard response calls `_syncChartCards(symbols)`: an empty card is added for each new market, and for each market that left the list the charts are destroyed (`chart.remove()`), their `ResizeObserver`s disconnected and the card removed.
-- An `IntersectionObserver` marks cards visible or hidden. The first time a card becomes visible its candles are fetched and its two charts created.
-- `_loadChart(market)` allows one request per market: a second call while one is running shares the same promise, so a first render can never append two cards.
-- `_fetchAndRender(market)` fetches `/api/ohlc/{market}?interval=5` and `?interval=15` in parallel, checks both responses are OK, and ignores the result if the market was removed meanwhile. Candles go through `toCandleSeries`, which keeps one candle per timestamp and sorts by time (Lightweight Charts rejects unsorted or repeated times).
-- Each series' `priceFormat` is set to `{ type: 'price', precision, minMove }` from the last price (`priceDecimals`), so sub-cent markets get a readable price scale instead of a flat line at 0.00. The card header shows the price with `fmtPrice` and the change in %.
-- `refreshCharts()` runs every 60 seconds and refreshes only visible cards, one every `CHART_REFRESH_GAP_MS` (250 ms) instead of all at once; a refresh still running is not started twice. The backend only refreshes the OHLC cache every 2 minutes, so most frontend polls return cached data.
-
----
-
-### Price Formatting
-
-Prices and money amounts are formatted differently:
-
-- **Prices** (market list, Avg Price, ledger/closed/rejected Price, chart header and price scale, the close-position alert) use `fmtPrice(value)`: 2 decimals at or above 1, otherwise enough decimals for 4 significant digits (`priceDecimals`, e.g. `0.0000085` → `0.000008500`). The dashboard sends the raw numbers as `markets[].price_value` and `positions[].avg_price_value`; the text fields `price` and `avg_price` use the same rule on the server.
-- **Money** (equity, cash, value, P&L) keeps 2 decimals.
-
----
-
-### Equity Graph
-
-Uses **Chart.js** to render a line chart of total equity over time. Each backend market-data tick records cash plus the current mark-to-market value of held crypto/stock positions into `equity_history`; `/api/dashboard` aligns the final history point with the same `Total Equity` value shown in the header, then the frontend redraws it on the next 5-second dashboard refresh. `_equity_ticker_loop` also records supplemental points from the latest known prices. Startup restores the full 1,440-point in-memory window, so the graph can show roughly 4 hours at 10-second resolution.
-
-The chart updates the existing Chart.js instance with `chart.update('none')`, so each dashboard poll repaints without a page reload. Hover uses index mode with `intersect: false`, a larger hit radius, a tooltip with timestamp and equity value, and a custom `equityCursorLine` plugin that draws a vertical guide at the hovered point. The y-axis uses Chart.js autoscaling with `grace: '35%'`, so live refreshes do not mutate resolved Chart.js option proxy objects.
-
-```javascript
-renderChart(history) {
-    const labels = history.map(p => this._formatEquityTick(p.timestamp));
-    const values = history.map(p => Number(p.equity));
-
-    if (!this._chart) {
-        const ctx = document.getElementById('equity-chart').getContext('2d');
-        this._chart = new Chart(ctx, {
-            type: 'line',
-            data: { labels, datasets: [{ data: values, pointHitRadius: 12, pointHoverRadius: 4 }] },
-            plugins: [this._equityCursorLine()],
-            options: {
-                interaction: { mode: 'index', intersect: false },
-                scales: { y: { grace: '35%' } },
-            }
-        });
-    } else {
-        this._chart.data.labels   = labels;
-        this._chart.data.datasets[0].data = values;
-        this._chart.update('none');   // suppress animation on live update
-    }
-}
-```
-
----
-
-### LLM Status Card
-
-Two sub-panels rendered from `llmBriefing` and `llmReflection` state properties:
-
-**Market Briefing sub-panel** (news-triggered):
-- `key_insight` text
-- `overall_sentiment` displayed as a coloured arrow (▲ for positive, ▼ for negative)
-- Per-market outlook pills: `BTC/EUR: Bullish +0.70` (green/red/grey depending on bias)
-- Article count and generation timestamp
-
-**Hourly Reflection sub-panel**:
-- `pattern` — observed trading pattern
-- `suggestion` — actionable improvement
-- `insight_confidence` as percentage
-- Generation timestamp
-
-Both sub-panels show a "Not yet generated" placeholder if the respective value is `null`.
-
----
-
-### Approvals Panel
-
-Displays the top 3 pending approvals from `d.approvals`. Each card shows:
-- Market, direction, confidence %
-- Thesis, entry plan, exit plan
-- Risk decision badge
-- Expiry time countdown
-- Approve / Reject buttons
-
-Clicking Approve: POSTs to `/api/approvals/{id}/approve`, refreshes `loadDashboard()`.  
-Clicking Reject: POSTs to `/api/approvals/{id}/reject`, refreshes `loadDashboard()`.
-
-A "View All" link navigates to `/approvals` (a separate page with the full approval queue).
-
----
-
-### Risk Rejections Panel
-
-Displays the last 20 risk rejections from `d.risk_rejections`. Each row shows market, direction, confidence, and the rejection reason. Sourced from the in-memory `riskRejections` list in `internal/app` (capped at 50).
-
----
-
-### Activity Log Panel
-
-Displays the most recent 60 activity log entries in reverse-chronological order (newest at top). Each entry shows:
-- Relative timestamp (`timeAgo()` helper — "2m ago", "1h ago", etc.)
-- Level badge (green/blue/amber/red)
-- Message text
-- Detail text (smaller, dimmer — optional)
-
----
-
-### News Feed Panel
-
-Displays all articles published in the **last 12 hours** in a responsive grid of article cards inside the full-width News Feed panel. No item cap — the count varies with market activity. The panel header shows the article count and last-updated time. Each card shows:
-- Source badge (blue for CoinDesk, gold for CoinTelegraph)
-- Publication time (`timeAgo()`)
-- Title (truncated to 3 lines)
-- Clicking the card opens the article URL in a new tab
-
----
-
-## Control Actions
-
-| Action | Method | API Call |
-|--------|--------|---------|
-| Emergency stop | `activateStop()` | `POST /api/control/emergency-stop` |
-| Resume trading | `resumeBot()` | `POST /api/control/resume` |
-| Toggle market | `toggleMarket(market)` | `POST /api/control/markets/{market}/toggle` |
-| Toggle market live (live environment only) | `toggleMarketLive(market)` (confirm dialog naming the market first) | `POST /api/control/markets/{market}/live-toggle` |
-| Select strategy | `selectStrategy(id)` (confirm dialog first) | `POST /api/control/strategies/{id}/select` |
-| Change trading mode | `setTradingMode(mode)` (confirm dialog first) | `POST /api/control/trading-mode` |
-| Switch paper / live | `setTradingEnvironment(env)` (typed `LIVE` to go live, confirm dialog to go back to paper) | `POST /api/control/trading-environment` |
-| Load settings | `loadSettings()` (on start-up and when the dialog opens) | `GET /api/settings` |
-| Save settings | `saveSettings()` (confirm dialog listing every change first) | `POST /api/settings` |
-| Close position | `closePosition(positionIdFull)` | `POST /api/positions/{position_id_full}/close` |
-| Forget live position | `forgetPosition(positionIdFull)` (confirm dialog first; no order is sent) | `POST /api/positions/{position_id_full}/forget` |
-| Reset positions | `resetPositions()` | `POST /api/positions/reset` |
-
-The PAPER/LIVE and mode badges in the header are one button that opens the **Trading settings** dialog (`#trading-settings`, `openTradingSettings()`). The dialog has three sections, in order: **Trading mode**, **Strategy** and **Money**. A strategy card shows the label split into a name and a description (`_strategyLabelParts()`, from `Name (description)`). Nothing changes on a single click: each mode button, each strategy and the Paper button ask `confirm()` first, and the Live button opens a red panel whose "Switch to live" button stays disabled until `LIVE` is typed. A refused change (for example missing Kraken API keys) shows the API's `detail` message in the dialog (`tradingSettingsError`). The mode panel's **Change trading mode** button opens the same dialog.
-
-### Settings Dialog
-
-**⚙ Settings** in the header opens `#settings-dialog` (`openSettings()`), which reloads `GET /api/settings` and fills a draft. The dialog is a fixed-height panel:
-
-- a header with the *Live* / *Restart* legend and, while anything is pending, a *Restart the bot to apply* strip;
-- a **side navigation** (`.settings-nav`) listing the groups (`settingsGroups` getter); the selected one is `settingsGroup`, and a gold dot marks groups with unsaved changes (`settingsGroupChanged()`). On narrow screens it becomes a scrolling row of tabs;
-- the selected group's settings, one **row** per setting (`.setting-row`): label, *Live*/*Restart* tag, *Restart pending* tag and help text on the left (`.setting-text`), the control on the right (`.setting-control`, 300 px). List settings span the full width;
-- a footer with the unsaved-change count, **Undo changes** and **Save…**.
-
-`loadSettings()` fills the draft (`resetSettingsDraft(data.fields)`) before it sets `settingsFields`, so list rows never render without a draft array. Neutral buttons (Add, Remove all, Clear/Keep, Undo changes) use `.btn-secondary`, which follows the theme colours.
+**Settings** (`#settings-dialog`, `openSettings()`): reloads `GET /api/settings` and fills a draft (`resetSettingsDraft(data.fields)` before `settingsFields`, so list rows always have a draft). A side navigation lists the groups (`settingsGroups`); a dot marks groups with unsaved changes. Each row has the label, *Live* / *Restart* tag, *Restart pending* / *Unsaved* tags and help on the left and a control sized for its kind on the right:
 
 | Kind | Control |
 |---|---|
-| `int`, `float` | Narrow right-aligned text box (`is-number`; the server validates numbers and ranges) |
+| `int`, `float` | Narrow right-aligned text box (`is-number`; the server validates) |
 | `string` | Text box |
-| `bool` | Switch (`role="switch"`, `aria-checked`) |
-| `list` | Removable chips (`.chip-list`, **×** calls `removeListItem()`) plus an add box (`addListItem()`, Enter or **Add**; market symbols are upper-cased, duplicates ignored), an entry count and **Remove all**. News feeds show the name part of `Name::URL` on the chip, with the full entry as its tooltip |
-| secret | `type="password"`, `autocomplete="new-password"`, never pre-filled. Placeholder *Set — type to replace* / *Not set*; **Clear** / **Keep** toggles clearing it |
+| `bool` | Switch |
+| `list` | Removable chips, an add box (Enter or **Add**; market symbols upper-cased, duplicates ignored), entry count and **Remove all** |
+| secret | `type="password"`, `autocomplete="new-password"`, never pre-filled; **Clear** / **Keep** |
 
-State: `settingsFields` (from the API), `settingsDraft` (key → edited value: arrays for lists, `''` for an untouched secret), `settingsClear` (secrets to clear), `settingsGroup`, `settingsRestartRequired`, `settingsError`, `settingsNotice`, `settingsSaving`. `settingsChanges()` compares the draft with the saved values and returns only the changed keys; the footer shows the count, **Undo changes** (`resetSettingsDraft()`) and **Save…**.
+`saveSettings()` confirms with one line per change (lists show `+` added and `−` removed; secrets only *new value* / *cleared*), then posts the changes. Closing with unsaved changes asks first. While `settingsRestartRequired` is not empty, a banner lists the keys: *Settings saved. Restart the bot to apply: …*.
 
-`saveSettings()` asks `confirm()` with one line per change (`label: old → new (applies now|after restart)`; lists show only what was added `+` and removed `−`; secrets only say *new value* or *cleared*) before posting. A refusal shows the API's `detail` (`settingsError`); success shows which keys are in use now, reloads the settings and refreshes the dashboard. Closing the dialog with unsaved changes asks before discarding them.
-
-While `settingsRestartRequired` is non-empty, a `.restart-banner` under the header lists the keys: *Settings saved. Restart the bot to apply: …*.
-
-All actions call `loadDashboard()` on completion to immediately reflect the new state. `closePosition` additionally refreshes the trade ledger and closed trades panels.
+**Signal detail** (`.signal-panel`, `showSignal(id)`): strategy, time, market and direction, final confidence, thesis, score breakdown (momentum base, indicator consensus, news and LLM sentiment, ATR penalty, strategy confidence, learner and LLM multipliers, final), indicator votes, raw signal data, risk decision, LLM assessment, news in context, entry and exit plans.
 
 ---
 
-## Utility: `timeAgo()`
+## Desktop notifications
 
-```javascript
-// Takes a Date; callers pass parseUtc(serverTimestamp).
-timeAgo(date) {
-    const s = Math.floor((Date.now() - date) / 1000);
-    if (s < 60)    return 'just now';
-    if (s < 3600)  return Math.floor(s / 60) + 'm ago';
-    if (s < 86400) return Math.floor(s / 3600) + 'h ago';
-    ...
-}
-```
-
-Every server timestamp is parsed with `parseUtc()`, never a bare `new Date(...)`. Stored timestamps are ISO 8601 in UTC without a zone suffix, which a browser would read as local time; `parseUtc()` appends `'Z'` when the string has no zone or offset and leaves strings that already carry one (live equity points) alone.
+`initIntelligence()` asks for notification permission once. `onIntelligenceData()` seeds the IDs of the signals present on the first response without notifying, then raises one notification per new `trade_idea_id` (title *BTC/EUR ▲ LONG — 72% confidence*, body: thesis shortened to 120 characters plus the risk result, tag: the signal id). It runs on every view.
 
 ---
 
-## Layout Structure
+## Service worker (`sw.js`)
 
-Panels are still collapsible and keep the same DOM IDs and API actions, but they no longer sit inside a fixed `1280px` vertical stack. The outer dashboard is:
+- Versioned cache `trading-bot-v<app version>`; old caches are deleted on activation and open tabs are claimed at once.
+- HTML (navigations and `text/html`) is **network-first**, as are the dashboard's own code files `/static/app/*.js` and `/static/styles.css`, so a deploy is picked up on the next load and old scripts never run against new markup. The cached copy is used only when the bot is down. Other static files use stale-while-revalidate.
+- A response is cached only when it is OK and not redirected (`cacheable()`), so the login page is never cached as the dashboard.
+- API responses are never cached. When a polled endpoint (`/api/dashboard`, `/api/trades`, `/api/closed-trades`, `/api/rejected-trades`, `/api/news`, `/api/pnl-summary`) fails because the bot is unreachable, the worker answers `503` and posts `{type: 'API_OFFLINE', endpoint, ts}` to the requesting page only.
 
-```html
-<main class="app-shell dashboard-shell dashboard-grid">
-```
+---
 
-All dashboard areas are stacked vertically in document order. The shell uses the available browser width instead of capping at the old fixed desktop width.
+## Approvals and login pages
 
-| Area | Layout |
-|---|---|
-| Market Briefing | Full-width block |
-| Mode Banner | Full-width block |
-| Equity Graph | Full-width block |
-| Markets, P&L Summary, Signals | Responsive equal-height `.core-grid` panels with internal scrolling |
-| Open Positions | Full-width table panel |
-| Closed Positions | Full-width table panel |
-| Pending Approvals | Full-width block |
-| Trade Ledger, Risk Rejections | Full-width blocks |
-| Price Charts | Full-width block; only the 5-minute and 15-minute panes may sit side by side |
-| News Feed | Full-width panel containing a responsive article-card grid |
-| Local LLM, Bot Activity | Full-width blocks; Local LLM fields render as separate `.llm-row` lines |
+`approvals.html` lists every pending approval (refreshed every 3 s) with the same confirmations and failure messages as the Overview, using the shared styles; its back link opens `/#/overview/approvals`. A load failure replaces *Loading…* with the reason. Loading, empty and error messages sit in a panel like the dashboard's; the header badge is neutral (*None pending*), amber only while trades wait and red on an error. `login.html` is the access-token form used when the bot listens beyond this computer; it loads only `/static/styles.css`, the one static file served without a session.
 
-Tables keep horizontal scrolling inside `.panel-body-scroll`; the page itself should not gain horizontal scroll. Chart panels use `.chart-grid`, `.chart-pair-grid`, and `.chart-pane`, with dimensions controlled by CSS rather than fixed inline pixel heights.
+---
+
+## Backtests view
+
+Code: `static/app/backtests.js`, markup in `<section data-view="backtests">` of `index.html`. A read-only viewer of the result folders that `go run ./cmd/backtest … --output results/<name>` writes, through `GET /api/backtests` and `GET /api/backtests/{id}` ([08-api-endpoints.md](08-api-endpoints.md#backtests)). It only sends GET requests and never recomputes a metric or derives a verdict: every number and sentence is read from the files.
+
+**List** (`#/backtests`). Loaded each time the view is entered and with *Refresh*, never on a timer. Columns: when (`summary.json` modification time), run id with a warning pill when `has_warnings`, kind, strategy, markets, period (UTC), net return (signed, coloured), round trips, first verdict line with its rule id. Newest first; kind filter chips and a text filter (id, strategy, market, verdict). A multi-run parent's *Show N runs* lists its child runs. `skipped` > 0 shows "N folder(s) could not be read". With no results, two lines say how to write one (`--output results/<name>`, `docs/14-backtesting.md` as text, not a link).
+
+**Detail** (`#/backtests/<id>`, the id's segments URL-encoded; child runs have ids such as `split_btc/runs/01_in_sample` and a *Part of …* link to their parent). In reading order:
+
+1. **Read this first**: a single run's `honesty.lines` as written; lines with an upper-case prefix (`NOT THE LIVE STRATEGY:`, `ACCOUNTING WARNING:`, `DATA WARNING:`, `DATA:`, `STALE POSITIONS:`, `RISK SIZING:`) are styled as warnings. A multi-run summary has no honesty block: the view shows the warnings of its runs' rows (accounting, data, stale positions), the two fixed lines every multi-run `summary.md` starts with (`header()` in `render_multi.go`; a test keeps them in step) and the summary's `notes`. Always shown, never collapsible, and before any number.
+2. **Verdict**: each line's text and rule id as produced. Green only for the positive rules `positive_not_validated`, `above_buy_and_hold`, `positive_in_and_out_of_sample`, `positive_at_every_tested_fee`; amber for `accounting_warning`, `data_coverage_warning`, `inconclusive_stale_positions`; neutral otherwise (descriptive rules such as `test_windows_profitable` also fire for losing runs).
+3. **Key figures** (single runs): starting capital, ending equity, net P&L and %, worst-case net P&L when there are stale positions, fees, execution costs, round trips, win rate, profit factor, max drawdown (amount and %), exposure, annualised return, Sharpe. A metric the backtester wrote as `null` shows "n/a" with the note it gave (`profit_factor_note`, `annualised_note`, `ratio_note`), never 0.
+4. **Equity and drawdown**: `part=equity` (at most 2000 points; "downsampled from N points" when the server downsampled).
+5. **Benchmarks**: the strategy beside each benchmark (final value, net return, max drawdown, strategy minus benchmark in percentage points), the primary marked, with the benchmark notes.
+6. **Costs**: the gross → net bridge, all costs with % of traded value and of capital, and per-market costs from `costs.json`.
+7. **Reconciliation** (exact vs engine totals and differences, as written; a banner when it failed) and **Signals** (ideas, orders, fills, reasons not traded).
+8. **Trades / Orders**: `part=trades` and `part=orders` in server-side pages of 100 with the total; Orders has a status filter (filled, rejected, cancelled) showing reject reasons. Clicking a column sorts the shown page only.
+9. **Assumptions and reproducibility** (`run.json`): assumptions with their bias pill (pessimistic, optimistic, neutral, unknown), command line, tool and build, seed, data provenance (cache file, source file, checksum, import time), universe selections, settings and exchange model (disclosures), and *Raw summary*: `part=summary_md` loaded on opening and shown as plain preformatted text (`x-text`), never rendered as Markdown.
+
+**Multi-run kinds.** `split`: in-sample and out-of-sample side by side. `walkforward`: test-window aggregate, tuning when present, and a per-window table. `regimes`: the whole run, the trend × volatility / trend / volatility tables with thin cells flagged, and the buckets. `sensitivity`: the break-even fee (labelled an estimate), sign survival per dimension and the variant table with the baseline marked. Rows link to their child run when one exists (matched by the `runs/NN_<label>` directory name). A summary whose shape the view does not know falls back to the Read this first block, the verdict and the raw summary, opened.
+
+**Requests and safety.** Every request goes through `_btFetch`, which numbers it per resource; opening another run, returning to the list or leaving the view bumps those numbers, so a late response is dropped instead of rendering into another run's page. A 404 for the run returns to the list with a warning toast. URLs are built with `backtestUrl()` (each id segment through `encodeURIComponent`). All server text is rendered with `x-text`; runs open through buttons that set the hash, so no server value becomes an `href`.
+

@@ -13,8 +13,8 @@ import (
 	"github.com/James-Chapman/LLMTradingBot/internal/app"
 )
 
-// Port of tests/test_frontend_layout_bdd.py. Assertions that inspected
-// backend/main.py source text now check the Go server's behaviour instead.
+// The frontend tests read the page sources: index.html holds the markup of
+// every view, static/app/*.js the behaviour (core.js plus one file per view).
 
 // readFrontend returns a frontend file's text.
 func readFrontend(t *testing.T, rel string) string {
@@ -24,6 +24,65 @@ func readFrontend(t *testing.T, rel string) string {
 		t.Fatalf("read %s: %v", rel, err)
 	}
 	return string(data)
+}
+
+// appScripts returns every dashboard module in static/app by file name.
+func appScripts(t *testing.T) map[string]string {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(frontendDir, "static", "app", "*.js"))
+	if err != nil || len(paths) == 0 {
+		t.Fatalf("no dashboard modules found in static/app: %v", err)
+	}
+	scripts := map[string]string{}
+	for _, p := range paths {
+		scripts[filepath.Base(p)] = readFrontend(t, filepath.Join("static", "app", filepath.Base(p)))
+	}
+	return scripts
+}
+
+// dashboardSource returns index.html followed by every dashboard module, for
+// checks that apply to the whole dashboard wherever the code lives.
+func dashboardSource(t *testing.T) string {
+	t.Helper()
+	scripts := appScripts(t)
+	names := make([]string, 0, len(scripts))
+	for name := range scripts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := []string{readFrontend(t, "index.html")}
+	for _, name := range names {
+		parts = append(parts, scripts[name])
+	}
+	return strings.Join(parts, "\n")
+}
+
+// funcBody returns a JavaScript function or method from its signature to its
+// matching closing brace (braces are counted, so nested blocks are included).
+func funcBody(t *testing.T, text, signature string) string {
+	t.Helper()
+	i := strings.Index(text, signature)
+	if i < 0 {
+		t.Fatalf("function %q not found", signature)
+	}
+	open := strings.Index(text[i:], "{")
+	if open < 0 {
+		t.Fatalf("body of %q not found", signature)
+	}
+	depth := 0
+	for j := i + open; j < len(text); j++ {
+		switch text[j] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return text[i : j+1]
+			}
+		}
+	}
+	t.Fatalf("end of %q not found", signature)
+	return ""
 }
 
 // mustContain fails for every token missing from text.
@@ -60,12 +119,26 @@ func between(t *testing.T, text, start, end string) string {
 	return text[i : i+j]
 }
 
-// TestFrontendLayout covers the dashboard markup, CSS and service worker.
+// tableHead returns the normalised <thead> of the table whose <tbody> has the given id.
+func tableHead(t *testing.T, index, bodyID string) string {
+	t.Helper()
+	body := strings.Index(index, `id="`+bodyID+`"`)
+	if body < 0 {
+		t.Fatalf("tbody %q not found", bodyID)
+	}
+	start := strings.LastIndex(index[:body], "<table")
+	end := start + strings.Index(index[start:], "</thead>")
+	return strings.Join(strings.Fields(index[start:end]), " ")
+}
+
+// TestFrontendLayout covers the dashboard markup, the design system and the service worker.
 func TestFrontendLayout(t *testing.T) {
 	index := readFrontend(t, "index.html")
 	approvals := readFrontend(t, "approvals.html")
+	login := readFrontend(t, "login.html")
 	css := readFrontend(t, "static/styles.css")
 	sw := readFrontend(t, "sw.js")
+	scripts := appScripts(t)
 
 	t.Run("GIVEN trial layouts were removed WHEN frontend files and routes are inspected THEN only the primary index remains", func(t *testing.T) {
 		matches, _ := filepath.Glob(filepath.Join(frontendDir, "index*.html"))
@@ -77,7 +150,7 @@ func TestFrontendLayout(t *testing.T) {
 		if len(names) != 1 || names[0] != "index.html" {
 			t.Errorf("expected only index.html, got %v", names)
 		}
-		mustContain(t, "index", index, `<body class="layout-ledger-glass" x-data="dashboard()">`)
+		mustContain(t, "index", index, `<body x-data="dashboard()">`)
 		h := newHarness(t, harnessConfig{})
 		for i := 2; i <= 9; i++ {
 			path := "/index" + string(rune('0'+i))
@@ -85,75 +158,80 @@ func TestFrontendLayout(t *testing.T) {
 				t.Errorf("%s should not be routed, got %d", path, rec.Code)
 			}
 		}
-		mustNotContain(t, "css", css, "layout-radar", "layout-pulse-wall", "layout-incident-rail",
+		mustNotContain(t, "css", css, "layout-ledger-glass", "layout-radar", "layout-pulse-wall", "layout-incident-rail",
 			"layout-holdings-map", "layout-candle-lab", "layout-dispatch-flow", "layout-signal-matrix")
 	})
 
-	t.Run("GIVEN the primary index WHEN the theme is inspected THEN it uses the ledger glass palette", func(t *testing.T) {
-		theme := between(t, css, "body.layout-ledger-glass {", ".layout-ledger-glass .app-header {")
-		mustContain(t, "theme", theme, "--bg: #070b12;", "--surface: #101826;", "--blue: #5cc8ff;", "--green: #2dd4bf;",
-			"background: linear-gradient(180deg, #070b12 0%, #0b1220 48%, #080d16 100%);")
-		mustNotContain(t, "theme", theme, "--surface: #ffffff;", "--bg: #f4f7fb;")
+	t.Run("GIVEN the design system WHEN the stylesheet is inspected THEN one dark palette is defined as tokens and used by the page", func(t *testing.T) {
+		root := between(t, css, ":root {", "\n}")
+		mustContain(t, "tokens", root, "color-scheme: dark;", "--surface-page: #0b0e14;", "--surface-panel:", "--surface-raised:",
+			"--border:", "--text:", "--text-secondary:", "--text-muted:", "--accent: #5b9dff;",
+			"--profit: #3ccf8e;", "--loss: #ff6b6b;", "--warning:", "--live:", "--danger:", "--page-gutter:")
+		mustContain(t, "body", between(t, css, "\nbody {", "}"), "background: var(--surface-page);", "color: var(--text);")
+		mustNotContain(t, "css", css, "--surface: #ffffff;", "--bg: #f4f7fb;")
 	})
 
-	t.Run("GIVEN price monitoring WHEN the dashboard loads THEN price charts start expanded and match the news height", func(t *testing.T) {
-		mustContain(t, "index", index, "priceCharts: true, news: true", "<!-- Price Charts (5-min & 15-min candles, expanded by default) -->")
-		mustContain(t, "css", css,
-			"--news-chart-panel-height",
-			"--news-chart-panel-height: clamp(1140px, 126vh, 1680px);",
-			".area-charts,\n.area-news {\n    height: var(--news-chart-panel-height);",
-			".area-charts > .panel-body,\n.area-news > .panel-body {",
-			"overflow-y: auto;",
-			".area-charts .chart-grid,\n.area-news .news-grid {",
-			".area-charts .chart-pair-grid {\n    grid-template-columns: repeat(2, minmax(0, 1fr));",
-		)
-	})
-
-	t.Run("GIVEN the dashboard pages WHEN loaded THEN shared CSS comes from the static stylesheet", func(t *testing.T) {
+	t.Run("GIVEN every page WHEN loaded THEN it uses the shared stylesheet and no inline or CDN styles", func(t *testing.T) {
 		link := `<link rel="stylesheet" href="/static/styles.css">`
-		mustContain(t, "index", index, link)
-		mustContain(t, "approvals", approvals, link)
-		mustNotContain(t, "index", index, "<style>", "cdn.tailwindcss.com")
-		mustNotContain(t, "approvals", approvals, "<style>", "cdn.tailwindcss.com")
-		mustContain(t, "css", css, ".sticky", ".top-0", ".z-50", ".flex", ".items-center", ".justify-between", ".gap-2", ".gap-3")
+		for name, page := range map[string]string{"index": index, "approvals": approvals, "login": login} {
+			mustContain(t, name, page, link)
+			mustNotContain(t, name, page, "<style>", "cdn.tailwindcss.com", "fonts.googleapis.com")
+		}
 		h := newHarness(t, harnessConfig{})
-		if rec := h.do(http.MethodGet, "/static/styles.css", nil); rec.Code != http.StatusOK {
-			t.Errorf("the server must mount frontend/static at /static, got %d", rec.Code)
+		for _, path := range []string{"/static/styles.css", "/static/app/core.js", "/static/app/backtests.js"} {
+			if rec := h.do(http.MethodGet, path, nil); rec.Code != http.StatusOK {
+				t.Errorf("the server must serve %s from frontend/static, got %d", path, rec.Code)
+			}
 		}
 	})
 
-	t.Run("GIVEN wide and narrow screens WHEN layout CSS is inspected THEN adaptive primitives exist", func(t *testing.T) {
+	t.Run("GIVEN the redesign WHEN markup and CSS are inspected THEN no Tailwind-style utility shim classes are left", func(t *testing.T) {
+		shims := []string{"sticky", "top-0", "z-50", "flex", "items-center", "justify-between", "gap-2", "gap-3",
+			"grid", "hidden", "text-sm", "font-bold", "px-4", "py-2", "rounded", "w-full"}
+		for _, shim := range shims {
+			if regexp.MustCompile(`(?m)^\.` + regexp.QuoteMeta(shim) + `\s*[{,]`).MatchString(css) {
+				t.Errorf("css: utility class .%s is still defined", shim)
+			}
+		}
+		classAttr := regexp.MustCompile(`\bclass="([^"]*)"`)
+		for name, page := range map[string]string{"index": index, "approvals": approvals, "login": login} {
+			for _, m := range classAttr.FindAllStringSubmatch(page, -1) {
+				for _, cls := range strings.Fields(m[1]) {
+					for _, shim := range shims {
+						if cls == shim {
+							t.Errorf("%s: utility class %q used in %q", name, cls, m[0])
+						}
+					}
+				}
+			}
+		}
+	})
+
+	t.Run("GIVEN wide, medium and phone screens WHEN layout CSS is inspected THEN each breakpoint and reduced motion are handled", func(t *testing.T) {
 		mustContain(t, "css", css,
-			"--page-gutter", ".app-shell", ".dashboard-grid", ".panel", ".panel-header", ".metric-strip",
-			".responsive-table", ".chart-grid", ".chart-pair-grid", ".core-grid", ".core-panel", ".core-scroll",
-			".llm-status", ".llm-row", ".approval-card", "clamp(", "minmax(", "@media",
-			"width: calc(100% - (var(--page-gutter) * 2));",
-			".dashboard-grid {\n    display: flex;\n    flex-direction: column;",
-			".core-grid {\n    display: grid;",
-			"grid-template-columns: repeat(3, minmax(0, 1fr));",
-			"@media (max-width: 1100px) {\n    .activity-llm-row",
-			"@media (max-width: 700px) {\n    :root",
-			"height: var(--core-panel-height);",
-			".approval-details,\n.chart-grid,\n.raw-signal-grid {\n    display: flex;\n    flex-direction: column;",
-			".news-grid {\n    display: grid;",
-			"grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));",
-		)
-		mustNotContain(t, "css", css, "grid-template-columns: repeat(12", "grid-column: span", "@media (max-width: 1100px) {\n    .core-grid")
+			"@media (max-width: 1439px) {\n    .markets-layout", // the Markets detail goes under the table
+			"@media (max-width: 1199px) {",                      // icon-rail navigation
+			"@media (max-width: 767px) {",                       // bottom tab bar, 16 px gutter
+			"--page-gutter: 16px;",
+			"@media (prefers-reduced-motion: reduce) {",
+			"minmax(", "repeat(auto-fit, minmax(min(100%, 320px), 1fr))")
+		mustContain(t, "css", css, ".news-grid {", ".chart-pair-grid {", ".kpi-grid {", ".approval-details {", ".raw-signal-grid {")
 		mustNotContain(t, "index", index, "max-width:1280px")
 		mustNotContain(t, "approvals", approvals, "max-width:900px")
 	})
 
 	t.Run("GIVEN the equity graph WHEN labels are inspected THEN it is named Equity Graph", func(t *testing.T) {
-		mustContain(t, "index", index, `<span class="label">Equity Graph</span>`)
-		mustNotContain(t, "index", index, `<span class="label">Portfolio Value</span>`)
+		mustContain(t, "index", index, `<h2 class="panel-title">Equity Graph</h2>`)
+		mustNotContain(t, "index", index, "Portfolio Value")
 	})
 
 	t.Run("GIVEN live equity data WHEN chart code is inspected THEN hover and padding are configured", func(t *testing.T) {
-		mustContain(t, "index", index, "_equityCursorLine", "update('none')", "interaction: { mode: 'index', intersect: false }",
+		overview := scripts["overview.js"]
+		mustContain(t, "overview.js", overview, "_equityCursorLine", "update('none')", "interaction: { mode: 'index', intersect: false }",
 			"mode: 'index'", "intersect: false", "pointHoverRadius: 4", "callbacks: {",
 			"title: items => items.length ? this._formatEquityTimestamp(items[0].dataIndex) : ''",
 			"Chart.getChart(canvas)", "grace: '35%'")
-		mustNotContain(t, "index", index, "chart.config.options", "chart.options.scales", "_applyEquityAxisRange")
+		mustNotContain(t, "overview.js", overview, "chart.config.options", "chart.options.scales", "_applyEquityAxisRange")
 	})
 
 	t.Run("GIVEN the dashboard shell changes WHEN the service worker runs THEN HTML is network-first and versioned", func(t *testing.T) {
@@ -168,62 +246,37 @@ func TestFrontendLayout(t *testing.T) {
 		}
 	})
 
-	t.Run("GIVEN dense status panels WHEN markup is inspected THEN core panels share a row and trade panels follow", func(t *testing.T) {
-		core := between(t, index, `<div class="core-grid area-core">`, "<!-- Open Positions")
-		mustContain(t, "core", core, "<!-- Markets -->", "<!-- P&L Summary -->", "<!-- Signals -->")
-		if n := strings.Count(core, `class="card panel core-panel`); n != 3 {
-			t.Errorf("expected 3 core panels, got %d", n)
-		}
-		open := between(t, index, "<!-- Open Positions -->", "<!-- Closed Positions")
-		closed := between(t, index, "<!-- Closed Positions", "<!-- Trade Ledger -->")
-		ledger := index[strings.Index(index, "<!-- Trade Ledger -->"):]
-		mustNotContain(t, "index", index, `<div class="positions-row">`, `<div class="pnl-ledger-row">`)
-		mustContain(t, "open", open, `class="card panel area-positions"`, `id="positions-filter"`, `id="positions-body"`)
-		mustContain(t, "closed", closed, `class="card panel area-closed"`, `id="closed-body"`)
-		mustContain(t, "ledger", ledger, `class="card panel area-ledger"`, `id="ledger-body"`)
+	t.Run("GIVEN a deploy of new dashboard code WHEN the service worker handles app assets THEN they are network-first, not stale-while-revalidate", func(t *testing.T) {
+		mustContain(t, "sw.js", sw, "function isAppAsset(path) {",
+			"path.startsWith('/static/app/')", "path === '/static/styles.css'")
+		fetchHandler := between(t, sw, "self.addEventListener('fetch'", "// ── Fetch strategies")
+		appBranch := between(t, fetchHandler, "if (isAppAsset(path)) {", "}")
+		mustContain(t, "app asset branch", appBranch, "event.respondWith(networkFirst(req));")
+		// The app branch is decided before the stale-while-revalidate fallback for other static files.
+		mustAppearBefore(t, "fetch handler", fetchHandler, "if (isAppAsset(path)) {", "staleWhileRevalidate(req)")
 	})
 
-	t.Run("GIVEN open positions WHEN rendered THEN single-line rows use the API's position keys", func(t *testing.T) {
-		open := between(t, index, "<!-- Open Positions -->", "<!-- Closed Positions")
-		render := between(t, index, "renderPositions(positions)", "renderApprovals(approvals)")
-		mustContain(t, "open", open, `<table class="responsive-table trade-table">`, "Date Time</th>", "Opened</th>",
-			"Strategy</th>", "Source</th>", "Status</th>", `id="positions-body"`)
-		mustContain(t, "render", render, "_renderTradeFilter('positions')", "_applyPositionsFilter()", "_positionOpenedAt(p)",
-			"position.opened_at || position.timestamp || position.entry_at", "t.trade_type === 'open'",
-			"t.position_id_full === fullId", "t.position_id === shortId", "tbody.innerHTML = positions.map",
-			"return `<tr", "fmtTime(openedDt)", "fmtDuration(Date.now() - openedDt)", "this._positionStrategy(p)",
-			"this._positionSource(p)", "statusBadge")
-		mustNotContain(t, "render", render, `<div class="row-sep"`)
-		mustContain(t, "ledger render", index[strings.Index(index, "renderLedger(trades)"):], "_applyPositionsFilter();")
-
-		raw, _ := json.Marshal(app.PositionView{Status: "open"})
-		mustContain(t, "position JSON", string(raw), `"opened_at"`, `"strategy"`, `"status":"open"`, `"position_id_full"`)
-	})
-
-	t.Run("GIVEN trade tables WHEN styles load THEN rows are zebra striped", func(t *testing.T) {
-		if n := strings.Count(index, `class="responsive-table trade-table"`); n != 4 {
+	t.Run("GIVEN trade tables WHEN rendered THEN the four tables share the striped trade-table style", func(t *testing.T) {
+		if n := strings.Count(index, `class="table trade-table"`); n != 4 {
 			t.Errorf("expected 4 trade tables, got %d", n)
 		}
 		mustContain(t, "index", index, `<tbody id="positions-body">`, `<tbody id="closed-body">`, `<tbody id="ledger-body">`, `<tbody id="rejected-trades-body">`)
-		mustContain(t, "css", css, ".trade-table tbody tr:nth-child(even)", "background: rgba(139, 148, 158, 0.055);")
+		mustContain(t, "css", css, ".table tbody tr:nth-child(even) td {")
 	})
 
 	t.Run("GIVEN trade tables WHEN headers are inspected THEN columns appear in the requested order", func(t *testing.T) {
 		expected := map[string][]string{
-			"positions": {"Date Time", "Opened", "Market", "Direction", "Size", "Avg Price", "Value",
+			"positions-body": {"Date Time", "Opened", "Market", "Direction", "Size", "Avg Price", "Value",
 				"Unrealised P&amp;L", "Strategy", "Source", "Status", "Pos ID", "Signal", "Action"},
-			"closed": {"Date Time Closed", "Date Time Opened", "Duration", "Market", "Direction", "Size",
+			"closed-body": {"Date Time Closed", "Date Time Opened", "Duration", "Market", "Direction", "Size",
 				"Price", "Value", "P&amp;L", "Strategy", "Source", "Status", "Pos ID", "Open Signal", "Close Signal"},
-			"ledger": {"Date Time", "Market", "Action", "Direction", "Size", "Price",
+			"ledger-body": {"Date Time", "Market", "Action", "Direction", "Size", "Price",
 				"Value", "P&amp;L", "Strategy", "Source", "Status", "Pos ID", "Signal"},
-			"rejected-trades": {"Date Time", "Market", "Direction", "Size", "Price", "Value", "Strategy",
+			"rejected-trades-body": {"Date Time", "Market", "Direction", "Size", "Price", "Value", "Strategy",
 				"Source", "Status", "Reason", "Confidence", "Signal"},
 		}
 		for table, headers := range expected {
-			body := strings.Index(index, `id="`+table+`-body"`)
-			start := strings.LastIndex(index[:body], "<table")
-			end := start + strings.Index(index[start:], "</thead>")
-			thead := strings.Join(strings.Fields(index[start:end]), " ")
+			thead := tableHead(t, index, table)
 			cursor := 0
 			for _, header := range headers {
 				i := strings.Index(thead[cursor:], header)
@@ -236,36 +289,51 @@ func TestFrontendLayout(t *testing.T) {
 		}
 	})
 
-	t.Run("GIVEN Local LLM status WHEN markup is inspected THEN items render as rows", func(t *testing.T) {
-		llm := between(t, index, "<!-- Local LLM (50%) -->", "<!-- Risk Rejections")
-		mustContain(t, "llm", llm, `class="llm-status"`, `class="llm-row"`, `class="llm-card"`)
-		mustNotContain(t, "llm", llm, `class="flex items-center gap-3"`)
+	t.Run("GIVEN open positions WHEN rendered THEN rows use the API's position keys and fall back to the opening trade", func(t *testing.T) {
+		rows := between(t, index, `<tbody id="positions-body">`, "</tbody>")
+		mustContain(t, "positions rows", rows, `x-for="p in filteredRows('positions', positions)"`, "fmtDateTime(positionOpenedDate(p))",
+			"positionAge(p)", "_strategyLabel(_positionStrategy(p))", "_positionSource(p)", "positionStatusLabel(p)")
+		mustContain(t, "positions filter", index, `id="positions-filter"`, "toggleFilterMarket('positions', m)")
+		trading := scripts["trading.js"]
+		mustContain(t, "trading.js", trading, "position.opened_at || position.timestamp || position.entry_at",
+			"t.trade_type === 'open'", "t.position_id_full === fullId", "t.position_id === shortId",
+			"fmtDuration(Date.now() - opened)")
+
+		raw, _ := json.Marshal(app.PositionView{Status: "open"})
+		mustContain(t, "position JSON", string(raw), `"opened_at"`, `"strategy"`, `"status":"open"`, `"position_id_full"`)
 	})
 
-	t.Run("GIVEN the refactored layout WHEN hooks are inspected THEN functionality anchors remain", func(t *testing.T) {
-		mustContain(t, "index", index, `id="equity-chart"`, `id="markets-list"`, `id="signals-list"`, `id="positions-list"`,
+	t.Run("GIVEN the redesigned layout WHEN hooks are inspected THEN functionality anchors remain", func(t *testing.T) {
+		mustContain(t, "index", index, `id="equity-chart"`, `id="markets-table"`, `id="signals-list"`, `id="positions-list"`,
 			`id="approvals-queue"`, `id="ledger-body"`, `id="pnl-day-body"`, `id="pnl-market-body"`, `id="closed-body"`,
-			`id="candle-grid"`, `id="news-grid"`, "activateStop()", "resumeBot()", "toggleMarket(", "selectStrategy(",
-			"resetPositions()", "showSignal(")
+			`id="candle-detail"`, `id="news-grid"`, "activateStop()", "resumeBot()", "toggleMarket(", "selectStrategy(",
+			"resetPositions()", "showSignal(", `href="/api/export/trades.csv"`)
 		mustContain(t, "approvals", approvals, `id="count-badge"`, `id="container"`, `data-approval-action="approve"`,
 			`data-approval-action="reject"`, "decide(button.dataset.approvalId, button.dataset.approvalAction)",
 			"setInterval(load, 3000)")
 	})
 
 	t.Run("GIVEN execution rejections WHEN markup is inspected THEN the Rejected Trades register is wired", func(t *testing.T) {
-		mustContain(t, "index", index, "Rejected Trades", "loadRejectedTrades()", "fetch('/api/rejected-trades')",
-			`id="rejected-trades-body"`, `class="responsive-table trade-table"`, "r.confidence", "r.strategy",
+		mustContain(t, "trading.js", scripts["trading.js"], "loadRejectedTrades() {", "'/api/rejected-trades'")
+		rows := between(t, index, `<tbody id="rejected-trades-body">`, "</tbody>")
+		mustContain(t, "rejected rows", rows, "r.confidence", "_strategyLabel(r.strategy)",
 			"r.source || 'system'", "Rejected</span>", "(r.reason || '').replace")
+		mustContain(t, "index", index, "Rejected Trades")
 		mustContain(t, "sw.js", sw, "'/api/rejected-trades'")
 	})
 
-	t.Run("GIVEN strategy context WHEN markup is inspected THEN the header and tables show strategy", func(t *testing.T) {
-		mustContain(t, "index", index, "Active Strategy", "activeStrategyLabel", "_strategyLabel(",
-			`<th style="padding:6px 10px;color:var(--muted);font-weight:600;">Strategy</th>`, "this._strategyLabel(t.strategy)")
+	t.Run("GIVEN strategy context WHEN markup is inspected THEN the key figures and tables show strategy", func(t *testing.T) {
+		mustContain(t, "index", index, "Active Strategy", "activeStrategyLabel", "_strategyLabel(t.strategy)")
+		if n := strings.Count(tableHead(t, index, "ledger-body"), ">Strategy</th>"); n != 1 {
+			t.Errorf("ledger header has %d Strategy columns, want 1", n)
+		}
+		if n := strings.Count(between(t, index, `<tbody id="ledger-body">`, "</tbody>"), "_strategyLabel("); n != 1 {
+			t.Errorf("ledger rows have %d strategy cells, want 1", n)
+		}
 	})
 
 	t.Run("GIVEN a signal is clicked WHEN its detail modal opens THEN the panel is centred like the other dialogs", func(t *testing.T) {
-		modal := between(t, index, "<!-- Signal Detail Modal", `<template x-if="signalModal">`)
+		modal := between(t, index, "<!-- ── Signal Detail Modal", `<template x-if="signalModal">`)
 		mustContain(t, "signal modal", modal, `x-show="signalModal" x-cloak class="modal-backdrop"`, `class="modal-panel signal-panel"`)
 		mustContain(t, "css", css, ".modal-backdrop {\n    position: fixed;\n    inset: 0;\n    z-index: 1000;\n    display: flex;\n    align-items: center;\n    justify-content: center;",
 			".signal-panel {")
@@ -285,7 +353,8 @@ func TestFrontendLayout(t *testing.T) {
 
 	t.Run("GIVEN the header LLM indicator WHEN markup is inspected THEN the dot sits in a flex container", func(t *testing.T) {
 		header := between(t, index, `<header class="app-header`, "</header>")
-		mustContain(t, "header", header, `class="llm-dot"`, "llmStatus", "display:flex", "llmModel || 'Not configured'")
+		mustContain(t, "header", header, `<span class="hdr-llm"`, `class="llm-dot"`, "llmStatus", "llmModel || 'Not configured'")
+		mustContain(t, "css", between(t, css, ".hdr-llm {", "}"), "display: flex;")
 	})
 }
 

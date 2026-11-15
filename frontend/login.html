@@ -3,23 +3,24 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Log in — Kraken Bot</title>
+    <meta name="color-scheme" content="dark">
+    <title>Log in — LLM Trading Bot</title>
+    <!-- styles.css is the only asset served without a session -->
     <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
 
 <!-- Shown when the bot listens on a network address (-host is not loopback). -->
-<main class="app-shell page-stack" style="max-width:420px;padding-top:12vh;">
-    <form id="login-form" class="card" autocomplete="off">
-        <div class="settings-title" style="margin-bottom:8px;">Kraken Trading Bot</div>
-        <p class="setting-help" style="margin-bottom:16px;">
+<main class="login-main">
+    <form id="login-form" class="login-card" autocomplete="off">
+        <h1 class="dialog-title">LLM Trading Bot</h1>
+        <p class="setting-help login-intro">
             Enter the access token printed in the bot's console at start-up.
         </p>
         <label class="setting-label" for="token">Access token</label>
-        <input id="token" name="token" type="password" class="setting-input mono"
-               style="width:100%;margin:6px 0 12px;" required autofocus>
-        <div id="error" class="settings-error" style="display:none;margin-bottom:12px;"></div>
-        <button type="submit" class="btn btn-approve" style="width:100%;">Log in</button>
+        <input id="token" name="token" type="password" class="input mono" required autofocus>
+        <p id="error" class="form-error" role="alert" hidden></p>
+        <button type="submit" class="btn btn-primary">Log in</button>
     </form>
 </main>
 
@@ -30,12 +31,12 @@
     // Show a message under the token field (textContent: never parsed as HTML).
     function showError(message) {
         errorBox.textContent = message;
-        errorBox.style.display = 'block';
+        errorBox.hidden = false;
     }
 
     form.addEventListener('submit', async (event) => {
         event.preventDefault();
-        errorBox.style.display = 'none';
+        errorBox.hidden = true;
         const token = document.getElementById('token').value.trim();
         try {
             const response = await fetch('/api/login', {

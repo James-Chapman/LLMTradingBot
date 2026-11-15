@@ -250,6 +250,8 @@ Code: `internal/backtest/{report,render,metrics,track,costs,reconcile,benchmark,
 
 Reports contain no wall-clock time, no random ids and no map-order dependence: the same inputs give byte-identical files.
 
+**Viewing results in the dashboard.** The running bot serves the result directories under `results/` (relative to its working directory) read-only through `GET /api/backtests` and `GET /api/backtests/{id}` (verdict, honesty block, metrics, downsampled equity curve, paged trades and orders, costs, `summary.md`); see [08-api-endpoints.md](08-api-endpoints.md#backtests). Write runs with `--output results/<name>` to see them there. The dashboard's **Backtests** view (`#/backtests`) lists them and shows each run read-only: the "Read this first" lines before any number, then the verdict as written, the key figures, equity and drawdown, benchmarks, costs, reconciliation, paged trades and orders, and the assumptions and command line; multi-run kinds get their own tables (see [11-frontend.md](11-frontend.md#backtests-view)). The server only reads these files (never `result.json`), never runs a backtest, and refuses any id that would leave the results folder.
+
 **Metric definitions.** Money is the quote currency; *capital* is the starting capital.
 
 | Metric | Definition | Null (`n/a`) when |
