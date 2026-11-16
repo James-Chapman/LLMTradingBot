@@ -305,6 +305,17 @@ The cash balance is restored separately in `App.restoreState()` via `repo.GetLat
 
 ---
 
+## Read methods
+
+| Method | Returns |
+|---|---|
+| `AvailableCash() float64` | Cash free for new orders: cash less the sale proceeds of open paper shorts, which are reserved as margin. The risk engine checks paper buys against this. |
+| `PositionsForMarket(market string) []domain.PositionRecord` | The open positions in one market. |
+| `Fills() []domain.FillRecord` | A copy of every simulated fill with its price and fee (read by tests). |
+| `RealisedPnL(positionID string) (float64, bool)` | A closed position's realised P&L from its actual fill prices and both fees; false while it is open. |
+
+---
+
 ## `TotalEquity()`
 
 ```go

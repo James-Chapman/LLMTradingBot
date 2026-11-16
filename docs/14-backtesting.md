@@ -4,7 +4,7 @@
 
 `backtest run` replays cached Kraken trades (see *Historical data*) through the bot's real code: the strategy registry, `marketdata.Build` (the same function the live loop calls to build `strategy.MarketData`), the risk engine, the learner and the paper engine. Orders go to a simulated exchange that fills them later, at worse prices, with fees and Kraken's order rules. The aim is an honest answer about profitability, so wherever a choice exists the backtest takes the assumption that cannot flatter the result, and no decision can see data from after it. Every assumption and its bias direction is written into the result (`assumptions` in `result.json`).
 
-Code: `internal/backtest` (replay, exchange, result), `internal/marketdata` (shared with live), `cmd/backtest` (command line). Only spot long trading of the non-LLM strategies is modelled; LLM strategies are refused (below). The live default strategy is `basic_and_llm_strategy`, so **a backtest never tests the strategy the bot runs by default** (see *Interpreting results*).
+Code: `internal/backtest` (replay, exchange, result), `internal/marketdata` (shared with live), `cmd/backtest` (command line). Only spot long trading of the non-LLM strategies is modelled; LLM strategies are refused (below). The live default strategy is `basic_and_llm_strategy_1h`, so **a backtest never tests the strategy the bot runs by default** (see *Interpreting results*).
 
 ## How a replay works
 
