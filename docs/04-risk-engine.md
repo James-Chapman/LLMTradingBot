@@ -124,7 +124,7 @@ if opts.AvailableCash != nil && hasPrice && !closesLong {
 }
 ```
 
-`FEE_AND_SLIPPAGE = 0.0036` (0.26% taker fee + 0.1% slippage). This is intentionally conservative. The check only runs when both available cash and a positive market price are supplied.
+`FEE_AND_SLIPPAGE = 0.009` (Kraken Pro Tier 1 taker fee 0.80 % + 0.10 % slippage; 0.0036 before 0.21.0). The check only runs when both available cash and a positive market price are supplied.
 
 In paper trading the app passes the paper engine's **available** cash (`paper.Engine.AvailableCash()`): cash less the sale proceeds of open paper shorts, which are reserved as margin. `App.recordEquitySnapshot()` caches that figure, so the strategy and this check never count a short's proceeds as spendable.
 
@@ -261,7 +261,7 @@ A rejection whose reason mentions the daily loss limit also sends a `daily_loss_
 | Target trade amount | `TARGET_TRADE_AMOUNT` | EUR 100 | Preferred fixed notional order value |
 | Min trade size | `MIN_TRADE_SIZE` | EUR 50 | Absolute minimum final order value |
 | Stop-loss | `STOP_LOSS_PCT` | 5% | Fraction loss triggering auto-close; also the per-trade loss estimate |
-| Fee + slippage | `FEE_AND_SLIPPAGE` | 0.36% | Cost estimate for cash sufficiency check |
+| Fee + slippage | `FEE_AND_SLIPPAGE` | 0.9% | Cost estimate per side for the cash sufficiency check |
 | Per-trade loss | `MAX_LOSS_PER_TRADE_PERCENT` | 5% | Max estimated loss per trade vs equity |
 | Daily loss | `MAX_DAILY_LOSS_PERCENT` | 5% | Max cumulative (realised + estimated) loss per UTC day |
 | Liquidity | `MIN_24H_VOLUME` | 0 (off) | Minimum 24-hour volume for the market |

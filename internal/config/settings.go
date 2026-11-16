@@ -38,6 +38,17 @@ type Settings struct {
 	MinSignalConfidence     float64
 	LLMVetoThreshold        float64
 	LLMShadowReview         bool // ask the LLM about non-LLM 4-hour entries and only record its verdict
+
+	// Basic strategy rules (the eight basic_* strategies)
+	BasicExitVotes          int     // net indicator votes against a position that turn the consensus
+	BasicExitConfirmCandles int     // closed candles in a row the turn must hold before a rule exit
+	BasicTrendEMA           int     // higher-timeframe EMA period entries must agree with; 0 = off
+	BasicTrailATR           float64 // trailing stop distance in candle ATRs from the best price since entry; 0 = off
+	BasicCooldownCandles    int     // closed candles after a position closes before re-entering; 0 = off
+	BasicEntryVotes         int     // net indicator votes an entry signal needs (1 = any consensus)
+	BasicFreshSignal        bool    // enter only on the first candle of a signal, not while it persists
+	BasicMinATRCost         float64 // entries need candle ATR% of at least this many FEE_AND_SLIPPAGE; 0 = off
+	BasicTakeProfitATR      float64 // close a position this many candle ATRs in profit from entry; 0 = off
 	Min24hVolume            float64
 	AlertWebhookURL         string
 
@@ -118,10 +129,19 @@ func Defaults() Settings {
 		TrailingStopPct:         0.03,
 		MomentumLookbackTicks:   10,
 		StrategyIntervalSeconds: 60,
-		FeeAndSlippage:          0.0036,
+		FeeAndSlippage:          0.009,
 		MinSignalConfidence:     0.65,
 		LLMVetoThreshold:        0.70,
 		LLMShadowReview:         true,
+		BasicExitVotes:          3,
+		BasicExitConfirmCandles: 3,
+		BasicTrendEMA:           50,
+		BasicTrailATR:           5.0,
+		BasicCooldownCandles:    6,
+		BasicEntryVotes:         1,
+		BasicFreshSignal:        false,
+		BasicMinATRCost:         1,
+		BasicTakeProfitATR:      0,
 		Min24hVolume:            0.0,
 		TradingMode:             "manual",
 		TradingEnvironment:      "paper",

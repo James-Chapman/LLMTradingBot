@@ -7,6 +7,39 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.21.0] — 2026-11-16
+
+Costs at Kraken Pro's current Tier 1 rates (0.40 % maker / 0.80 % taker, read from https://www.kraken.com/pro/fees on 2026-11-16).
+
+### Changed
+- **`FEE_AND_SLIPPAGE` default 0.0036 → 0.009** (the 0.80 % taker fee plus 0.10 % slippage, per trade side). The risk engine sizes buys with it, and since 0.20.0 the basic strategies' volatility filter (`BASIC_MIN_ATR_COST`) compares candle ATR against it, so live now filters close to what the tuning runs measured. A value saved in the dashboard still wins; lower it if your fee tier is lower.
+- **Paper fee 0.26 % → 0.80 %** (`paper.TakerFeeRate`), so paper P&L shows what a live market order would cost at the lowest tier. The backtest's `paper-default` preset follows it and is now the same as `kraken-base`.
+- The `FEE_AND_SLIPPAGE` help text says it is a per-side cost (it was described as round-trip, but the risk engine has always used it per side).
+
+---
+
+## [0.20.0] — 2026-11-16
+
+Exit and entry rules for the eight basic strategies, chosen on Jan–Aug 2026 and checked on Sep–Nov. Guide: `docs/06-strategy-and-learning.md` (*Basic Strategies*, results under *LLM Versions*).
+
+### Added
+- **Nine live settings** in the Signals group, shared by the eight basic strategies (0 or false switches a rule off): `BASIC_EXIT_VOTES` (3), `BASIC_EXIT_CONFIRM_CANDLES` (3), `BASIC_TREND_EMA` (50), `BASIC_TRAIL_ATR` (5), `BASIC_COOLDOWN_CANDLES` (6), `BASIC_ENTRY_VOTES` (1), `BASIC_FRESH_SIGNAL` (false), `BASIC_MIN_ATR_COST` (1), `BASIC_TAKE_PROFIT_ATR` (0).
+- **Exit hysteresis.** The rule exit needs a net indicator vote of `BASIC_EXIT_VOTES` against the position (or the momentum gate), held on `BASIC_EXIT_CONFIRM_CANDLES` closed candles in a row; a full opposite signal still closes at once. Before, any negative net vote sold.
+- **Trend filter.** No long below, no short above the `BASIC_TREND_EMA` EMA of the higher timeframe (4-hour candles for 1h, days for 4h).
+- **ATR trailing stop and profit target**, checked on the live price every tick, in candle ATRs from the best price since entry and from the entry price.
+- **Re-entry cooldown** after any close of a position in a market, and **stricter entries** (minimum net votes, optionally only on a signal's first candle) and a **cost-aware volatility filter** (candle ATR% of at least `BASIC_MIN_ATR_COST` × `FEE_AND_SLIPPAGE`).
+
+### Results (10 pairs, 2026-01-01 to 2026-11-14, Sep–Nov held out)
+- `basic_strategy_1h`: −47.8 % → −3.8 % (22 round trips instead of 172); held-out Sep–Nov −4.9 % → +2.9 % on 9 trades.
+- `basic_strategy_4h`: −4.0 % → −0.5 %; held-out Sep–Nov −4.2 % → −5.1 % on 9 trades.
+- The rules cut losses mainly by trading less; neither timeframe shows an edge over buy and hold on this sample. Limit (maker) entries were estimated not to rescue 1h and were not built.
+
+### Notes
+- `BASIC_MIN_ATR_COST` compares with `FEE_AND_SLIPPAGE`, whose live default (0.36 %) is below Kraken Pro's Tier 1 taker fee (0.80 %; maker 0.40 %, read 2026-11-16); the backtest uses the run's taker fee plus half-spread (1.3 %). Set `FEE_AND_SLIPPAGE` to the account's real cost for live to filter as the backtest did.
+- The rules' state (turn counts, cooldowns) restarts when settings are saved or the bot restarts.
+
+---
+
 ## [0.19.0] — 2026-11-15
 
 Candles by the clock: the 1-hour and 4-hour candles are fetched just after each boundary instead of every cycle, and the candle strategies no longer wait for a price-tick warm-up. Guide: `docs/03-background-loops.md` (*OHLC Loop*, *Warm-Up Period*).

@@ -76,7 +76,7 @@ func closesOf(c []domain.Candle) []float64 {
 // the basic indicator rules read on finished 1-hour or 4-hour candles.
 func TestBasicCandleStrategies(t *testing.T) {
 	ctx := context.Background()
-	s := testSettings()
+	s := rulesOff() // one-candle exits, no trend filter, trailing stop or cooldown: basic_rules_test.go covers those
 	enoughHours := hourCandles(BasicMinClosedCandles+30, flat)
 	enoughFours := trendCandles(BasicMinClosedCandles+30, flat)
 
@@ -278,7 +278,7 @@ func TestBasicCandleStrategies(t *testing.T) {
 // the candle rules, then the LLM validates each new entry once per candle.
 func TestBasicAndLLMCandleStrategies(t *testing.T) {
 	ctx := context.Background()
-	s := testSettings()
+	s := rulesOff() // one-candle exits, no trend filter, trailing stop or cooldown: basic_rules_test.go covers those
 	hours := hourCandles(BasicMinClosedCandles+30, flat)
 	fours := trendCandles(BasicMinClosedCandles+30, flat)
 
@@ -374,7 +374,7 @@ func TestBasicAndLLMCandleStrategies(t *testing.T) {
 // strategies: the same rules, but a bearish signal never opens a short.
 func TestBasicLongOnlyStrategies(t *testing.T) {
 	ctx := context.Background()
-	s := testSettings()
+	s := rulesOff() // one-candle exits, no trend filter, trailing stop or cooldown: basic_rules_test.go covers those
 	hours := hourCandles(BasicMinClosedCandles+30, flat)
 	fours := trendCandles(BasicMinClosedCandles+30, flat)
 

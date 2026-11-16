@@ -40,7 +40,7 @@ The live bot only sends **market orders**: `buildAddOrder` (`internal/kraken/exe
 
 | Item | Default | Bias |
 |---|---|---|
-| Fee | `--fees kraken-base` = 80 bp taker on every fill, Kraken Pro's lowest-volume tier (https://www.kraken.com/pro/fees, read 2026-11-14). `paper-default` = 26 bp (the paper engine's constant); or a number of bp. Charged on the fill value in the quote currency. | neutral for a small account; check your tier |
+| Fee | `--fees kraken-base` = 80 bp taker on every fill, Kraken Pro's lowest-volume tier (https://www.kraken.com/pro/fees, read 2026-11-14). `paper-default` = the paper engine's constant, 80 bp since 0.21.0 (26 bp before); or a number of bp. Charged on the fill value in the quote currency. | neutral for a small account; check your tier |
 | Latency | A decision at tick `k` fills at tick `k + 1` on that tick's bar (`--latency`, rounded up to whole 30 s ticks, at least one). Drift over the latency is reported per order. | pessimistic |
 | Fill price, `--fill-model spread` | `hs` is the rolling median half-spread measured on the last 240 two-sided bars, floored at 5 bp (`--min-half-spread-bps`); 50 bp before any measurement. On the fill bar: **both sides traded** — a buy pays the higher of the taker-buy and taker-sell averages, a sell gets the lower (so inverted averages never pay the bot), mid = their mean; **only the order's side traded** — that side's average, mid = average ∓ `hs`; **only the other side traded** — the full spread is crossed: a buy pays the sell average × (1 + 2`hs`), a sell gets the buy average × (1 − 2`hs`) (`price_source` `other_side_plus_full_spread`), mid = average ± `hs`; **sides unknown** — close ± `hs`, mid = close. No extra slippage constant. | pessimistic |
 | Fill price, `--fill-model fixed` | The fill bar's close ± `--half-spread-bps` (default 10). | unknown (a sensitivity tool) |
@@ -52,7 +52,7 @@ The live bot only sends **market orders**: `buildAddOrder` (`internal/kraken/exe
 
 Each filled order in `orders` breaks its cost into latency drift, spread, impact and rounding against the reference price (the last price at the decision), with the participation, fee and fee rate. Latency drift is mid − reference and spread is price − mid, both against the bot, using the fill bar's estimated mid (`fill_bar_mid`). Rejected and cancelled orders are kept with their reason.
 
-**Risk sizing fee.** The risk engine caps a buy at cash / (1 + `FEE_AND_SLIPPAGE`). The live default (0.36 %) is below the run's 80 bp fee, so near all-in buys would pass risk and then be rejected for funds. Unless the settings file sets `FEE_AND_SLIPPAGE`, the run sets it to the taker fee plus the expected half-spread (the fixed model's, or max(50 bp, floor) for the spread model). An explicit value is kept, and a warning is recorded when it is below the fee. `risk_fee` in the result records which happened.
+**Risk sizing fee.** The risk engine caps a buy at cash / (1 + `FEE_AND_SLIPPAGE`). The live default (0.9 %; 0.36 % before 0.21.0) is below the run's 80 bp fee plus half-spread, so near all-in buys would pass risk and then be rejected for funds. Unless the settings file sets `FEE_AND_SLIPPAGE`, the run sets it to the taker fee plus the expected half-spread (the fixed model's, or max(50 bp, floor) for the spread model). An explicit value is kept, and a warning is recorded when it is below the fee. `risk_fee` in the result records which happened.
 
 ## Safety
 

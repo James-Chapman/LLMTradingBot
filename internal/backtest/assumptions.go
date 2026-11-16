@@ -75,7 +75,7 @@ func assumptions(cfg Config, x ExchangeConfig, learnerOn bool, res *Result) []As
 		candleValue = "flat zero-volume candles for intervals without trades (--fill-empty-candles)"
 	}
 	riskFee := Assumption{Name: "risk_fee", Value: fmt.Sprintf("FEE_AND_SLIPPAGE %s", fmtNum(res.RiskFee.FeeAndSlippage)), Bias: BiasNeutral,
-		Note: fmt.Sprintf("Not set by the settings, so set for this run to the taker fee (%s) plus the fill model's expected half-spread (%s), so the risk engine leaves room for the costs the simulated exchange charges. Live uses its own setting (default 0.0036).",
+		Note: fmt.Sprintf("Not set by the settings, so set for this run to the taker fee (%s) plus the fill model's expected half-spread (%s), so the risk engine leaves room for the costs the simulated exchange charges. Live uses its own setting (default 0.009).",
 			fmtNum(res.RiskFee.ExchangeFeeRate), fmtNum(res.RiskFee.ExpectedHalfSpread))}
 	if res.RiskFee.Explicit {
 		riskFee.Bias = BiasUnknown

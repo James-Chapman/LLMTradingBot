@@ -41,7 +41,7 @@ In live mode, dashboard account totals use `kraken.ExecutionEngine.GetAccountSna
 
 ```go
 const (
-	TakerFeeRate       = 0.0026 // 0.26% Kraken taker fee (low-volume account)
+	TakerFeeRate       = 0.008  // 0.80% Kraken Pro Tier 1 taker fee (0.26% before 0.21.0)
 	SlippageRate       = 0.001  // 0.10% one-way conservative slippage estimate
 	SimulatedLatencyMS = 150    // nominal only; never slept
 )

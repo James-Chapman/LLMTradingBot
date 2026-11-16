@@ -17,14 +17,14 @@ func asView(core *basicCore) {
 
 // rawBasic returns basic_strategy_1h reading market data as given.
 func rawBasic() *BasicStrategy {
-	b := NewBasic1h(testSettings())
+	b := NewBasic1h(rulesOff())
 	asView(&b.basicCore)
 	return b
 }
 
 // rawBasicAndLLM returns basic_and_llm_strategy_1h reading market data as given.
 func rawBasicAndLLM() *BasicAndLLMStrategy {
-	b := NewBasicAndLLM1h(testSettings())
+	b := NewBasicAndLLM1h(rulesOff())
 	asView(&b.basicCore)
 	return b
 }

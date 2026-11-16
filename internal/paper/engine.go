@@ -18,8 +18,10 @@ import (
 var logger = observability.Logger("paper_engine")
 
 const (
-	// TakerFeeRate is Kraken's taker fee for low-volume accounts (0.26%).
-	TakerFeeRate = 0.0026
+	// TakerFeeRate is Kraken Pro's Tier 1 spot taker fee (0.80%, read from
+	// https://www.kraken.com/pro/fees on 2026-11-16): what a market order costs
+	// a low-volume account. Before 0.21.0 it was an older 0.26% rate.
+	TakerFeeRate = 0.008
 	// SlippageRate is a conservative one-way slippage estimate (0.1%).
 	SlippageRate = 0.001
 	// SimulatedLatencyMS is the nominal simulated fill latency.

@@ -56,7 +56,7 @@ func expectedHalfSpread(x ExchangeConfig) float64 {
 
 // alignRiskFee makes the risk engine size with the simulated exchange's
 // costs. The risk engine caps a buy to cash / (1 + FEE_AND_SLIPPAGE); with the
-// live default (0.36 %) below the run's taker fee, near all-in buys would pass
+// live default (0.9 %) below the run's taker fee plus half-spread, near all-in buys would pass
 // risk and then be rejected for funds. Unless the settings set it explicitly,
 // FEE_AND_SLIPPAGE becomes the taker fee plus the expected half-spread for the
 // run; an explicit value is kept and a warning recorded when it is below the fee.

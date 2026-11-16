@@ -94,7 +94,7 @@ Grouped as in the Settings dialog. "Now" = applies immediately; "Restart" = used
 | `MAX_DAILY_LOSS_PERCENT` | `5` | Now | New trades stop for the UTC day once this percentage of equity is lost (above 0, up to 100) |
 | `STOP_LOSS_PCT` | `0.05` | Now | Fraction loss at which a position is closed (above 0, at most 0.5) |
 | `TRAILING_STOP_PCT` | `0.03` | Now | Fraction retracement from a position's peak that closes it (above 0, at most 0.5) |
-| `FEE_AND_SLIPPAGE` | `0.0036` | Now | Round-trip cost estimate: Kraken taker fee (0.26%) + slippage (0.1%) |
+| `FEE_AND_SLIPPAGE` | `0.009` | Now | Cost per trade side: Kraken Pro's Tier 1 taker fee (0.80 %, read 2026-11-16) + slippage (0.10 %). The risk engine sizes buys with it and `BASIC_MIN_ATR_COST` compares candle ATR against it. Before 0.21.0 the default was 0.0036 (an older 0.26 % fee). Set it to your account's real cost if your tier is lower |
 | `MIN_24H_VOLUME` | `0` | Now | Minimum 24-hour market volume required by the risk engine. `0` disables the gate |
 
 The stop distances must be above 0 because the risk engine estimates a trade's possible loss from `STOP_LOSS_PCT`: at `0` the estimate is 0 and the per-trade loss check never refuses anything. A stop of more than 50% is no stop. The two loss limits must be above 0 too: `0` is not an "off switch" (it would block every trade without saying why). To stop trading, use the emergency stop or manual mode.
@@ -107,6 +107,15 @@ The stop distances must be above 0 because the risk engine estimates a trade's p
 | `MIN_SIGNAL_CONFIDENCE` | `0.65` | Now | Minimum confidence to trade in fully automated mode (a rule exit of a held long by a 4-hour or basic strategy is exempt). No effect in manual or semi-automated mode |
 | `LLM_VETO_THRESHOLD` | `0.70` | Now | The combined strategy vetoes signals the LLM rates below this. `0` disables the veto |
 | `LLM_SHADOW_REVIEW` | `true` | Now | While a 4-hour strategy without LLM is selected, ask the LLM about each new entry as its LLM version would, and only record the answer (Intelligence → *LLM Shadow Reviews*). Never changes a trade; one LLM call per market per closed 4-hour candle with an entry |
+| `BASIC_EXIT_VOTES` | `3` | Now | Basic strategies: net indicator votes against a held position that count as a turn (1–10; a momentum move past its gate also counts) |
+| `BASIC_EXIT_CONFIRM_CANDLES` | `3` | Now | Basic strategies: closed candles in a row the turn must hold before the rule exit (1–10) |
+| `BASIC_TREND_EMA` | `50` | Now | Basic strategies: longs only above, shorts only below this EMA of the higher timeframe (0 = off, at most 200) |
+| `BASIC_TRAIL_ATR` | `5` | Now | Basic strategies: close once the price gives back this many candle ATRs from its best since entry (0 = off, at most 20) |
+| `BASIC_COOLDOWN_CANDLES` | `6` | Now | Basic strategies: closed candles to wait after a position in a market closes before entering it again (0 = off, at most 100) |
+| `BASIC_ENTRY_VOTES` | `1` | Now | Basic strategies: net indicator votes an entry signal needs (1–11) |
+| `BASIC_FRESH_SIGNAL` | `false` | Now | Basic strategies: enter only on the first closed candle of a signal |
+| `BASIC_MIN_ATR_COST` | `1` | Now | Basic strategies: skip entries whose candle ATR% is below this many times `FEE_AND_SLIPPAGE` (0 = off, at most 20). Set `FEE_AND_SLIPPAGE` to the account's real per-trade cost for this to mean what the backtest measured |
+| `BASIC_TAKE_PROFIT_ATR` | `0` | Now | Basic strategies: close once the price is this many candle ATRs in profit from the entry (0 = off, at most 50) |
 | `MOMENTUM_LOOKBACK_TICKS` | `10` | Now | Strategy ticks of price history used for the momentum baseline (1–199: the bot keeps 200 ticks per market and momentum over N ticks needs N+1) |
 | `LLM_ONLY_MAX_CONCURRENCY` | `3` | Now | Markets the LLM-only strategy analyses at once per tick (1–16) |
 

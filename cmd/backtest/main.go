@@ -98,7 +98,7 @@ func addRunFlags(fs *flag.FlagSet) *runFlags {
 	fs.StringVar(end, "end", "", "last day, YYYY-MM-DD (UTC, inclusive)")
 	fs.Float64Var(&a.cfg.StartingCapital, "capital", 0, "starting cash in the quote currency (0 = STARTING_CAPITAL from the settings)")
 	fs.StringVar(&a.cfg.StrategyID, "strategy", strategy.Basic1hID, "strategy id (LLM strategies cannot be backtested)")
-	fs.StringVar(fees, "fees", backtest.FeeKrakenBase, "taker fee: kraken-base (0.80 %), paper-default (0.26 %) or basis points")
+	fs.StringVar(fees, "fees", backtest.FeeKrakenBase, "taker fee: kraken-base (0.80 %), paper-default (the paper engine's fee, 0.80 %) or basis points")
 	fs.StringVar(&ex.FillModel, "fill-model", ex.FillModel, "spread (taker-side averages) or fixed (close ± --half-spread-bps)")
 	fs.DurationVar(latency, "latency", 30*time.Second, "decision-to-fill latency, rounded up to whole 30 s ticks (at least one)")
 	fs.Float64Var(&ex.FixedHalfSpreadBps, "half-spread-bps", ex.FixedHalfSpreadBps, "fixed model half-spread, bp")

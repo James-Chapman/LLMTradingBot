@@ -29,7 +29,8 @@ const (
 	// volume): 0.80 % on every market order. Check it against the owner's
 	// actual tier and the pair's discount eligibility.
 	FeeKrakenBase = "kraken-base"
-	// FeePaperDefault is the 0.26 % the bot's paper engine charges today.
+	// FeePaperDefault is the fee the bot's paper engine charges (paper.TakerFeeRate;
+	// 0.80 % since 0.21.0, the same as kraken-base).
 	FeePaperDefault = "paper-default"
 	// FeeCustom marks an explicit basis-point rate.
 	FeeCustom = "custom"
@@ -93,7 +94,7 @@ func (x *ExchangeConfig) SetFees(spec string) error {
 		x.FeeSource = KrakenFeesURL + " (Tier 1 taker, read 2026-11-14)"
 	case FeePaperDefault:
 		x.FeePreset, x.FeeBps = FeePaperDefault, paper.TakerFeeRate*1e4
-		x.FeeSource = "internal/paper TakerFeeRate: what paper trading assumes today, below Kraken's current Tier 1 taker rate"
+		x.FeeSource = "internal/paper TakerFeeRate: what paper trading charges"
 	default:
 		bps, err := strconv.ParseFloat(strings.TrimSpace(spec), 64)
 		if err != nil || math.IsNaN(bps) || bps < 0 || bps >= 1e4 {
