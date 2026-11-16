@@ -191,7 +191,7 @@ func TestBacktestMakesNoNetworkCall(t *testing.T) {
 		if res.EvaluatedTicks == 0 {
 			t.Fatal("the strategy never ran")
 		}
-		for _, id := range []string{strategy.BasicAndLLMID, strategy.LLMOnlyID} {
+		for _, id := range []string{strategy.BasicAndLLM1hID, strategy.LLMOnlyID} {
 			cfg := testConfig([]string{"BTC/EUR"}, 79)
 			cfg.StrategyID = id
 			if _, err := Run(context.Background(), oneMarket(flatSeries(80, 100)), cfg); !errors.Is(err, ErrLLMStrategy) {

@@ -434,12 +434,13 @@ func (r *runner) step(ctx context.Context, k int, tick time.Time) error {
 	positions := r.paper.OpenPositions()
 	obs := TickObservation{Time: tick, Prices: prices, Equity: equity, Cash: cash, Positions: positions, LearnedOutcomes: r.learned}
 
-	// Indicator strategies wait until the longest history fills the lookback.
+	// As live, the strategy waits only for the price ticks it needs (the
+	// longest history counts); the candle strategies need none.
 	collected := 0
 	for _, m := range ordered {
 		collected = max(collected, r.feeds[m].hist.len())
 	}
-	if len(ordered) == 0 || min(collected, strategy.LookbackTicks+1) <= strategy.LookbackTicks {
+	if len(ordered) == 0 || collected < r.st.RequiredPriceTicks() {
 		r.notify(obs)
 		return nil
 	}
@@ -453,6 +454,7 @@ func (r *runner) step(ctx context.Context, k int, tick time.Time) error {
 			History: f.hist.window(),
 			OHLC5:   candles(f.c5, tick, 5*time.Minute, marketdata.CandleLimit, r.cfg.FillEmptyCandles),
 			OHLC15:  candles(f.c15, tick, 15*time.Minute, marketdata.CandleLimit, r.cfg.FillEmptyCandles),
+			OHLC60:  candles(f.c60, tick, hourInterval, marketdata.HourCandleLimit, r.cfg.FillEmptyCandles),
 			OHLC240: candles(f.c240, tick, trendInterval, marketdata.TrendCandleLimit, r.cfg.FillEmptyCandles),
 		}, r.settings.MomentumLookbackTicks)
 	}

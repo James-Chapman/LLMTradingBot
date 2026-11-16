@@ -147,7 +147,7 @@ func TestDisclosures(t *testing.T) {
 		res := mustRun(t, reader, testConfig([]string{"BTC/EUR"}, 79))
 		rep, _ := BuildReport(reader, res)
 		lines := rep.Honesty.Lines
-		if len(lines) == 0 || !strings.Contains(lines[0], strategy.BasicAndLLMID) || !strings.Contains(lines[0], "indicator core") {
+		if len(lines) == 0 || !strings.Contains(lines[0], strategy.BasicAndLLM1hID) || !strings.Contains(lines[0], "indicator core") {
 			t.Fatalf("first honesty line %q, want the live-default strategy disclosure", lines)
 		}
 		for _, want := range []string{"manual", "built-in defaults", "empty", "restores saved ticks"} {

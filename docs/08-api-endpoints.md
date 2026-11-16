@@ -197,8 +197,8 @@ The response carries an `ETag` header holding the dashboard version counter, whi
         "trading_environment": "paper"
     },
     "strategies": [
-        {"id": "basic_strategy",         "label": "Basic Strategy (Just market indicators, no LLM)", "enabled": false, "selected": false},
-        {"id": "basic_and_llm_strategy", "label": "Basic + LLM Combined (...)",                      "enabled": false, "selected": false},
+        {"id": "basic_strategy_1h",         "label": "Basic 1h (market indicators on 1-hour candles, no LLM)", "enabled": false, "selected": false},
+        {"id": "basic_and_llm_strategy_1h", "label": "Basic + LLM 1h (...)",                                   "enabled": false, "selected": true},
         {"id": "llm_only_strategy",      "label": "All LLM (...)",                                   "enabled": true,  "selected": true},
         {"id": "trend_strategy",         "label": "Trend Strategy (4-hour EMA trend following, no LLM)", "enabled": false, "selected": false},
         {"id": "trend_and_llm_strategy", "label": "Trend + LLM (4-hour EMA trend; the LLM reviews each entry)", "enabled": false, "selected": false},
@@ -456,7 +456,7 @@ Toggles whether orders for a market route to Kraken live execution instead of th
 
 ### `POST /api/control/strategies/{strategy_id}/select`
 
-Selects the single strategy used for future signal evaluation. Current strategy IDs are `"basic_strategy"`, `"basic_and_llm_strategy"`, `"llm_only_strategy"`, `"trend_strategy"`, `"trend_and_llm_strategy"`, `"donchian_strategy"`, `"donchian_and_llm_strategy"`, `"rsi_dip_strategy"`, `"rsi_dip_and_llm_strategy"`, `"macd_strategy"`, `"macd_and_llm_strategy"`, `"squeeze_strategy"`, `"squeeze_and_llm_strategy"`, `"rotation_strategy"` and `"rotation_and_llm_strategy"`; legacy IDs are mapped to their canonical form. Returns `404` (`"Strategy not found"`) for an unknown ID.
+Selects the single strategy used for future signal evaluation. Current strategy IDs are `"basic_strategy_1h"`, `"basic_strategy_long_1h"`, `"basic_strategy_4h"`, `"basic_strategy_long_4h"`, `"basic_and_llm_strategy_1h"`, `"basic_and_llm_strategy_long_1h"`, `"basic_and_llm_strategy_4h"`, `"basic_and_llm_strategy_long_4h"`, `"llm_only_strategy"`, `"trend_strategy"`, `"trend_and_llm_strategy"`, `"donchian_strategy"`, `"donchian_and_llm_strategy"`, `"rsi_dip_strategy"`, `"rsi_dip_and_llm_strategy"`, `"macd_strategy"`, `"macd_and_llm_strategy"`, `"squeeze_strategy"`, `"squeeze_and_llm_strategy"`, `"rotation_strategy"` and `"rotation_and_llm_strategy"`; legacy IDs are mapped to their canonical form. Returns `404` (`"Strategy not found"`) for an unknown ID.
 
 **Response:**
 
@@ -481,7 +481,7 @@ Rebuilds the strategy instances from the current settings.
 **Response:**
 
 ```json
-{"status": "reloaded", "strategies": ["basic_strategy", "basic_and_llm_strategy", "llm_only_strategy", "trend_strategy", "trend_and_llm_strategy", "donchian_strategy", "donchian_and_llm_strategy", "rsi_dip_strategy", "rsi_dip_and_llm_strategy", "macd_strategy", "macd_and_llm_strategy", "squeeze_strategy", "squeeze_and_llm_strategy", "rotation_strategy", "rotation_and_llm_strategy"]}
+{"status": "reloaded", "strategies": ["basic_strategy_1h", "basic_strategy_long_1h", "basic_strategy_4h", "basic_strategy_long_4h", "basic_and_llm_strategy_1h", "basic_and_llm_strategy_long_1h", "basic_and_llm_strategy_4h", "basic_and_llm_strategy_long_4h", "llm_only_strategy", "trend_strategy", "trend_and_llm_strategy", "donchian_strategy", "donchian_and_llm_strategy", "rsi_dip_strategy", "rsi_dip_and_llm_strategy", "macd_strategy", "macd_and_llm_strategy", "squeeze_strategy", "squeeze_and_llm_strategy", "rotation_strategy", "rotation_and_llm_strategy"]}
 ```
 
 ---
@@ -654,7 +654,7 @@ The LLM shadow reviews (`docs/06-strategy-and-learning.md`, *LLM Shadow Reviews*
 
 ### `GET /api/ohlc/{market}`
 
-Returns cached OHLC candlestick data for the requested market and interval. The backend refreshes both caches via `ohlcLoop` every 120 seconds, one Kraken call per (market, interval) pair, with gaps between calls to stay under Kraken's rate limit. Returns an empty candle list if the cache has not yet been populated.
+Returns cached OHLC candlestick data for the requested market and interval. The backend refreshes both caches via `ohlcLoop` every 120 seconds (and just after each hour boundary), one Kraken call per (market, interval) pair, with gaps between calls to stay under Kraken's rate limit. Returns an empty candle list if the cache has not yet been populated.
 
 **Path parameter:** `market` — e.g. `BTC/EUR` (URL-encoded as `BTC%2FEUR`). Captured with `{market...}` so the slash is preserved.
 

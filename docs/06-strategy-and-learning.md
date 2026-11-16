@@ -7,7 +7,7 @@ Strategy calculations are split by responsibility:
 - `internal/analysis` owns raw technical indicator formulas such as RSI, EMA, Bollinger Bands, MACD, ATR, Stochastic, Williams %R, and time-window price changes. `analysis.ComputeAll(prices, tickSeconds, candles)` returns an `analysis.Indicators` map (`map[string]any`) with nested groups such as `bb`, `macd`, `stoch` and `price_changes`. When 5-minute OHLC candles are cached, ATR and Stochastic use real high/low data instead of the close-price approximation.
 - `internal/strategy/calc` owns strategy decision formulas: price momentum (`CalculateMomentum`), ATR-adjusted momentum thresholding (`EvaluateMomentumGate`), higher-timeframe alignment (`CheckHigherTimeframeAlignment`), RSI/Bollinger hard filters (`CheckHardFilters`), indicator voting (`VoteIndicators`), confidence components (`CalculateConfidence`), and volatility-adjusted position sizing (`CalculatePositionSizing`). All thresholds are named constants in `calc/constants.go`.
 
-`BasicStrategy` and `BasicAndLLMStrategy` share one gate pipeline (`evaluateIndicatorGates` in `internal/strategy/indicator_signal.go`); `LLMOnlyStrategy` and the LLM recommendation prompt path use the same `calc` helpers instead of duplicating formulas locally.
+The eight basic strategies (`BasicStrategy`, `BasicAndLLMStrategy`) share one gate pipeline (`evaluateIndicatorGates` in `internal/strategy/indicator_signal.go`); `LLMOnlyStrategy` and the LLM recommendation prompt path use the same `calc` helpers instead of duplicating formulas locally.
 
 Every strategy implements the `strategy.Strategy` interface:
 
@@ -20,29 +20,46 @@ type Strategy interface {
 }
 ```
 
-`strategy.All(settings)` returns one instance of each, and `strategy.ByID()` looks one up (legacy IDs `basic_trend` and `llm_only` are mapped to their canonical IDs by `control.CanonicalStrategyID`). Markets are evaluated in sorted order so results are deterministic.
+`strategy.All(settings)` returns one instance of each (21 strategies), and `strategy.ByID()` looks one up (legacy IDs `basic_strategy`, `basic_and_llm_strategy`, `basic_trend` and `llm_only` are mapped to their canonical IDs by `control.CanonicalStrategyID`). Markets are evaluated in sorted order so results are deterministic.
 
-## Indicator-Only Strategy (`internal/strategy/basic.go`)
+## Basic Strategies (`internal/strategy/basic.go`, `basic_and_llm.go`)
 
-**Type:** `BasicStrategy`  
-**Strategy ID:** `"basic_strategy"` (`strategy.BasicID`)
+Since 0.18.0 the basic indicator rules read **finished 1-hour or 4-hour candles** instead of 30-second price ticks. There are eight versions:
 
-An indicator-consensus signal generator. It compares averaged recent price windows from the rolling price history for the momentum signal, then confirms or rejects that signal using the higher-timeframe trend, hard filters, and up to 9 technical indicator votes. No LLM pass runs. The strategy loop then applies the learner adjustment.
+| Strategy ID | Constant | Candles | LLM | Shorts |
+|---|---|---|---|---|
+| `basic_strategy_1h` | `strategy.Basic1hID` | 1 h | — | paper shorts |
+| `basic_strategy_long_1h` | `strategy.BasicLong1hID` | 1 h | — | long only |
+| `basic_strategy_4h` | `strategy.Basic4hID` | 4 h | — | paper shorts |
+| `basic_strategy_long_4h` | `strategy.BasicLong4hID` | 4 h | — | long only |
+| `basic_and_llm_strategy_1h` | `strategy.BasicAndLLM1hID` (also `strategy.DefaultID`) | 1 h | reviews each entry | paper shorts |
+| `basic_and_llm_strategy_long_1h` | `strategy.BasicAndLLMLong1hID` | 1 h | reviews each entry | long only |
+| `basic_and_llm_strategy_4h` | `strategy.BasicAndLLM4hID` | 4 h | reviews each entry | paper shorts |
+| `basic_and_llm_strategy_long_4h` | `strategy.BasicAndLLMLong4hID` | 4 h | reviews each entry | long only |
 
-## Combined Indicator + LLM Strategy (`internal/strategy/basic_and_llm.go`)
+The two types are `BasicStrategy` (no LLM) and `BasicAndLLMStrategy`; both embed `basicCore`, which does the candle work:
 
-**Type:** `BasicAndLLMStrategy`  
-**Strategy ID:** `"basic_and_llm_strategy"` (`strategy.BasicAndLLMID`, also `strategy.DefaultID`)
+1. **Candle view.** The newest 200 finished candles (the forming last row is dropped) become a `MarketData` view: `Price` is the last close, `PreviousPrice` the close before it, `PriceHistory` the closes, and `Indicators = analysis.ComputeAll(closes, candleSeconds, candles)`. The 5m/15m price changes are meaningless on hour bars, so `price_changes` is replaced by `analysis.CandleChanges`: the change over **10 and 30 candles**. On 30-second ticks the momentum compares two 5-tick windows (10 ticks, 5 minutes) and the price-change votes span 5 and 15 minutes, i.e. 1× and 3× the momentum span; on candles the momentum spans 10 candles, hence 10 and 30. The higher timeframe is the finished 4-hour candles for the 1h versions and **whole UTC days** (six finished 4-hour candles merged) for the 4h versions. Fewer than `BasicMinClosedCandles` (40) finished candles: no reading (warm-up).
+2. **Reading.** The view goes through the same gate pipeline as before (`evaluateIndicatorGates`, below). The reading also records whether the consensus has **turned**: bearish when the candle momentum fell past the momentum gate or the net indicator vote for a long is negative; bullish the other way round. A reading is memoised per market until a new candle closes.
+3. **Action** (per tick, per market, by what is held):
+   - **Long held:** a bearish turn, or a short signal, emits a **rule exit**: a sell with `TradeIdea.Exit` set (it skips `MIN_SIGNAL_CONFIDENCE`, so the learner cannot block it) and confidence `CandleConfidence` (0.95). Repeated every tick until sold.
+   - **Paper short held:** a bullish turn, or a long signal, emits a covering long (confidence 0.95).
+   - **Nothing held:** a long signal emits a long entry; a short signal emits a paper short, except in the long-only versions, which never open a short. Each entry is emitted **once per candle**: an entry rejected by the risk engine (often below `MIN_SIGNAL_CONFIDENCE`) or vetoed by the LLM waits for the next candle instead of being re-proposed on every tick.
+4. **Idea.** Entries carry the gate confidence, the indicator signals, `candle_interval` ("1h"/"4h") and `current_price` = the **live** price (not the last close); sizing comes from `calc.CalculatePositionSizing(atr_pct)`. The 10 % stop-loss and 15 % trailing stop still apply.
 
-Uses the same momentum, higher-timeframe, hard-filter, support, and consensus gates as `BasicStrategy`, then calls `Analyser.AnalyseSignal()` for each surviving market. The LLM adjusts signal confidence and can veto the signal entirely when `ConfidenceScale < LLM_VETO_THRESHOLD`. This is the default selected strategy. With no analyser supplied (for example in tests; the backtest refuses LLM strategies) it uses `strategy.NeutralAnalyser`, which behaves like an unavailable LLM.
+**LLM versions.** `BasicAndLLMStrategy` sends each new entry (long or paper short) to `Analyser.AnalyseSignal()` with the candle indicators, the live price and `TickSeconds` = the candle length, so the prompt says "Technical indicators (1h candles)" or "(4h candles)". Because entries are emitted once per candle, the LLM is asked at most once per market per candle. The reply's `confidence_scale` multiplies the entry's confidence (capped at 0.95); below `LLM_VETO_THRESHOLD` (0.70) the entry is dropped for that candle. An unavailable LLM passes the entry unscaled, with the `llm_*` signals nil. Exits and covers never wait for the LLM. With no analyser supplied (tests) it uses `strategy.NeutralAnalyser`.
 
-**Backtest replay** (`internal/backtest`). The replay feeds non-LLM strategies the same `strategy.MarketData` as live, built by the shared `marketdata.Build`, and runs the risk engine, learner, stops and fully automated gates in the live order; LLM strategies are refused. See [14-backtesting.md](14-backtesting.md).
+**Old IDs.** A saved selection of `basic_strategy` (or the older `basic_trend`) loads as `basic_strategy_1h`, and `basic_and_llm_strategy` as `basic_and_llm_strategy_1h` (`control.LegacyStrategyIDs`). Trades, signals and learner outcomes recorded before 0.18.0 keep their old IDs, so the learner starts fresh for the new strategies; the dashboard labels the old IDs "(ticks, retired)".
+
+**Backtest replay** (`internal/backtest`). The replay feeds non-LLM strategies the same `strategy.MarketData` as live, built by the shared `marketdata.Build` (including the 1-hour candles), and runs the risk engine, learner, stops and fully automated gates in the live order; LLM strategies are refused. The replay is spot only, so `basic_strategy_1h` and `basic_strategy_long_1h` trade identically there (a sell with nothing held is ignored). See [14-backtesting.md](14-backtesting.md).
 
 Two indicator details: RSI on a flat series (no gains and no losses, e.g. a pegged pair) is a neutral 50, not 100; and `atr_pct` is computed from the unrounded ATR, because the published `atr` is rounded to 6 decimal places and is 0 for sub-cent coins.
 
 ---
 
 ### Signal Generation Logic
+
+The gates below were written for 30-second ticks and are applied unchanged to the candle view, so "price history" means candle closes and the higher timeframe is the 4-hour (1h versions) or daily (4h versions) indicators.
 
 ```go
 func (b *BasicStrategy) Evaluate(ctx context.Context, in strategy.Input) []domain.TradeIdea
@@ -189,7 +206,7 @@ See the Learner section below.
 ```go
 domain.TradeIdea{
 	ID:         domain.NewID(),
-	StrategyID: "basic_strategy",
+	StrategyID: "basic_strategy_1h",
 	Market:     symbol,
 	Direction:  direction,
 	Thesis:     "Momentum 0.42% | RSI 38.0 | EMA bullish | MACD bullish | MACD-X bullish | WR -62.5 | support 6/7 (net +5)",
@@ -261,7 +278,7 @@ type PerformanceLearner struct {
 }
 ```
 
-Example key: `{"basic_and_llm_strategy", "BTC/EUR", "long"}`
+Example key: `{"basic_and_llm_strategy_1h", "BTC/EUR", "long"}`
 
 ---
 
@@ -336,7 +353,7 @@ Returns `[]learner.SummaryRow` for the `GET /api/learning` endpoint and dashboar
 ```json
 [
     {
-        "strategy": "basic_and_llm_strategy",
+        "strategy": "basic_and_llm_strategy_1h",
         "market": "BTC/EUR",
         "direction": "long",
         "trades": 15,
@@ -378,7 +395,7 @@ Strategy base confidence
     → clamp to [0.10, 0.95]
     → discard if < 0.20
 
-    × LLM ConfidenceScale (0.5–2.0, basic_and_llm_strategy only, when available)
+    × LLM ConfidenceScale (0.5–2.0, basic_and_llm_strategy_* only, when available)
     → veto if scale < LLM_VETO_THRESHOLD (default 0.70)
     → cap at 0.95
 
@@ -423,9 +440,9 @@ At the default 60 s/tick (`STRATEGY_INTERVAL_SECONDS`), indicators computed from
 
 Once 5-minute candles are cached by the OHLC loop, ATR and Stochastic are computed from those candles instead and do not depend on tick count.
 
-Indicator-only strategy evaluation is blocked while `strategy.LookbackTicks = 34` (plus the current tick) is still warming up. There is no fixed post-start trade delay (`app.TradeWarmupTicks = 0`): a fixed 20-tick delay would be redundant because the 34-tick indicator lookback still blocks decisions after 20 ticks.
+A strategy without LLM is blocked at start-up until the price history reaches its `RequiredPriceTicks()`. Every such strategy now reads candles (0), so none waits for ticks; each waits for its own finished candles instead. There is no fixed post-start trade delay (`app.TradeWarmupTicks = 0`).
 
-Strategies that include the LLM use data readiness instead of a fixed warm-up time, via `RequiredPriceTicks()`. `LLMOnlyStrategy` needs 10 price-history ticks (`calc.MomentumWindowPoints × 2`), enough for averaged momentum. `BasicAndLLMStrategy` needs the full `LookbackTicks + 1` depth because it includes local indicator gates. In both cases the tick waits until at least one market has enough history and the news cache contains at least one item. Markets without enough price history are excluded from that LLM evaluation pass.
+Strategies that include the LLM use data readiness instead of a fixed warm-up time, via `RequiredPriceTicks()`. `LLMOnlyStrategy` needs 10 price-history ticks (`calc.MomentumWindowPoints × 2`), enough for averaged momentum. The `basic_and_llm_strategy_*` versions and the 4-hour LLM versions need 0: they read candles. In both cases the tick waits until at least one market has enough history and the news cache contains at least one item. Markets without enough price history are excluded from that LLM evaluation pass.
 
 ---
 
@@ -510,7 +527,7 @@ Settings: built-in defaults plus the stops above; capital 500 EUR, `TARGET_TRADE
 
 | Run | Net P&L | Round trips | Notes |
 |---|---|---|---|
-| `basic_strategy` (baseline) | −34.96 EUR (−6.99 %) | 11 | fees 17.47 EUR |
+| `basic_strategy` (tick-based, retired in 0.18.0) | −34.96 EUR (−6.99 %) | 11 | fees 17.47 EUR |
 | `trend_strategy`, whole period | **+40.31 EUR (+8.06 %)** | 10 | fees 16.46 EUR; 8 losses of 1.4–7.1 %, then ETH Jul–Oct +44.90 and BTC Aug–Oct +19.61 |
 | `trend_strategy`, in sample (Jan–Aug) | +23.94 EUR (+4.79 %) | 10 | profit factor 1.82 |
 | `trend_strategy`, out of sample (Sep–Nov) | −10.26 EUR (−2.05 %) | 2 | both losses; see below |
@@ -571,7 +588,9 @@ Markets: the top 10 EUR pairs by volume on 2026-11-14 (BTC, ETH, SOL, XRP, ZEC, 
 
 | Strategy | Net % (30 s) | Net % (120 s) | Round trips | Win % | Profit factor | Max DD % | Fees EUR | Pairs positive | Jan–Aug % (trips) | Sep–Nov % (trips) |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `basic_strategy` | −23.4 | −33.4 | 62 | 19 | 0.26 | 25.9 | 99 | 1/10 | −23.4 (62) | −11.1 (68) |
+| `basic_strategy` (ticks, retired) | −23.4 | −33.4 | 62 | 19 | 0.26 | 25.9 | 99 | 1/10 | −23.4 (62) | −11.1 (68) |
+| `basic_strategy_1h` (0.18.0) | −47.8 | — | 172 | 15 | 0.31 | 48.4 | 274 | 2/10 | −43.0 (131) | −4.9 (41) |
+| `basic_strategy_4h` (0.18.0) | −4.0 | — | 31 | 19 | 0.72 | 7.9 | 50 | 4/10 | +0.2 (17) | −4.2 (14) |
 | `trend_strategy` | −4.8 | +19.5 | 87 | 26 | 0.94 | 30.5 | 135 | 3/10 | +4.4 (69) | −34.3 (26) |
 | `donchian_strategy` | **+42.6** | **+52.0** | 85 | 31 | 1.72 | 17.5 | 134 | 5/10 | +27.2 (58) | +1.9 (19) |
 | `rsi_dip_strategy` | −6.5 | −8.4 | 27 | 41 | 0.72 | 18.9 | 42 | 4/10 | −6.5 (27) | 0.0 (0) |
@@ -579,11 +598,15 @@ Markets: the top 10 EUR pairs by volume on 2026-11-14 (BTC, ETH, SOL, XRP, ZEC, 
 | `squeeze_strategy` | −3.4 | −2.7 | 100 | 28 | 0.95 | 25.1 | 157 | 4/10 | +4.6 (76) | −13.5 (12) |
 | `rotation_strategy` | −56.8 | −41.9 | 225 | 19 | 0.66 | 56.8 | 352 | 1/10 | −45.2 (171) | −8.7 (57) |
 
+The two 0.18.0 basic rows are the candle versions (one 30 s run each, same settings; the replay is spot only, so the long-only versions trade identically; Jan–Aug / Sep–Nov here are the trades entered in each part of the same run, not separate runs). Both are positive before costs (gross +53.7 EUR for 1h, +33.8 EUR for 4h) and lose on fees: 1h makes 172 round trips with a median hold of 8.6 h and 15 % winners, nearly all closed by the rule exit, which fires as soon as the net indicator vote turns bearish; 4h makes 31 with a median hold of 36 h. 4h beats the tick version (−23.4 %) but trails equal-weight buy and hold (−0.4 %). The 1h run also logs 1,798 orders rejected for insufficient liquidity on thin 30-second bars: 1,171 rule-exit sells, retried each tick until one fills, and 637 entries, which then wait for the next candle.
+
 Net P&L per pair (EUR, 30 s run):
 
 | Strategy | ADA | AVAX | BTC | ETH | HYPE | LINK | NEAR | SOL | XRP | ZEC |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `basic_strategy` | −14.2 | −11.9 | −17.7 | −17.3 | −13.8 | −8.4 | −7.6 | −10.5 | +0.9 | −16.5 |
+| `basic_strategy` (ticks, retired) | −14.2 | −11.9 | −17.7 | −17.3 | −13.8 | −8.4 | −7.6 | −10.5 | +0.9 | −16.5 |
+| `basic_strategy_1h` | −27.5 | −12.5 | −91.3 | −49.3 | +2.4 | −4.5 | +29.9 | −44.0 | −29.9 | −12.3 |
+| `basic_strategy_4h` | −2.9 | −4.6 | −15.7 | −17.4 | +17.2 | +2.3 | +21.1 | +1.3 | −21.2 | 0.0 |
 | `trend_strategy` | −41.9 | −3.1 | −3.7 | +38.1 | −16.7 | +20.2 | −26.3 | +17.9 | −7.4 | −1.3 |
 | `donchian_strategy` | −41.0 | −7.8 | −5.6 | +17.9 | +64.3 | −1.6 | +85.5 | +10.1 | −24.8 | +116.0 |
 | `rsi_dip_strategy` | −14.8 | −6.7 | +7.3 | +3.6 | 0.0 | +10.2 | −5.6 | −17.5 | +9.5 | −18.7 |

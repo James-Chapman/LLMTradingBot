@@ -2,7 +2,7 @@
 
 The LLM subsystem lives in `internal/llm`. It consists of an `OpenAICompatClient` that talks to any OpenAI-compatible chat-completions server, a `SwitchingClient` that routes between a primary LM Studio instance and an optional remote fallback, and an `LLMAnalyser` that builds prompts and parses responses (`internal/llm/analyser.go`). A pure-Go technical indicator library (`internal/analysis/indicators.go`) feeds the prompts.
 
-The LLM acts in two modes. For `basic_and_llm_strategy` it adjusts signal confidence, annotates theses, and can veto signals entirely when its `confidence_scale` falls below `LLM_VETO_THRESHOLD` (default 0.70). The LLM versions of the 4-hour strategies use the same signal analysis with each strategy's own prompt; with `LLM_SHADOW_REVIEW` on, the same request is also made for the entries of the 4-hour strategies without LLM, and the answer is only recorded and scored (`docs/06-strategy-and-learning.md`, *LLM Shadow Reviews*). For `llm_only_strategy` it directly recommends `long`, `short`, or `hold`; only `long` and `short` become trade ideas. The `basic_strategy` does not use the LLM at all.
+The LLM acts in two modes. For the `basic_and_llm_strategy_*` versions it adjusts signal confidence, annotates theses, and can veto signals entirely when its `confidence_scale` falls below `LLM_VETO_THRESHOLD` (default 0.70). The LLM versions of the 4-hour strategies use the same signal analysis with each strategy's own prompt; with `LLM_SHADOW_REVIEW` on, the same request is also made for the entries of the 4-hour strategies without LLM, and the answer is only recorded and scored (`docs/06-strategy-and-learning.md`, *LLM Shadow Reviews*). For `llm_only_strategy` it directly recommends `long`, `short`, or `hold`; only `long` and `short` become trade ideas. The `basic_strategy_*` versions do not use the LLM at all.
 
 ---
 
@@ -214,12 +214,12 @@ Invalid or missing scores default to `0.0` and are clamped to `-1.0..1.0`, so th
 
 ### Workflow 2: Signal Analysis (`AnalyseSignal`)
 
-**Trigger:** `basic_and_llm_strategy` (`internal/strategy/basic_and_llm.go`), called after a signal survives the indicator consensus pipeline  
+**Trigger:** the `basic_and_llm_strategy_*` versions (`internal/strategy/basic_and_llm.go`), called once per market per finished 1-hour or 4-hour candle for a new entry that survives the indicator consensus pipeline. The prompt names the bar length: "Technical indicators (1h candles)" or "(4h candles)" (`tickLabel`; tick strategies keep "(60s ticks)").  
 **Returns:** `SignalAnalysis`
 
 #### Indicator Consensus Pipeline (runs before the LLM is called)
 
-`basic_and_llm_strategy` applies nine sequential steps. The signal is discarded at any failed step; the LLM is only reached if steps 1–8 pass. Thresholds are constants in `internal/strategy/calc/constants.go`.
+`basic_and_llm_strategy_*` applies nine sequential steps on the candle view. The signal is discarded at any failed step; the LLM is only reached if steps 1–8 pass. Thresholds are constants in `internal/strategy/calc/constants.go`.
 
 | Step | Check | Threshold |
 |------|-------|-----------|

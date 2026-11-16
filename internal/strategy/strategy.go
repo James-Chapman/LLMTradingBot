@@ -1,7 +1,9 @@
 // Package strategy turns per-market price, indicator and news context into
-// trade ideas. The original strategies are basic_strategy (indicators only),
-// basic_and_llm_strategy (indicator consensus + LLM signal analysis) and
-// llm_only_strategy (pure LLM trade recommendation). Six 4-hour candle
+// trade ideas. Eight basic strategies read the basic indicator rules on
+// finished 1-hour or 4-hour candles: basic_strategy_* (indicators only) and
+// basic_and_llm_strategy_* (indicators + LLM signal analysis), each in a
+// version that may open paper shorts and a long-only version (_long_).
+// llm_only_strategy is a pure LLM trade recommendation. Six 4-hour candle
 // strategies follow: trend, donchian, rsi_dip, macd, squeeze and rotation,
 // each with an LLM version (LLMVersion) that sends its entries to the LLM
 // with the strategy's own prompt.
@@ -19,11 +21,17 @@ import (
 
 // Strategy IDs.
 const (
-	BasicID       = "basic_strategy"
-	BasicAndLLMID = "basic_and_llm_strategy"
-	LLMOnlyID     = "llm_only_strategy"
-	TrendID       = "trend_strategy"
-	TrendAndLLMID = "trend_and_llm_strategy"
+	Basic1hID           = "basic_strategy_1h"
+	Basic4hID           = "basic_strategy_4h"
+	BasicLong1hID       = "basic_strategy_long_1h"
+	BasicLong4hID       = "basic_strategy_long_4h"
+	BasicAndLLM1hID     = "basic_and_llm_strategy_1h"
+	BasicAndLLM4hID     = "basic_and_llm_strategy_4h"
+	BasicAndLLMLong1hID = "basic_and_llm_strategy_long_1h"
+	BasicAndLLMLong4hID = "basic_and_llm_strategy_long_4h"
+	LLMOnlyID           = "llm_only_strategy"
+	TrendID             = "trend_strategy"
+	TrendAndLLMID       = "trend_and_llm_strategy"
 
 	DonchianID       = "donchian_strategy"
 	DonchianAndLLMID = "donchian_and_llm_strategy"
@@ -35,7 +43,7 @@ const (
 	SqueezeAndLLMID  = "squeeze_and_llm_strategy"
 	RotationID       = "rotation_strategy"
 	RotationAndLLMID = "rotation_and_llm_strategy"
-	DefaultID        = BasicAndLLMID
+	DefaultID        = BasicAndLLM1hID
 )
 
 // MarketData is the per-market context built by the strategy loop each tick
@@ -51,6 +59,9 @@ type MarketData struct {
 	// TrendCandles are the 4-hour candles, oldest first; the newest is the
 	// forming one (Kraken always returns it). May be empty.
 	TrendCandles []domain.Candle `json:"trend_candles,omitempty"`
+	// HourCandles are the 1-hour candles, oldest first; the newest is the
+	// forming one. May be empty.
+	HourCandles []domain.Candle `json:"hour_candles,omitempty"`
 }
 
 // Portfolio is the account context passed to LLM-backed strategies.
@@ -82,9 +93,10 @@ type Strategy interface {
 	ID() string
 	// UsesLLM reports whether evaluation needs LLM context (news + analyser).
 	UsesLLM() bool
-	// RequiredPriceTicks is the price-history depth an LLM strategy needs
-	// before it can evaluate (main.py's _llm_price_history_ticks_for_strategy);
-	// 0 for non-LLM strategies, which instead wait for indicator warm-up.
+	// RequiredPriceTicks is the price-tick history the strategy needs before
+	// it can evaluate (10 for llm_only); 0 for the candle strategies, which
+	// wait for their own finished candles instead. The live loop and the
+	// backtest replay both wait for it at start-up.
 	RequiredPriceTicks() int
 	// Evaluate returns zero or more trade ideas for the given input.
 	Evaluate(ctx context.Context, in Input) []domain.TradeIdea
@@ -94,16 +106,28 @@ type Strategy interface {
 // (MACD needs slow_ema + signal - 1 = 34 bars) is computable (main.py _LOOKBACK_TICKS).
 const LookbackTicks = 34
 
-// All returns one instance of every strategy, in display order: the
-// original four (basic, basic_and_llm, llm_only, trend), then each 4-hour
-// strategy followed by its LLM version.
+// All returns one instance of every strategy, in display order: the eight
+// basic strategies, llm_only and trend, then each 4-hour strategy followed
+// by its LLM version.
 func All(s config.Settings) []Strategy {
 	return []Strategy{
-		NewBasic(s), NewBasicAndLLM(s), NewLLMOnly(s), NewTrend(s), NewTrendAndLLM(s),
+		NewBasic1h(s), NewBasicLong1h(s), NewBasic4h(s), NewBasicLong4h(s),
+		NewBasicAndLLM1h(s), NewBasicAndLLMLong1h(s), NewBasicAndLLM4h(s), NewBasicAndLLMLong4h(s),
+		NewLLMOnly(s), NewTrend(s), NewTrendAndLLM(s),
 		NewDonchian(s), NewDonchianAndLLM(s), NewRSIDip(s), NewRSIDipAndLLM(s),
 		NewMACD(s), NewMACDAndLLM(s), NewSqueeze(s), NewSqueezeAndLLM(s),
 		NewRotation(s), NewRotationAndLLM(s),
 	}
+}
+
+// IsBasicAndLLM reports whether id is one of the four basic_and_llm strategies,
+// whose LLM verdict is stored in the idea's supporting signals.
+func IsBasicAndLLM(id string) bool {
+	switch id {
+	case BasicAndLLM1hID, BasicAndLLM4hID, BasicAndLLMLong1hID, BasicAndLLMLong4hID:
+		return true
+	}
+	return false
 }
 
 // ByID returns the strategy with the given id (legacy ids are mapped to their

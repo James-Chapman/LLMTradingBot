@@ -418,7 +418,7 @@ func (m *MyStrategy) ID() string { return MyID }
 // UsesLLM reports whether the strategy needs news and the LLM analyser.
 func (m *MyStrategy) UsesLLM() bool { return false }
 
-// RequiredPriceTicks is 0 for non-LLM strategies, which wait for indicator warm-up.
+// RequiredPriceTicks is the price-tick history the strategy needs first; 0 for a candle strategy.
 func (m *MyStrategy) RequiredPriceTicks() int { return 0 }
 
 // Evaluate returns zero or more trade ideas for the given input.
@@ -433,7 +433,7 @@ func (m *MyStrategy) Evaluate(ctx context.Context, in Input) []domain.TradeIdea 
 
 ```go
 func All(s config.Settings) []Strategy {
-	return []Strategy{NewBasic(s), NewBasicAndLLM(s), NewLLMOnly(s), &MyStrategy{}}
+	return []Strategy{NewBasic1h(s), /* ... */ NewLLMOnly(s), &MyStrategy{}}
 }
 ```
 
@@ -443,11 +443,11 @@ func All(s config.Settings) []Strategy {
 
 ## Troubleshooting
 
-### "Tick #N - prices fetched (warming up N/35 ticks)"
+### "Tick #N - prices fetched (warming up N/M ticks)"
 
-Normal at startup for indicator-only strategy evaluation. The loop waits for `LookbackTicks = 34` price ticks of history (plus the current one), approximately 35 minutes at the default 60 seconds per tick (17.5 at 30 seconds), so MACD and the other configured indicators have enough history. The count is the longest history among the enabled markets that were priced this tick, so a disabled or unpriced market cannot hold it back. If price ticks were restored from the database, this message may not appear at all.
+Shown at start-up only for a strategy without LLM that reads price ticks: the loop waits until the price history reaches its `RequiredPriceTicks()` (M). None of the registered strategies needs this since 0.19.0; the candle strategies evaluate from the first tick and wait for their own finished candles. The count is the longest history among the enabled markets that were priced this tick, so a disabled or unpriced market cannot hold it back. If price ticks were restored from the database, this message may not appear at all.
 
-For strategies that use the LLM, the indicator warm-up is not used. Instead the loop logs "LLM data warmup waiting for …" until at least one market has the strategy's `RequiredPriceTicks()` of history (10 for `llm_only_strategy`, 35 for `basic_and_llm_strategy`, which still applies local indicator gates) and at least one news item is cached. Only markets whose price history is ready are evaluated.
+For strategies that use the LLM, this tick warm-up is not used. Instead the loop logs "LLM data warmup waiting for …" until at least one market has the strategy's `RequiredPriceTicks()` of history (10 for `llm_only_strategy`; 0 for the `basic_and_llm_strategy_*` versions, which wait instead for 40 finished candles of their own: about 41 hours for 1h, 7 days for 4h, usually already in the first Kraken fetch) and at least one news item is cached. Only markets whose price history is ready are evaluated.
 
 ### "No markets could be validated - waiting for Kraken"
 

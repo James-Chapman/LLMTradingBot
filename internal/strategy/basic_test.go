@@ -9,16 +9,36 @@ import (
 	"github.com/James-Chapman/LLMTradingBot/internal/domain"
 )
 
-// evalBasic runs a fresh BasicStrategy over one market.
+// asView makes core treat each market's data as an already-built candle view,
+// so the gate tests can hand the rules their indicators directly.
+func asView(core *basicCore) {
+	core.viewOf = func(_ string, d MarketData) (MarketData, basicKey, bool) { return d, basicKey{}, true }
+}
+
+// rawBasic returns basic_strategy_1h reading market data as given.
+func rawBasic() *BasicStrategy {
+	b := NewBasic1h(testSettings())
+	asView(&b.basicCore)
+	return b
+}
+
+// rawBasicAndLLM returns basic_and_llm_strategy_1h reading market data as given.
+func rawBasicAndLLM() *BasicAndLLMStrategy {
+	b := NewBasicAndLLM1h(testSettings())
+	asView(&b.basicCore)
+	return b
+}
+
+// evalBasic runs a fresh basic_strategy_1h over one market's view.
 func evalBasic(market string, data MarketData) []domain.TradeIdea {
-	return NewBasic(testSettings()).Evaluate(context.Background(), single(market, data))
+	return rawBasic().Evaluate(context.Background(), single(market, data))
 }
 
 // TestBasicStrategyGates covers the indicator-only strategy's signal gates.
 func TestBasicStrategyGates(t *testing.T) {
 	t.Run("GIVEN the basic strategy WHEN created THEN its id matches the UI label and it does not use the LLM", func(t *testing.T) {
-		s := NewBasic(testSettings())
-		if s.ID() != "basic_strategy" {
+		s := NewBasic1h(testSettings())
+		if s.ID() != "basic_strategy_1h" {
 			t.Fatalf("id = %q", s.ID())
 		}
 		if s.UsesLLM() || s.RequiredPriceTicks() != 0 {
@@ -167,7 +187,7 @@ func TestBasicStrategyGates(t *testing.T) {
 			t.Fatalf("expected one idea, got %d", len(ideas))
 		}
 		idea := ideas[0]
-		if idea.Market != "BTC/EUR" || idea.Direction != domain.Long || idea.StrategyID != BasicID {
+		if idea.Market != "BTC/EUR" || idea.Direction != domain.Long || idea.StrategyID != Basic1hID {
 			t.Fatalf("unexpected idea: %+v", idea)
 		}
 		if idea.ID == "" || len(idea.ModeEligibility) != 3 {
@@ -319,7 +339,7 @@ func TestBasicStrategyGates(t *testing.T) {
 		for _, m := range []string{"SOL/EUR", "ADA/EUR", "ETH/EUR", "BTC/EUR"} {
 			in.MarketData[m] = MarketData{Price: 102.0, PreviousPrice: 100.0, Indicators: bullishIndicators()}
 		}
-		ideas := NewBasic(testSettings()).Evaluate(context.Background(), in)
+		ideas := rawBasic().Evaluate(context.Background(), in)
 		if len(ideas) != 4 {
 			t.Fatalf("expected 4 ideas, got %d", len(ideas))
 		}

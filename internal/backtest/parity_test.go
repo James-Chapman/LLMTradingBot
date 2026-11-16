@@ -145,6 +145,7 @@ func TestReplayInputParity(t *testing.T) {
 					// The replay reads nothing before the pre-roll, so its 4-hour window
 					// (longer than the pre-roll) starts there; live Kraken rows go further back.
 					c240, _ := naiveCandles(barsFrom(bars, cfg.Start.Add(-PreRoll)), o.Time, 4*time.Hour, marketdata.TrendCandleLimit)
+					c60, _ := naiveCandles(barsFrom(bars, cfg.Start.Add(-PreRoll)), o.Time, time.Hour, marketdata.HourCandleLimit)
 					if synth5 || synth15 {
 						synthetic++
 					}
@@ -154,6 +155,7 @@ func TestReplayInputParity(t *testing.T) {
 						History: append([]float64(nil), hist...),
 						OHLC5:   c5,
 						OHLC15:  c15,
+						OHLC60:  c60,
 						OHLC240: c240,
 					}, settings.MomentumLookbackTicks)
 					if got.Volume == nil || !near(*got.Volume, vol, 1e-9*math.Max(1, vol)) {
@@ -314,6 +316,7 @@ func TestLiveInputParity(t *testing.T) {
 					History: append([]float64(nil), hist...),
 					OHLC5:   liveCandles(t, krakenRows(bars, o.Time, 5*time.Minute, fill), marketdata.CandleLimit),
 					OHLC15:  liveCandles(t, krakenRows(bars, o.Time, 15*time.Minute, fill), marketdata.CandleLimit),
+					OHLC60:  liveCandles(t, krakenRows(bars, o.Time, time.Hour, fill), marketdata.HourCandleLimit),
 					OHLC240: liveCandles(t, krakenRows(bars, o.Time, 4*time.Hour, fill), marketdata.TrendCandleLimit),
 				}, cfg.Settings.MomentumLookbackTicks)
 				if !reflect.DeepEqual(got, want) {
@@ -346,6 +349,6 @@ func TestLiveInputParity(t *testing.T) {
 func summarise(md strategy.MarketData) map[string]any {
 	return map[string]any{
 		"price": md.Price, "previous": md.PreviousPrice, "history_len": len(md.PriceHistory),
-		"indicators": md.Indicators, "htf": md.HigherTimeframe, "trend_candles": len(md.TrendCandles),
+		"indicators": md.Indicators, "htf": md.HigherTimeframe, "trend_candles": len(md.TrendCandles), "hour_candles": len(md.HourCandles),
 	}
 }

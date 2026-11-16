@@ -40,8 +40,8 @@ func TestControlStateStrategySelection(t *testing.T) {
 	t.Run("GIVEN a new control state WHEN the snapshot is requested THEN the combined strategy is selected", func(t *testing.T) {
 		state := NewState(nil)
 
-		if got := state.Snapshot().SelectedStrategy; got != "basic_and_llm_strategy" {
-			t.Fatalf("selected %q, want basic_and_llm_strategy", got)
+		if got := state.Snapshot().SelectedStrategy; got != "basic_and_llm_strategy_1h" {
+			t.Fatalf("selected %q, want basic_and_llm_strategy_1h", got)
 		}
 	})
 
@@ -194,8 +194,21 @@ func TestControlStatePersistence(t *testing.T) {
 		if !state.EmergencyStop() || state.IsMarketEnabled("ETH/EUR") || state.IsStrategyEnabled("basic_strategy") || !state.IsMarketLive("BTC/EUR") {
 			t.Fatalf("toggles not restored: %+v", state.Snapshot())
 		}
-		if state.SelectedStrategyID() != "basic_strategy" {
+		if state.SelectedStrategyID() != "basic_strategy_1h" {
 			t.Fatalf("legacy selection must map to canonical id, got %q", state.SelectedStrategyID())
+		}
+	})
+
+	t.Run("GIVEN a saved selection of the tick-based basic strategies WHEN loaded THEN it maps to their 1-hour candle versions", func(t *testing.T) {
+		for old, want := range map[string]string{"basic_strategy": "basic_strategy_1h", "basic_and_llm_strategy": "basic_and_llm_strategy_1h"} {
+			state := NewState(nil)
+			state.SetRepo(&fakeRepo{stored: &PersistedState{SelectedStrategy: old}})
+			if err := state.LoadFromDB(); err != nil {
+				t.Fatal(err)
+			}
+			if got := state.SelectedStrategyID(); got != want {
+				t.Fatalf("saved %q loaded as %q, want %q", old, got, want)
+			}
 		}
 	})
 

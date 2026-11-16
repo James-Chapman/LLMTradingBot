@@ -3,6 +3,7 @@ package calc
 import (
 	"fmt"
 	"math"
+	"strconv"
 
 	"github.com/James-Chapman/LLMTradingBot/internal/analysis"
 )
@@ -239,6 +240,17 @@ func VoteIndicators(isLong bool, indicators analysis.Indicators) VoteSummary {
 		castVote(&s, isLong, chg15m > 0, chg15m < 0)
 	}
 
+	// The candle-based basic strategies replace the 5m/15m changes with
+	// changes over 10 and 30 candles (analysis.CandleChanges).
+	candleChanges := map[string]any{}
+	for _, n := range analysis.CandleChangeSpans {
+		key := strconv.Itoa(n) + "_candles"
+		if chg, ok := groupNum(indicators, "price_changes", key); ok {
+			castVote(&s, isLong, chg > 0, chg < 0)
+			candleChanges["price_change_"+key] = chg
+		}
+	}
+
 	histogram, okHist := groupNum(indicators, "macd", "histogram")
 	stochD, okD := groupNum(indicators, "stoch", "d")
 	s.Values = map[string]any{
@@ -253,6 +265,9 @@ func VoteIndicators(isLong bool, indicators analysis.Indicators) VoteSummary {
 		"williams_r":       optionalNum(wr, okWR),
 		"price_change_5m":  optionalNum(chg5m, ok5m),
 		"price_change_15m": optionalNum(chg15m, ok15m),
+	}
+	for k, v := range candleChanges {
+		s.Values[k] = v
 	}
 	return s
 }

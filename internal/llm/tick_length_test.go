@@ -33,4 +33,18 @@ func TestSignalPromptTickLength(t *testing.T) {
 			t.Fatalf("prompt should state 30s ticks:\n%s", prompt)
 		}
 	})
+
+	t.Run("GIVEN 1-hour or 4-hour candle indicators WHEN a signal is analysed THEN the prompt names the candle length", func(t *testing.T) {
+		for seconds, label := range map[int]string{3600: "1h candles", 14400: "4h candles"} {
+			client := newFakeLLMClient(reply)
+			req := signalRequest()
+			req.TickSeconds = seconds
+
+			NewAnalyser(client, "€").AnalyseSignal(ctx, req)
+
+			if prompt := client.userPrompt(t); !strings.Contains(prompt, "Technical indicators ("+label+")") {
+				t.Fatalf("prompt should state %s:\n%s", label, prompt)
+			}
+		}
+	})
 }

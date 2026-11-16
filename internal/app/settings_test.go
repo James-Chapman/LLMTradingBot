@@ -89,7 +89,7 @@ func TestLoadSettings(t *testing.T) {
 func TestSettingsFromWebInterface(t *testing.T) {
 	ctx := context.Background()
 	longIdea := func(strategy.Input) []domain.TradeIdea {
-		return []domain.TradeIdea{apptest.Idea(strategy.BasicID, "BTC/EUR", domain.Long, 0.7)}
+		return []domain.TradeIdea{apptest.Idea(strategy.Basic1hID, "BTC/EUR", domain.Long, 0.7)}
 	}
 
 	t.Run("GIVEN fully automated mode WHEN the signal threshold is raised THEN it applies to the next signal without a restart", func(t *testing.T) {

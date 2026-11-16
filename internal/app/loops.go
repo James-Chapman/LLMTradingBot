@@ -215,26 +215,39 @@ func (a *App) strategyTick(ctx context.Context) (skipped bool, err error) {
 	tick := a.sessionTick
 	// Warm-up progress is the longest history among the markets priced this
 	// tick (all enabled), so a disabled or never-priced market cannot hold
-	// the indicator strategy in warm-up forever.
+	// a tick strategy in warm-up forever.
 	ticksCollected := 0
 	for _, ps := range ordered {
 		ticksCollected = max(ticksCollected, len(a.priceHistory[ps.symbol]))
 	}
-	ticksCollected = min(ticksCollected, strategy.LookbackTicks+1)
 	histories := make(map[string][]float64, len(ordered))
 	for _, ps := range ordered {
 		histories[ps.symbol] = append([]float64(nil), a.priceHistory[ps.symbol]...)
 	}
 	ohlc5 := map[string][]domain.Candle{}
 	ohlc15 := map[string][]domain.Candle{}
+	ohlc60 := map[string][]domain.Candle{}
 	ohlc240 := map[string][]domain.Candle{}
 	for _, ps := range ordered {
 		ohlc5[ps.symbol] = a.ohlc5[ps.symbol].Candles
 		ohlc15[ps.symbol] = a.ohlc15[ps.symbol].Candles
+		ohlc60[ps.symbol] = a.ohlc60[ps.symbol].Candles
 		ohlc240[ps.symbol] = a.ohlc240[ps.symbol].Candles
 	}
 	a.mu.Unlock()
-	warmingUp := ticksCollected <= strategy.LookbackTicks
+
+	// The warm-up follows what the selected strategy needs: a strategy
+	// without LLM that reads price ticks waits for them; the candle
+	// strategies (RequiredPriceTicks 0) wait for their own candles instead.
+	// LLM strategies are gated by their own data readiness below.
+	selected := a.strategyByID(a.control.SelectedStrategyID())
+	usesLLM := selected != nil && selected.UsesLLM()
+	needTicks := 0
+	if selected != nil {
+		needTicks = selected.RequiredPriceTicks()
+	}
+	ticksCollected = min(ticksCollected, needTicks)
+	warmingUp := !usesLLM && ticksCollected < needTicks
 
 	summary := make([]string, 0, len(ordered))
 	for _, ps := range ordered {
@@ -242,12 +255,12 @@ func (a *App) strategyTick(ctx context.Context) (skipped bool, err error) {
 	}
 	priceSummary := strings.Join(summary, "  ")
 	if warmingUp {
-		a.activity.Info(fmt.Sprintf("Tick #%d - prices fetched (warming up %d/%d ticks)", tick, ticksCollected, strategy.LookbackTicks+1), priceSummary)
+		a.activity.Info(fmt.Sprintf("Tick #%d - prices fetched (warming up %d/%d ticks)", tick, ticksCollected, needTicks), priceSummary)
 	} else {
 		a.activity.Info(fmt.Sprintf("Tick #%d - prices fetched", tick), priceSummary)
 	}
 
-	marketData := a.buildMarketData(ordered, histories, ohlc5, ohlc15, ohlc240)
+	marketData := a.buildMarketData(ordered, histories, candleSet{ohlc5: ohlc5, ohlc15: ohlc15, ohlc60: ohlc60, ohlc240: ohlc240})
 
 	a.mu.Lock()
 	a.currentPrices = copyPrices(livePrices)
@@ -292,12 +305,8 @@ func (a *App) strategyTick(ctx context.Context) (skipped bool, err error) {
 		}
 	}
 
-	// Detect the active strategy type early so warm-up matches its needs.
-	selected := a.strategyByID(a.control.SelectedStrategyID())
-	usesLLM := selected != nil && selected.UsesLLM()
-
-	// Indicator-only strategies wait until the full lookback window fills.
-	if warmingUp && !usesLLM {
+	// A tick strategy without LLM waits until its price history fills.
+	if warmingUp {
 		return true, nil
 	}
 
@@ -349,9 +358,14 @@ func (a *App) strategyTick(ctx context.Context) (skipped bool, err error) {
 	return false, nil
 }
 
+// candleSet is each market's cached candles per interval at one tick.
+type candleSet struct {
+	ohlc5, ohlc15, ohlc60, ohlc240 map[string][]domain.Candle
+}
+
 // buildMarketData assembles the per-market strategy context for this tick
 // with the builder the backtest replay shares (internal/marketdata).
-func (a *App) buildMarketData(ordered []pricedSnapshot, histories map[string][]float64, ohlc5, ohlc15, ohlc240 map[string][]domain.Candle) map[string]strategy.MarketData {
+func (a *App) buildMarketData(ordered []pricedSnapshot, histories map[string][]float64, c candleSet) map[string]strategy.MarketData {
 	briefing := a.analyser.LatestBriefing()
 	lookbackTicks := a.cfg().MomentumLookbackTicks
 	out := make(map[string]strategy.MarketData, len(ordered))
@@ -360,9 +374,10 @@ func (a *App) buildMarketData(ordered []pricedSnapshot, histories map[string][]f
 			Price:        ps.snap.Price,
 			Volume:       ps.snap.Volume,
 			History:      histories[ps.symbol],
-			OHLC5:        ohlc5[ps.symbol],
-			OHLC15:       ohlc15[ps.symbol],
-			OHLC240:      ohlc240[ps.symbol],
+			OHLC5:        c.ohlc5[ps.symbol],
+			OHLC15:       c.ohlc15[ps.symbol],
+			OHLC60:       c.ohlc60[ps.symbol],
+			OHLC240:      c.ohlc240[ps.symbol],
 			LLMSentiment: briefingSentimentForMarket(briefing, ps.symbol),
 		}, lookbackTicks)
 	}
@@ -417,7 +432,7 @@ func (a *App) checkStops(ctx context.Context, prices map[string]float64) {
 func (a *App) evaluateStrategy(ctx context.Context, marketData, llmMarketData map[string]strategy.MarketData) []domain.TradeIdea {
 	active := a.strategyByID(a.control.SelectedStrategyID())
 	if active == nil {
-		a.control.SelectStrategy(strategy.BasicAndLLMID)
+		a.control.SelectStrategy(strategy.DefaultID)
 		active = a.strategyByID(a.control.SelectedStrategyID())
 	}
 	if active == nil {
@@ -468,7 +483,7 @@ func signalLLMAnalysis(idea domain.TradeIdea) storage.LLMAnalysis {
 		sentiment, _ := numSignal(sig, "llm_sentiment")
 		return storage.LLMAnalysis{Used: true, Sentiment: sentiment, ConfidenceScale: 1, Reasoning: strSignal(sig, "llm_reasoning")}
 	}
-	if idea.StrategyID == strategy.BasicAndLLMID {
+	if strategy.IsBasicAndLLM(idea.StrategyID) {
 		// Veto, scaling and thesis are applied inside the strategy; rebuild
 		// the verdict from its supporting signals so the real values persist.
 		sentiment, _ := numSignal(sig, "llm_sentiment")
@@ -995,8 +1010,14 @@ func (a *App) reflectOnce(ctx context.Context) error {
 // OHLC
 // ---------------------------------------------------------------------------
 
-// ohlcLoop refreshes 5- and 15-minute candles for each enabled market on a
-// slow cycle so Kraken's public rate limit is never exceeded.
+// candleFetchDelay is how long after a 1-hour or 4-hour boundary the new
+// candles are fetched, so Kraken has closed the old candle and opened the new one.
+const candleFetchDelay = 20 * time.Second
+
+// ohlcLoop refreshes the candles for each enabled market on a slow cycle so
+// Kraken's public rate limit is never exceeded, waking just after each hour
+// boundary so a closed 1-hour or 4-hour candle reaches the strategies within
+// seconds.
 func (a *App) ohlcLoop(ctx context.Context) {
 	// Wait until the strategy loop has confirmed the active market list.
 	for len(a.ActiveMarkets()) == 0 {
@@ -1010,41 +1031,102 @@ func (a *App) ohlcLoop(ctx context.Context) {
 			a.ohlcCycle(ctx)
 			return nil
 		})
-		if !sleepCtx(ctx, a.intervals.OHLCRefresh) {
+		if !sleepCtx(ctx, ohlcWait(a.now(), a.intervals.OHLCRefresh)) {
 			return
 		}
 	}
 }
 
-// ohlcCycle refreshes the 5-minute, 15-minute and 4-hour candles for every
-// enabled market once, pausing between requests; it stops early when ctx is
-// cancelled.
+// ohlcWait returns how long the OHLC loop sleeps after a cycle at now: the
+// refresh interval, or less when the next hour boundary (plus
+// candleFetchDelay) comes sooner.
+func ohlcWait(now time.Time, refresh time.Duration) time.Duration {
+	nextHour := now.Truncate(time.Hour).Add(time.Hour + candleFetchDelay)
+	if now.Before(now.Truncate(time.Hour).Add(candleFetchDelay)) {
+		nextHour = now.Truncate(time.Hour).Add(candleFetchDelay) // the boundary just passed
+	}
+	return min(refresh, nextHour.Sub(now))
+}
+
+// ohlcCycle refreshes every enabled market's candles once, pausing between
+// requests: first the 1-hour and 4-hour candles that are due (a new interval
+// has begun since the cached rows), then the 5- and 15-minute candles. It
+// stops early when ctx is cancelled.
 func (a *App) ohlcCycle(ctx context.Context) {
+	var markets []string
 	for _, market := range a.ActiveMarkets() {
-		if !a.control.IsMarketEnabled(market) {
-			continue
+		if a.control.IsMarketEnabled(market) {
+			markets = append(markets, market)
 		}
+	}
+	now := a.now()
+	for _, market := range markets {
+		for _, interval := range []int{marketdata.HourCandleMinutes, marketdata.TrendCandleMinutes} {
+			if !candleDue(a.cachedCandles(market, interval), interval, now) {
+				continue
+			}
+			a.refreshOHLC(ctx, market, interval)
+			if !sleepCtx(ctx, a.intervals.OHLCIntervalGap) {
+				return
+			}
+		}
+	}
+	for _, market := range markets {
 		a.refreshOHLC(ctx, market, 5)
 		if !sleepCtx(ctx, a.intervals.OHLCIntervalGap) {
 			return
 		}
 		a.refreshOHLC(ctx, market, 15)
-		if !sleepCtx(ctx, a.intervals.OHLCIntervalGap) {
-			return
-		}
-		a.refreshOHLC(ctx, market, marketdata.TrendCandleMinutes)
 		if !sleepCtx(ctx, a.intervals.OHLCMarketGap) {
 			return
 		}
 	}
 }
 
+// cachedCandles returns market's cached candles for interval.
+func (a *App) cachedCandles(market string, interval int) []domain.Candle {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	switch interval {
+	case marketdata.HourCandleMinutes:
+		return a.ohlc60[market].Candles
+	case marketdata.TrendCandleMinutes:
+		return a.ohlc240[market].Candles
+	}
+	return nil
+}
+
+// candleDue reports whether candles of interval minutes need fetching at now:
+// none are cached, or the newest row is older than the current interval
+// (candleFetchDelay after it began, or at once when even the previous
+// interval's row is missing). A fetch whose answer still lacks the current
+// row - no trade in it yet - stays due, so it is retried on the next cycle.
+func candleDue(cached []domain.Candle, interval int, now time.Time) bool {
+	if len(cached) == 0 {
+		return true
+	}
+	length := int64(interval) * 60
+	current := now.Unix() / length * length
+	last := cached[len(cached)-1].T
+	switch {
+	case last >= current:
+		return false
+	case last < current-length:
+		return true
+	default:
+		return now.Unix()-current >= int64(candleFetchDelay/time.Second)
+	}
+}
+
 // refreshOHLC fetches one market's candles for interval and caches non-empty
-// results. The 4-hour interval keeps a longer window than the others.
+// results. The 1-hour and 4-hour intervals keep a longer window than the others.
 func (a *App) refreshOHLC(ctx context.Context, market string, interval int) {
 	limit := ohlcCandleLimit
-	if interval == marketdata.TrendCandleMinutes {
+	switch interval {
+	case marketdata.TrendCandleMinutes:
 		limit = marketdata.TrendCandleLimit
+	case marketdata.HourCandleMinutes:
+		limit = marketdata.HourCandleLimit
 	}
 	candles, err := a.market.GetOHLC(ctx, market, interval, limit)
 	if err != nil {
@@ -1059,6 +1141,8 @@ func (a *App) refreshOHLC(ctx context.Context, market string, interval int) {
 	switch interval {
 	case 15:
 		a.ohlc15[market] = payload
+	case marketdata.HourCandleMinutes:
+		a.ohlc60[market] = payload
 	case marketdata.TrendCandleMinutes:
 		a.ohlc240[market] = payload
 	default:

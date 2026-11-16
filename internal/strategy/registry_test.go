@@ -6,8 +6,10 @@ import "testing"
 func TestStrategyRegistry(t *testing.T) {
 	list := All(testSettings())
 
-	t.Run("GIVEN the registry WHEN all strategies are listed THEN the original four come first, then each 4-hour strategy followed by its LLM version", func(t *testing.T) {
-		want := []string{BasicID, BasicAndLLMID, LLMOnlyID, TrendID, TrendAndLLMID,
+	t.Run("GIVEN the registry WHEN all strategies are listed THEN the eight basic strategies come first, then llm_only and trend, then each 4-hour strategy followed by its LLM version", func(t *testing.T) {
+		want := []string{Basic1hID, BasicLong1hID, Basic4hID, BasicLong4hID,
+			BasicAndLLM1hID, BasicAndLLMLong1hID, BasicAndLLM4hID, BasicAndLLMLong4hID,
+			LLMOnlyID, TrendID, TrendAndLLMID,
 			DonchianID, DonchianAndLLMID, RSIDipID, RSIDipAndLLMID, MACDID, MACDAndLLMID,
 			SqueezeID, SqueezeAndLLMID, RotationID, RotationAndLLMID}
 		if len(list) != len(want) {
@@ -22,12 +24,15 @@ func TestStrategyRegistry(t *testing.T) {
 
 	t.Run("GIVEN a canonical or legacy id WHEN looked up THEN the matching strategy is returned", func(t *testing.T) {
 		cases := map[string]string{
-			"basic_strategy":         BasicID,
-			"basic_and_llm_strategy": BasicAndLLMID,
-			"llm_only_strategy":      LLMOnlyID,
-			"trend_strategy":         TrendID,
-			"basic_trend":            BasicID,
-			"llm_only":               LLMOnlyID,
+			"basic_strategy_1h":              Basic1hID,
+			"basic_strategy_long_4h":         BasicLong4hID,
+			"basic_and_llm_strategy_long_1h": BasicAndLLMLong1hID,
+			"llm_only_strategy":              LLMOnlyID,
+			"trend_strategy":                 TrendID,
+			"basic_strategy":                 Basic1hID, // legacy: the tick-based basic strategy
+			"basic_and_llm_strategy":         BasicAndLLM1hID,
+			"basic_trend":                    Basic1hID,
+			"llm_only":                       LLMOnlyID,
 		}
 		for id, want := range cases {
 			got := ByID(list, id)
@@ -64,17 +69,17 @@ func TestStrategyRegistry(t *testing.T) {
 	})
 
 	t.Run("GIVEN each strategy WHEN its LLM context requirement is checked THEN only LLM strategies need it", func(t *testing.T) {
-		if ByID(list, BasicID).UsesLLM() || ByID(list, TrendID).UsesLLM() {
+		if ByID(list, Basic1hID).UsesLLM() || ByID(list, Basic4hID).UsesLLM() || ByID(list, TrendID).UsesLLM() {
 			t.Fatalf("basic and trend must not use LLM")
 		}
-		if !ByID(list, BasicAndLLMID).UsesLLM() || !ByID(list, LLMOnlyID).UsesLLM() {
+		if !ByID(list, BasicAndLLM1hID).UsesLLM() || !ByID(list, BasicAndLLM4hID).UsesLLM() || !ByID(list, LLMOnlyID).UsesLLM() {
 			t.Fatalf("LLM strategies must report UsesLLM")
 		}
 	})
 
-	t.Run("GIVEN LLM strategies WHEN price history requirements are read THEN indicator-plus-LLM waits for the full lookback", func(t *testing.T) {
-		if got := ByID(list, BasicAndLLMID).RequiredPriceTicks(); got != LookbackTicks+1 {
-			t.Fatalf("basic_and_llm ticks = %d", got)
+	t.Run("GIVEN LLM strategies WHEN price history requirements are read THEN the candle-based combined strategies need no ticks and llm_only needs a short history", func(t *testing.T) {
+		if got := ByID(list, BasicAndLLM1hID).RequiredPriceTicks(); got != 0 {
+			t.Fatalf("basic_and_llm_strategy_1h ticks = %d", got)
 		}
 		llmOnly := ByID(list, LLMOnlyID).RequiredPriceTicks()
 		if llmOnly <= 0 || llmOnly >= LookbackTicks+1 {
@@ -82,34 +87,33 @@ func TestStrategyRegistry(t *testing.T) {
 		}
 	})
 
-	// Warm-up gate as applied by the strategy loop: non-LLM strategies wait for
-	// indicator warm-up, LLM strategies are gated by their own data readiness.
-	warmupBlocks := func(s Strategy, tick, warmupTicks int) bool {
-		usesLLM := s != nil && s.UsesLLM()
-		return !usesLLM && tick <= warmupTicks
+	// Warm-up gate as applied by the strategy loop and the replay: a strategy
+	// without LLM waits for the price ticks it needs; LLM strategies are
+	// gated by their own data readiness.
+	warmupBlocks := func(s Strategy, tick int) bool {
+		if s == nil || s.UsesLLM() {
+			return false
+		}
+		return tick < s.RequiredPriceTicks()
 	}
 
 	t.Run("GIVEN the LLM-only strategy WHEN the warm-up check runs early THEN it is not blocked", func(t *testing.T) {
-		if warmupBlocks(ByID(list, LLMOnlyID), 5, 20) {
-			t.Fatalf("LLM-only should bypass indicator warm-up")
+		if warmupBlocks(ByID(list, LLMOnlyID), 5) {
+			t.Fatalf("LLM-only should bypass the tick warm-up")
 		}
 	})
 
-	t.Run("GIVEN the basic strategy WHEN the warm-up check runs early THEN it is blocked", func(t *testing.T) {
-		if !warmupBlocks(ByID(list, BasicID), 5, 20) {
-			t.Fatalf("basic should wait for warm-up")
+	t.Run("GIVEN every strategy without LLM WHEN the warm-up check runs on the first tick THEN none is blocked: they all read candles", func(t *testing.T) {
+		for _, s := range list {
+			if !s.UsesLLM() && warmupBlocks(s, 0) {
+				t.Fatalf("%s waits for price ticks", s.ID())
+			}
 		}
 	})
 
-	t.Run("GIVEN the basic strategy past warm-up WHEN checked THEN it is not blocked", func(t *testing.T) {
-		if warmupBlocks(ByID(list, BasicID), 25, 20) {
-			t.Fatalf("basic should run after warm-up")
-		}
-	})
-
-	t.Run("GIVEN no strategy selected WHEN the warm-up check runs THEN it is treated as non-LLM", func(t *testing.T) {
-		if !warmupBlocks(ByID(list, "missing"), 5, 20) {
-			t.Fatalf("nil strategy should be treated as non-LLM")
+	t.Run("GIVEN no strategy selected WHEN the warm-up check runs THEN it does not block", func(t *testing.T) {
+		if warmupBlocks(ByID(list, "missing"), 0) {
+			t.Fatalf("a missing strategy should not hold the loop in warm-up")
 		}
 	})
 }

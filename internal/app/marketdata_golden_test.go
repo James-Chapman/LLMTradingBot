@@ -99,7 +99,7 @@ func TestBuildMarketDataGolden(t *testing.T) {
 			"SOL/EUR": goldenCandles(5, start, 900, 140),
 		}
 
-		got, err := json.MarshalIndent(a.buildMarketData(ordered, histories, ohlc5, ohlc15, nil), "", " ")
+		got, err := json.MarshalIndent(a.buildMarketData(ordered, histories, candleSet{ohlc5: ohlc5, ohlc15: ohlc15}), "", " ")
 		if err != nil {
 			t.Fatal(err)
 		}

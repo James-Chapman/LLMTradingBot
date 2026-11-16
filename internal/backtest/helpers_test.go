@@ -111,8 +111,9 @@ func randomWalkBars(seed uint64, n int, start time.Time, price, sigma float64) [
 // scripted is a test strategy that emits planned ideas at given tick times.
 // The replay's observe hook keeps now at the current tick.
 type scripted struct {
-	now  time.Time
-	plan map[time.Time][]domain.TradeIdea
+	now   time.Time
+	plan  map[time.Time][]domain.TradeIdea
+	ticks int // price ticks it needs before it is evaluated
 }
 
 // ID returns the scripted strategy id.
@@ -121,8 +122,8 @@ func (s *scripted) ID() string { return "scripted" }
 // UsesLLM is false.
 func (s *scripted) UsesLLM() bool { return false }
 
-// RequiredPriceTicks is 0.
-func (s *scripted) RequiredPriceTicks() int { return 0 }
+// RequiredPriceTicks returns the configured tick requirement (default 0).
+func (s *scripted) RequiredPriceTicks() int { return s.ticks }
 
 // Evaluate returns the ideas planned for the current tick.
 func (s *scripted) Evaluate(_ context.Context, _ strategy.Input) []domain.TradeIdea {
@@ -140,6 +141,12 @@ func (s *scripted) at(when time.Time, market string, d domain.Direction) *script
 	return s
 }
 
+// warmBars is how many 30-second bars from t0 the real strategy
+// (basic_strategy_1h) needs before it can decide when a series has no
+// pre-roll data: 40 finished 1-hour candles plus the forming one, and an
+// hour of margin for empty bars.
+const warmBars = 42 * 120
+
 // testSettings returns the bot defaults used by replay tests.
 func testSettings() config.Settings {
 	s := config.Defaults()
@@ -153,7 +160,7 @@ func testConfig(markets []string, ticks int) Config {
 		Markets:    markets,
 		Start:      t0,
 		End:        tick(ticks),
-		StrategyID: strategy.BasicID,
+		StrategyID: strategy.Basic1hID,
 		Settings:   testSettings(),
 		Exchange:   DefaultExchange(),
 	}

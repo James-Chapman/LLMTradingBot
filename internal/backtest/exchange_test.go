@@ -10,8 +10,8 @@ import (
 	"github.com/James-Chapman/LLMTradingBot/internal/histdata"
 )
 
-// Ticks used by the fill tests: the strategy first evaluates at tick 35
-// (warm-up), so ideas are planned from tick 40. A decision at tick k fills on
+// Ticks used by the fill tests: ideas are planned from tick 40, well into the
+// run (the scripted strategy needs no tick warm-up). A decision at tick k fills on
 // the bar with Start = tick(k), i.e. bars[k], reported at tick k+1.
 const (
 	entryTick = 40

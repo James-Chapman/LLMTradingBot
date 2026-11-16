@@ -26,7 +26,7 @@ func isClientError(err error) bool {
 // paper/live environment at runtime, as the dashboard does.
 func TestTradingSettingsFromWebInterface(t *testing.T) {
 	longIdea := func(strategy.Input) []domain.TradeIdea {
-		return []domain.TradeIdea{apptest.Idea(strategy.BasicID, "BTC/EUR", domain.Long, 0.9)}
+		return []domain.TradeIdea{apptest.Idea(strategy.Basic1hID, "BTC/EUR", domain.Long, 0.9)}
 	}
 
 	t.Run("GIVEN manual mode WHEN switched to fully automated THEN the next signal executes without approval", func(t *testing.T) {

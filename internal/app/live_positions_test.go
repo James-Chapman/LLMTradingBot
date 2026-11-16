@@ -48,13 +48,13 @@ func btcIdeas(directions ...domain.Direction) func(strategy.Input) []domain.Trad
 		if d == "" {
 			return nil
 		}
-		return []domain.TradeIdea{apptest.Idea(strategy.BasicID, "BTC/EUR", d, 0.9)}
+		return []domain.TradeIdea{apptest.Idea(strategy.Basic1hID, "BTC/EUR", d, 0.9)}
 	}
 }
 
 // alwaysLong emits the same BTC/EUR long on every evaluation.
 func alwaysLong(strategy.Input) []domain.TradeIdea {
-	return []domain.TradeIdea{apptest.Idea(strategy.BasicID, "BTC/EUR", domain.Long, 0.9)}
+	return []domain.TradeIdea{apptest.Idea(strategy.Basic1hID, "BTC/EUR", domain.Long, 0.9)}
 }
 
 // lastIntent returns the most recent live intent.
@@ -367,7 +367,7 @@ func TestApprovalRecheck(t *testing.T) {
 	t.Run("GIVEN a short approval on a live market WHEN there is no live position to sell THEN it is refused without sending an order", func(t *testing.T) {
 		env := newLiveEnv(t, "semi_automated")
 		env.tick(t) // prices only: the strategy emits nothing
-		idea := apptest.Idea(strategy.BasicID, "BTC/EUR", domain.Short, 0.9)
+		idea := apptest.Idea(strategy.Basic1hID, "BTC/EUR", domain.Short, 0.9)
 		req, ok := env.app.approvals.Submit(idea, domain.RiskDecision{TradeIdeaID: idea.ID, Approved: true, ProposedSize: domain.Float(100)})
 		if !ok {
 			t.Fatal("could not queue the approval")
@@ -396,8 +396,8 @@ func TestDailyLossAlertOncePerDay(t *testing.T) {
 		env := newEnv(t, func(s *config.Settings) { s.TradingMode = "fully_automated"; s.AlertWebhookURL = srv.URL }, seedPrices(40))
 		env.strategy.Ideas = func(strategy.Input) []domain.TradeIdea {
 			return []domain.TradeIdea{
-				apptest.Idea(strategy.BasicID, "BTC/EUR", domain.Long, 0.9),
-				apptest.Idea(strategy.BasicID, "ETH/EUR", domain.Long, 0.9),
+				apptest.Idea(strategy.Basic1hID, "BTC/EUR", domain.Long, 0.9),
+				apptest.Idea(strategy.Basic1hID, "ETH/EUR", domain.Long, 0.9),
 			}
 		}
 		env.boot(t)

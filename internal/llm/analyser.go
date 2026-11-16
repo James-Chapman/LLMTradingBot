@@ -442,7 +442,7 @@ func (a *LLMAnalyser) AnalyseSignal(ctx context.Context, req SignalRequest) Sign
 		strategyBlock(req.Strategy) +
 		briefingBlock(briefing, req.Market) +
 		reflectionBlock(reflection, "Apply this advice when assessing the current signal.\n") + "\n" +
-		"Technical indicators (" + strconv.Itoa(tickSeconds(req.TickSeconds)) + "s ticks):\n" + formatIndicators(req.Indicators) + "\n\n" +
+		"Technical indicators (" + tickLabel(req.TickSeconds) + "):\n" + formatIndicators(req.Indicators) + "\n\n" +
 		a.portfolioBlock(req.Equity, req.Cash, req.OpenPositions) +
 		"Recent news (" + assetName(req.Market) + "):\n" + delimitedNewsBlock(relevantNews(req.Market, req.News, 5)) + "\n\n" +
 		"Return JSON with exactly these keys:\n" +
@@ -1070,6 +1070,15 @@ func firstErr(errs ...error) error {
 		}
 	}
 	return nil
+}
+
+// tickLabel names the indicator bar length in prompts: "1h candles" for
+// whole hours (the candle strategies), otherwise "<n>s ticks".
+func tickLabel(seconds int) string {
+	if s := tickSeconds(seconds); s%3600 != 0 {
+		return strconv.Itoa(s) + "s ticks"
+	}
+	return strconv.Itoa(seconds/3600) + "h candles"
 }
 
 // tickSeconds returns the indicator tick length to name in prompts: seconds,

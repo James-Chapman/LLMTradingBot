@@ -83,7 +83,7 @@ func TestRunAll(t *testing.T) {
 
 // TestSplit covers the in-sample / out-of-sample split.
 func TestSplit(t *testing.T) {
-	const n = 8000
+	const n = 8000 + 2400 // the out-of-sample run warms up for 16 h after its 25 h pre-roll
 	split := tick(5000)
 
 	t.Run("GIVEN a split date WHEN both periods run THEN the out-of-sample run is a fresh run from the split: empty learner, no earlier trade", func(t *testing.T) {

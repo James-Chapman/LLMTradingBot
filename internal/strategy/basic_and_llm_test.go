@@ -15,14 +15,14 @@ func TestBasicAndLLMStrategy(t *testing.T) {
 	bullish := MarketData{Price: 102.0, PreviousPrice: 100.0, Indicators: bullishIndicators()}
 
 	t.Run("GIVEN the strategy is created WHEN its id and dispatch flags are read THEN it is an LLM strategy", func(t *testing.T) {
-		s := NewBasicAndLLM(testSettings())
-		if s.ID() != "basic_and_llm_strategy" {
+		s := NewBasicAndLLM1h(testSettings())
+		if s.ID() != "basic_and_llm_strategy_1h" {
 			t.Fatalf("id = %q", s.ID())
 		}
 		if !s.UsesLLM() {
 			t.Fatalf("expected UsesLLM")
 		}
-		if s.RequiredPriceTicks() != LookbackTicks+1 {
+		if s.RequiredPriceTicks() != 0 { // it waits for its own candle warm-up
 			t.Fatalf("required ticks = %d", s.RequiredPriceTicks())
 		}
 	})
@@ -31,7 +31,7 @@ func TestBasicAndLLMStrategy(t *testing.T) {
 		a := scaleAnalyser(1.0)
 		in := single("BTC/EUR", MarketData{Price: 100.10, PreviousPrice: 100.0})
 		in.Analyser = a
-		if ideas := NewBasicAndLLM(testSettings()).Evaluate(ctx, in); len(ideas) != 0 {
+		if ideas := rawBasicAndLLM().Evaluate(ctx, in); len(ideas) != 0 {
 			t.Fatalf("expected no ideas")
 		}
 		if len(a.signalCalls) != 0 {
@@ -42,7 +42,7 @@ func TestBasicAndLLMStrategy(t *testing.T) {
 	t.Run("GIVEN an LLM scale below the veto threshold WHEN evaluated THEN the signal is blocked inside the strategy", func(t *testing.T) {
 		in := single("BTC/EUR", bullish)
 		in.Analyser = scaleAnalyser(0.5)
-		if ideas := NewBasicAndLLM(testSettings()).Evaluate(ctx, in); len(ideas) != 0 {
+		if ideas := rawBasicAndLLM().Evaluate(ctx, in); len(ideas) != 0 {
 			t.Fatalf("expected LLM veto")
 		}
 	})
@@ -56,13 +56,13 @@ func TestBasicAndLLMStrategy(t *testing.T) {
 		in.Portfolio = Portfolio{Equity: 600, Cash: 400}
 		in.News = []llm.NewsArticle{{ID: "n1", Title: "Bitcoin rallies"}}
 
-		base := NewBasic(testSettings()).Evaluate(ctx, single("BTC/EUR", bullish))
-		ideas := NewBasicAndLLM(testSettings()).Evaluate(ctx, in)
+		base := rawBasic().Evaluate(ctx, single("BTC/EUR", bullish))
+		ideas := rawBasicAndLLM().Evaluate(ctx, in)
 		if len(ideas) != 1 || len(base) != 1 {
 			t.Fatalf("expected one idea from each strategy")
 		}
 		idea := ideas[0]
-		if idea.StrategyID != BasicAndLLMID || idea.Direction != domain.Long {
+		if idea.StrategyID != BasicAndLLM1hID || idea.Direction != domain.Long {
 			t.Fatalf("unexpected idea: %+v", idea)
 		}
 		if idea.Confidence <= base[0].Confidence || idea.Confidence > 0.95 {
@@ -90,7 +90,7 @@ func TestBasicAndLLMStrategy(t *testing.T) {
 	t.Run("GIVEN the LLM was not used WHEN evaluated THEN the idea passes with nil LLM fields", func(t *testing.T) {
 		in := single("BTC/EUR", bullish)
 		in.Analyser = &fakeAnalyser{signal: llm.SignalAnalysis{ConfidenceScale: 1.0, LLMUsed: false, Reasoning: "unavailable"}}
-		ideas := NewBasicAndLLM(testSettings()).Evaluate(ctx, in)
+		ideas := rawBasicAndLLM().Evaluate(ctx, in)
 		if len(ideas) != 1 {
 			t.Fatalf("expected one idea")
 		}
@@ -106,7 +106,7 @@ func TestBasicAndLLMStrategy(t *testing.T) {
 	})
 
 	t.Run("GIVEN no analyser WHEN evaluated THEN the strategy behaves as with an unavailable LLM", func(t *testing.T) {
-		ideas := NewBasicAndLLM(testSettings()).Evaluate(ctx, single("BTC/EUR", bullish))
+		ideas := rawBasicAndLLM().Evaluate(ctx, single("BTC/EUR", bullish))
 		if len(ideas) != 1 || ideas[0].SupportingSignals["llm_confidence_scale"] != nil {
 			t.Fatalf("expected neutral behaviour without an analyser")
 		}

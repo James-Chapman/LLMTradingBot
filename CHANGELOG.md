@@ -7,6 +7,40 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.19.0] — 2026-11-15
+
+Candles by the clock: the 1-hour and 4-hour candles are fetched just after each boundary instead of every cycle, and the candle strategies no longer wait for a price-tick warm-up. Guide: `docs/03-background-loops.md` (*OHLC Loop*, *Warm-Up Period*).
+
+### Changed
+- **Clock-timed 1h/4h candle fetch.** The OHLC loop fetches a market's 1-hour (or 4-hour) candles only when a new hour (or 4-hour interval) has begun since the cached rows, 20 s after the boundary (`candleDue`, `candleFetchDelay`), and fetches them before the 5- and 15-minute candles. The loop wakes 20 s after each hour boundary (`ohlcWait`) as well as every 120 s. A closed candle now reaches the strategies within seconds instead of up to one 2–4-minute cycle, and each market makes about 1.25 large candle requests an hour instead of about 40. An answer without the current interval's row (no trade yet) is fetched again on the next cycle.
+- **Warm-up by strategy need.** At start-up a strategy without LLM waits only for its `RequiredPriceTicks()`, live and in the backtest replay. All of them read candles (0), so the 35-tick (about 35 minutes) wait is gone for the basic and 4-hour strategies; they wait for their own finished candles. LLM strategies are gated as before.
+- `Strategy.RequiredPriceTicks` is documented as the tick history any strategy needs (0 for candle strategies).
+
+---
+
+## [0.18.0] — 2026-11-15
+
+The basic strategies move from 30-second ticks to finished 1-hour and 4-hour candles, and each gets a long-only version: eight basic strategies replace `basic_strategy` and `basic_and_llm_strategy`. Guide: `docs/06-strategy-and-learning.md` (*Basic Strategies*).
+
+### Added
+- **`basic_strategy_1h`, `basic_strategy_4h`** (indicators only) and **`basic_and_llm_strategy_1h`, `basic_and_llm_strategy_4h`** (the LLM reviews each entry). The same momentum gate, higher-timeframe check, hard filters, indicator vote and confidence as before, read on the newest 200 finished candles. Higher timeframe: the 4-hour candles for the 1h versions, whole UTC days for the 4h versions. Warm-up: 40 finished candles.
+- **Long-only versions** of all four (`basic_strategy_long_1h`, `basic_strategy_long_4h`, `basic_and_llm_strategy_long_1h`, `basic_and_llm_strategy_long_4h`): a bearish signal never opens a short; a held long is still sold when the consensus turns.
+- **Rule exit when the consensus turns:** a held long is sold (`TradeIdea.Exit`, confidence 0.95, exempt from `MIN_SIGNAL_CONFIDENCE`) when the candle momentum falls past the momentum gate or the net indicator vote turns bearish; a held paper short is covered on the bullish equivalent. The 10 % / 15 % stops still apply.
+- **1-hour candles** in the live OHLC loop (`refreshOHLC(market, 60)`, 720 rows = 30 days) and the backtest replay (`MarketData.HourCandles`, `Input.OHLC60`).
+- **Candle price-change votes:** on candles, the 5m/15m price-change votes are replaced by the change over 10 and 30 candles (`analysis.CandleChanges`), the same spans relative to the momentum window as on ticks.
+
+### Changed
+- **Default strategy** is `basic_and_llm_strategy_1h`. A saved selection of `basic_strategy` / `basic_trend` loads as `basic_strategy_1h`, and `basic_and_llm_strategy` as `basic_and_llm_strategy_1h`. Old trades, signals and learner outcomes keep their old ids (labelled "ticks, retired"), so the learner starts fresh for the new ids.
+- Each basic entry is emitted **once per candle** per market, so an entry the risk engine rejects or the LLM vetoes is not re-proposed on every tick, and the combined versions ask the LLM at most once per market per candle.
+- The LLM prompt names the bar length: "Technical indicators (1h candles)" / "(4h candles)" for the candle strategies.
+- `basic_and_llm_strategy_*` need no price-tick warm-up (`RequiredPriceTicks` 0).
+- Replay tests that run the real strategy give it 42 hours of bars first; the plumbing test's trend is gentler, because a steep synthetic uptrend keeps the hourly RSI and Bollinger position pinned high and the hard filters block every long. Its "uptrend ends in profit" check is dropped.
+
+### Removed
+- The tick-based `basic_strategy` and `basic_and_llm_strategy` (`NewBasic`, `NewBasicAndLLM`, `BasicID`, `BasicAndLLMID`).
+
+---
+
 ## [0.17.0] — 2026-11-15
 
 LLM shadow reviews: find out live whether the LLM's vetoes would help a 4-hour strategy, without letting the LLM change a trade. Guide: `docs/06-strategy-and-learning.md` (*LLM Shadow Reviews*).

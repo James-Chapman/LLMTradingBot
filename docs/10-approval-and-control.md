@@ -200,7 +200,7 @@ type State struct {
 	disabledMarkets    map[string]bool
 	disabledStrategies map[string]bool
 	liveMarkets        map[string]bool
-	selectedStrategyID string // DefaultSelectedStrategy = "basic_and_llm_strategy"
+	selectedStrategyID string // DefaultSelectedStrategy = "basic_and_llm_strategy_1h"
 	tradingMode        string // manual | semi_automated | fully_automated
 	tradingEnvironment string // paper | live
 }
@@ -317,7 +317,7 @@ The strategy loop evaluates only the selected strategy:
 active := a.strategyByID(a.control.SelectedStrategyID())
 ```
 
-Registered strategy IDs are `"basic_strategy"`, `"basic_and_llm_strategy"`, `"llm_only_strategy"`, `"trend_strategy"`, `"trend_and_llm_strategy"`, `"donchian_strategy"`, `"donchian_and_llm_strategy"`, `"rsi_dip_strategy"`, `"rsi_dip_and_llm_strategy"`, `"macd_strategy"`, `"macd_and_llm_strategy"`, `"squeeze_strategy"`, `"squeeze_and_llm_strategy"`, `"rotation_strategy"` and `"rotation_and_llm_strategy"`. The **Strategy** section of the dashboard's Trading settings dialog (between Trading mode and Money) writes the selected ID through `POST /api/control/strategies/{strategy_id}/select`, after a confirm dialog.
+Registered strategy IDs are `"basic_strategy_1h"`, `"basic_strategy_long_1h"`, `"basic_strategy_4h"`, `"basic_strategy_long_4h"`, `"basic_and_llm_strategy_1h"`, `"basic_and_llm_strategy_long_1h"`, `"basic_and_llm_strategy_4h"`, `"basic_and_llm_strategy_long_4h"`, `"llm_only_strategy"`, `"trend_strategy"`, `"trend_and_llm_strategy"`, `"donchian_strategy"`, `"donchian_and_llm_strategy"`, `"rsi_dip_strategy"`, `"rsi_dip_and_llm_strategy"`, `"macd_strategy"`, `"macd_and_llm_strategy"`, `"squeeze_strategy"`, `"squeeze_and_llm_strategy"`, `"rotation_strategy"` and `"rotation_and_llm_strategy"`. The **Strategy** section of the dashboard's Trading settings dialog (between Trading mode and Money) writes the selected ID through `POST /api/control/strategies/{strategy_id}/select`, after a confirm dialog.
 
 ---
 

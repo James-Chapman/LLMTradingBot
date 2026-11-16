@@ -22,7 +22,7 @@ const (
 	DefaultActivityLimit        = 200
 	DefaultRiskRejectionsLimit  = 50
 	DefaultRejectedTradesLimit  = 100
-	DefaultSelectedStrategy     = "basic_and_llm_strategy"
+	DefaultSelectedStrategy     = "basic_and_llm_strategy_1h"
 	DefaultRejectedTradeReason  = "insufficient_funds"
 	defaultUnknownStrategyLabel = "unknown"
 )

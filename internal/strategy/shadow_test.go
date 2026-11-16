@@ -89,7 +89,7 @@ func TestShadowReviewer(t *testing.T) {
 	t.Run("GIVEN a strategy without an LLM prompt or one that already uses the LLM WHEN claimed THEN nothing is reviewed", func(t *testing.T) {
 		r := NewShadowReviewer()
 		ideas := []domain.TradeIdea{stubIdea("ETH/EUR", domain.Long)}
-		if got := r.Claim(NewBasic(s), ideas, llmInput(nil, 0)); len(got) != 0 {
+		if got := r.Claim(NewBasic1h(s), ideas, llmInput(nil, 0)); len(got) != 0 {
 			t.Fatalf("basic_strategy was claimed: %+v", got)
 		}
 		version := NewLLMVersion(base, "stub_and_llm_strategy", s)

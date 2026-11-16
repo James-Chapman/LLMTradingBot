@@ -65,7 +65,7 @@ func TestStrategyInterval(t *testing.T) {
 	})
 
 	t.Run("GIVEN a 120 s interval WHEN a buy is decided THEN it fills on the next 30-second bar, not at the next strategy tick", func(t *testing.T) {
-		decide := t0.Add(120 * time.Second * 40) // past the 35-tick warm-up
+		decide := t0.Add(120 * time.Second * 40) // forty 120 s ticks into the run
 		s := (&scripted{}).at(decide, "BTC/EUR", domain.Long)
 		cfg := withScript(withInterval(testConfig([]string{"BTC/EUR"}, ticks), 120), s, nil)
 		res := mustRun(t, oneMarket(flatSeries(ticks+10, 100)), cfg)

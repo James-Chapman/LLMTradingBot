@@ -127,7 +127,7 @@ type Candle struct {
 
 The result is truncated to the `limit` most recent candles (a `limit` of zero or less returns everything Kraken sent).
 
-Called by `ohlcLoop` every 120 seconds with 100 candles per request, a 1-second gap between the 5- and 15-minute fetches, and a 2.5-second inter-market gap to respect Kraken's public rate limit.
+Called by `ohlcLoop` every 120 seconds with 100 candles per request for the 5- and 15-minute candles (a 1-second gap between them and a 2.5-second inter-market gap, to respect Kraken's public rate limit), and with 720 candles for the 1-hour and 4-hour candles only when a new interval has begun (once an hour, once every 4 hours), 20 s after the boundary.
 
 ---
 

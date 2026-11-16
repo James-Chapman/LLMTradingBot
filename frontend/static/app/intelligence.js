@@ -226,8 +226,12 @@ Dashboard.register('intelligence', {
     // A readable label for a signal's strategy id.
     signalStrategyLabel(strategyId) {
         const labels = {
-            basic_and_llm_strategy: 'Combined · Indicator + LLM', combined: 'Combined · Indicator + LLM',
-            basic_strategy: 'Indicator Only', llm_only_strategy: 'LLM Only', llm: 'LLM Only',
+            basic_strategy_1h: 'Basic · 1h candles', basic_strategy_long_1h: 'Basic · 1h candles, long only',
+            basic_strategy_4h: 'Basic · 4h candles', basic_strategy_long_4h: 'Basic · 4h candles, long only',
+            basic_and_llm_strategy_1h: 'Basic · 1h candles + LLM', basic_and_llm_strategy_long_1h: 'Basic · 1h candles + LLM, long only',
+            basic_and_llm_strategy_4h: 'Basic · 4h candles + LLM', basic_and_llm_strategy_long_4h: 'Basic · 4h candles + LLM, long only',
+            basic_and_llm_strategy: 'Basic · ticks + LLM (retired)', combined: 'Basic · ticks + LLM (retired)',
+            basic_strategy: 'Basic · ticks (retired)', llm_only_strategy: 'LLM Only', llm: 'LLM Only',
             trend_strategy: 'Trend · 4h EMA', trend_and_llm_strategy: 'Trend · 4h EMA + LLM',
             donchian_strategy: 'Donchian · 4h breakout', donchian_and_llm_strategy: 'Donchian · 4h breakout + LLM',
             rsi_dip_strategy: 'RSI Dip · 4h', rsi_dip_and_llm_strategy: 'RSI Dip · 4h + LLM',

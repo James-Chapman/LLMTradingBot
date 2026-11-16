@@ -259,3 +259,26 @@ func TestCalculatePositionSizing(t *testing.T) {
 		}
 	})
 }
+
+// TestVoteCandleChanges covers the price-change votes of the candle-based
+// basic strategies: the change over 10 and 30 candles, the candle analogue
+// of the 5- and 15-minute changes on 30-second ticks.
+func TestVoteCandleChanges(t *testing.T) {
+	t.Run("GIVEN a rise over 10 candles and a fall over 30 WHEN votes are counted for a long THEN one supports and one opposes, and both values are shown", func(t *testing.T) {
+		ind := analysis.Indicators{"price_changes": map[string]any{"10_candles": 1.0, "30_candles": -2.0}}
+		s := VoteIndicators(true, ind)
+		if s.Available != 2 || s.Supporting != 1 || s.Opposing != 1 || s.Votes != 0 {
+			t.Fatalf("unexpected summary: %+v", s)
+		}
+		if s.Values["price_change_10_candles"] != 1.0 || s.Values["price_change_30_candles"] != -2.0 {
+			t.Fatalf("unexpected values: %v", s.Values)
+		}
+	})
+
+	t.Run("GIVEN tick indicators WHEN votes are counted THEN no candle-change values are added", func(t *testing.T) {
+		s := VoteIndicators(true, bullishIndicators())
+		if _, ok := s.Values["price_change_10_candles"]; ok {
+			t.Fatalf("candle values on tick indicators: %v", s.Values)
+		}
+	})
+}

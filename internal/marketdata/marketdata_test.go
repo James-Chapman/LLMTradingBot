@@ -20,6 +20,17 @@ func TestBuildTrendCandles(t *testing.T) {
 		}
 	})
 
+	t.Run("GIVEN 1-hour candles WHEN the strategy input is built THEN they are passed through unchanged as the hour candles", func(t *testing.T) {
+		candles := []domain.Candle{{T: 0, O: 1, H: 2, L: 0.5, C: 1.5, V: 10}, {T: 3600, O: 1.5, H: 1.6, L: 1.4, C: 1.55, V: 3}}
+		got := Build(Input{Price: 1.55, History: []float64{1.5, 1.55}, OHLC60: candles}, 1)
+		if !reflect.DeepEqual(got.HourCandles, candles) {
+			t.Fatalf("hour candles = %+v, want %+v", got.HourCandles, candles)
+		}
+		if HourCandleMinutes != 60 || HourCandleLimit != 720 {
+			t.Fatalf("HourCandleMinutes=%d HourCandleLimit=%d", HourCandleMinutes, HourCandleLimit)
+		}
+	})
+
 	t.Run("GIVEN no 4-hour candles WHEN the strategy input is built THEN the trend candles are empty", func(t *testing.T) {
 		got := Build(Input{Price: 1, History: []float64{1}}, 1)
 		if len(got.TrendCandles) != 0 {

@@ -16,15 +16,19 @@ func TestTrendCandlesReachStrategy(t *testing.T) {
 	t.Run("GIVEN Kraken 4-hour candles WHEN an OHLC cycle and a strategy tick run THEN the strategy sees them as each market's trend candles", func(t *testing.T) {
 		env := newEnv(t, nil, seedPrices(LookbackTicksForTest()+1))
 		fourHour := []domain.Candle{{T: 0, O: 1, H: 2, L: 1, C: 2, V: 5}, {T: 14400, O: 2, H: 3, L: 2, C: 3, V: 1}}
+		oneHour := []domain.Candle{{T: 0, O: 1, H: 2, L: 1, C: 2, V: 5}, {T: 3600, O: 2, H: 4, L: 2, C: 4, V: 2}}
 		env.market.Candles[marketdata.TrendCandleMinutes] = fourHour
+		env.market.Candles[marketdata.HourCandleMinutes] = oneHour
 
 		var mu sync.Mutex
 		seen := map[string][]domain.Candle{}
+		seenHours := map[string][]domain.Candle{}
 		env.strategy.Ideas = func(in strategy.Input) []domain.TradeIdea {
 			mu.Lock()
 			defer mu.Unlock()
 			for m, md := range in.MarketData {
 				seen[m] = md.TrendCandles
+				seenHours[m] = md.HourCandles
 			}
 			return nil
 		}
@@ -37,6 +41,9 @@ func TestTrendCandlesReachStrategy(t *testing.T) {
 		for _, m := range []string{"BTC/EUR", "ETH/EUR"} {
 			if len(seen[m]) != len(fourHour) || seen[m][1] != fourHour[1] {
 				t.Fatalf("%s trend candles = %+v, want %+v", m, seen[m], fourHour)
+			}
+			if len(seenHours[m]) != len(oneHour) || seenHours[m][1] != oneHour[1] {
+				t.Fatalf("%s hour candles = %+v, want %+v", m, seenHours[m], oneHour)
 			}
 		}
 	})
@@ -52,6 +59,9 @@ func TestTrendCandlesReachStrategy(t *testing.T) {
 		if limits[marketdata.TrendCandleMinutes] != marketdata.TrendCandleLimit {
 			t.Fatalf("4-hour limit = %d, want %d (all: %v)", limits[marketdata.TrendCandleMinutes], marketdata.TrendCandleLimit, limits)
 		}
+		if limits[marketdata.HourCandleMinutes] != marketdata.HourCandleLimit {
+			t.Fatalf("1-hour limit = %d, want %d (all: %v)", limits[marketdata.HourCandleMinutes], marketdata.HourCandleLimit, limits)
+		}
 		if limits[5] != ohlcCandleLimit || limits[15] != ohlcCandleLimit {
 			t.Fatalf("5/15-minute limits changed: %v", limits)
 		}
@@ -62,7 +72,8 @@ func TestTrendCandlesReachStrategy(t *testing.T) {
 type recordingMarket struct {
 	flakyMarket
 	mu    sync.Mutex
-	calls map[int]int
+	calls map[int]int // interval → last requested limit
+	count map[int]int // interval → number of requests
 }
 
 // GetOHLC records the request and serves the fake's candles.
@@ -72,6 +83,10 @@ func (m *recordingMarket) GetOHLC(ctx context.Context, symbol string, interval, 
 		m.calls = map[int]int{}
 	}
 	m.calls[interval] = limit
+	if m.count == nil {
+		m.count = map[int]int{}
+	}
+	m.count[interval]++
 	m.mu.Unlock()
 	return m.flakyMarket.GetOHLC(ctx, symbol, interval, limit)
 }
@@ -82,6 +97,17 @@ func (m *recordingMarket) limits() map[int]int {
 	defer m.mu.Unlock()
 	out := map[int]int{}
 	for k, v := range m.calls {
+		out[k] = v
+	}
+	return out
+}
+
+// counts returns interval → number of OHLC requests.
+func (m *recordingMarket) counts() map[int]int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := map[int]int{}
+	for k, v := range m.count {
 		out[k] = v
 	}
 	return out

@@ -352,6 +352,32 @@ func PriceChanges(prices []float64, tickSeconds int) map[string]any {
 	return result
 }
 
+// CandleChangeSpans are the candle counts CandleChanges measures over: on
+// 30-second ticks the basic momentum compares two 5-tick windows (10 ticks,
+// 5 minutes), and the price-change votes span 5 and 15 minutes, 1 and 3
+// times that; on candles the momentum spans 10 candles, so 10 and 30.
+var CandleChangeSpans = []int{10, 30}
+
+// CandleChanges returns the percentage change of the last close over each
+// of CandleChangeSpans candles, keyed "10_candles" and "30_candles"; a span
+// longer than the history is left out.
+func CandleChanges(closes []float64) map[string]any {
+	result := map[string]any{}
+	if len(closes) == 0 {
+		return result
+	}
+	current := closes[len(closes)-1]
+	for _, n := range CandleChangeSpans {
+		if len(closes) <= n {
+			continue
+		}
+		if past := closes[len(closes)-1-n]; past > 0 {
+			result[strconv.Itoa(n)+"_candles"] = roundTo((current-past)/past*100, 2)
+		}
+	}
+	return result
+}
+
 // ── Convenience wrapper ───────────────────────────────────────────────────────
 
 // thresholdLabel classifies a value as oversold/overbought/neutral using inclusive bounds.

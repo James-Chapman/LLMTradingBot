@@ -376,7 +376,7 @@ Every strategy-generated signal with full context. Written by `Repository.SaveTr
 | Column | Type | Notes |
 |---|---|---|
 | `id` | VARCHAR PK | UUID from `TradeIdea.ID` |
-| `strategy_id` | VARCHAR | e.g. `"basic_and_llm_strategy"` |
+| `strategy_id` | VARCHAR | e.g. `"basic_and_llm_strategy_1h"` |
 | `market` | VARCHAR | Trading pair |
 | `direction` | VARCHAR | `"long"` or `"short"` |
 | `thesis` | TEXT | Human-readable rationale (includes LLM reasoning if available) |

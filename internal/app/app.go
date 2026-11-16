@@ -35,7 +35,7 @@ import (
 )
 
 // Version is the application version reported by /health and the dashboard.
-const Version = "0.17.0"
+const Version = "0.19.0"
 
 // Name is the application display name.
 const Name = "Kraken Trading Bot"
@@ -62,11 +62,17 @@ const (
 
 // StrategyLabels are the dashboard labels for each strategy ID.
 var StrategyLabels = map[string]string{
-	strategy.BasicID:       "Basic Strategy (Just market indicators, no LLM)",
-	strategy.BasicAndLLMID: "Basic + LLM Combined (LLM analysis augments indicator-based signals)",
-	strategy.LLMOnlyID:     "All LLM (LLM generates signals from price, indicators, and news — no indicator consensus gate)",
-	strategy.TrendID:       "Trend Strategy (4-hour EMA trend following, no LLM)",
-	strategy.TrendAndLLMID: "Trend + LLM (4-hour EMA trend; the LLM reviews each entry)",
+	strategy.Basic1hID:           "Basic 1h (market indicators on 1-hour candles, no LLM)",
+	strategy.BasicLong1hID:       "Basic 1h, long only (market indicators on 1-hour candles, never shorts, no LLM)",
+	strategy.Basic4hID:           "Basic 4h (market indicators on 4-hour candles, no LLM)",
+	strategy.BasicLong4hID:       "Basic 4h, long only (market indicators on 4-hour candles, never shorts, no LLM)",
+	strategy.BasicAndLLM1hID:     "Basic + LLM 1h (1-hour candle indicators; the LLM reviews each entry)",
+	strategy.BasicAndLLMLong1hID: "Basic + LLM 1h, long only (1-hour candle indicators; the LLM reviews each entry; never shorts)",
+	strategy.BasicAndLLM4hID:     "Basic + LLM 4h (4-hour candle indicators; the LLM reviews each entry)",
+	strategy.BasicAndLLMLong4hID: "Basic + LLM 4h, long only (4-hour candle indicators; the LLM reviews each entry; never shorts)",
+	strategy.LLMOnlyID:           "All LLM (LLM generates signals from price, indicators, and news — no indicator consensus gate)",
+	strategy.TrendID:             "Trend Strategy (4-hour EMA trend following, no LLM)",
+	strategy.TrendAndLLMID:       "Trend + LLM (4-hour EMA trend; the LLM reviews each entry)",
 
 	strategy.DonchianID:       "Donchian Breakout (4-hour 90/30 channel breakout, no LLM)",
 	strategy.DonchianAndLLMID: "Donchian Breakout + LLM (the LLM reviews each breakout)",
@@ -223,6 +229,7 @@ type App struct {
 	ohlc5            map[string]OHLCPayload
 	ohlc15           map[string]OHLCPayload
 	ohlc240          map[string]OHLCPayload // 4-hour trend candles
+	ohlc60           map[string]OHLCPayload // 1-hour candles
 	sessionTick      int
 	priceHistory     map[string][]float64 // oldest first
 	equityHistory    []portfolio.EquityPoint
@@ -274,6 +281,7 @@ func NewWithOptions(ctx context.Context, settings config.Settings, repo *storage
 		ohlc5:           map[string]OHLCPayload{},
 		ohlc15:          map[string]OHLCPayload{},
 		ohlc240:         map[string]OHLCPayload{},
+		ohlc60:          map[string]OHLCPayload{},
 		priceHistory:    map[string][]float64{},
 		latestSignals:   []SignalView{},
 		riskRejections:  []storage.RiskRejection{},

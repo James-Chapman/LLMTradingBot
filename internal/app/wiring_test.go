@@ -67,7 +67,7 @@ func learnerScore(t *testing.T, rows []learner.SummaryRow, strategyID, market, d
 // made 50 on a notional of 1000 (a 5% return).
 func seedWinningOutcome(repo *storage.Repository) {
 	_ = repo.SaveSignalOutcome(context.Background(), storage.SignalOutcomeInput{
-		StrategyID: strategy.BasicID, Market: "BTC/EUR", Direction: "long",
+		StrategyID: strategy.Basic1hID, Market: "BTC/EUR", Direction: "long",
 		EntryPrice: 100, ExitPrice: 105, Size: 10, PnL: 50, ExitReason: "auto",
 		EntryAt: time.Now().UTC().Add(-time.Hour), PositionID: "seed-1",
 	})
@@ -78,8 +78,8 @@ func TestPaperPositionsSurviveRestart(t *testing.T) {
 	t.Run("GIVEN a paper long and a paper short WHEN the bot restarts and both are closed THEN the P&L includes the entry fee and the short settles from its stored proceeds", func(t *testing.T) {
 		env := newEnv(t, fullyAutomated, seedPrices(40))
 		env.strategy.Ideas = ideasOnce(
-			apptest.Idea(strategy.BasicID, "BTC/EUR", domain.Long, 0.9),
-			apptest.Idea(strategy.BasicID, "ETH/EUR", domain.Short, 0.9),
+			apptest.Idea(strategy.Basic1hID, "BTC/EUR", domain.Long, 0.9),
+			apptest.Idea(strategy.Basic1hID, "ETH/EUR", domain.Short, 0.9),
 		)
 		env.boot(t)
 		env.tick(t)
@@ -160,10 +160,10 @@ func TestLearnerUsesTradeNotional(t *testing.T) {
 	// by a loss: with returns on notional, and with every outcome as currency P&L.
 	referenceScores := func(pnl, notional float64) (withNotional, currencyOnly float64) {
 		pct, cur := learner.New(), learner.New()
-		pct.RecordOutcomeWithNotional(strategy.BasicID, "BTC/EUR", "long", 50, 1000)
-		cur.RecordOutcome(strategy.BasicID, "BTC/EUR", "long", 50)
-		pct.RecordOutcomeWithNotional(strategy.BasicID, "BTC/EUR", "long", pnl, notional)
-		cur.RecordOutcome(strategy.BasicID, "BTC/EUR", "long", pnl)
+		pct.RecordOutcomeWithNotional(strategy.Basic1hID, "BTC/EUR", "long", 50, 1000)
+		cur.RecordOutcome(strategy.Basic1hID, "BTC/EUR", "long", 50)
+		pct.RecordOutcomeWithNotional(strategy.Basic1hID, "BTC/EUR", "long", pnl, notional)
+		cur.RecordOutcome(strategy.Basic1hID, "BTC/EUR", "long", pnl)
 		return pct.Summary()[0].QualityScore, cur.Summary()[0].QualityScore
 	}
 
@@ -172,7 +172,7 @@ func TestLearnerUsesTradeNotional(t *testing.T) {
 			seedPrices(40)(repo)
 			seedWinningOutcome(repo)
 		})
-		env.strategy.Ideas = ideasOnce(apptest.Idea(strategy.BasicID, "BTC/EUR", domain.Long, 0.9))
+		env.strategy.Ideas = ideasOnce(apptest.Idea(strategy.Basic1hID, "BTC/EUR", domain.Long, 0.9))
 		env.boot(t)
 		env.tick(t)
 		positionID := env.app.paper.OpenPositions()[0].PositionID
@@ -187,12 +187,12 @@ func TestLearnerUsesTradeNotional(t *testing.T) {
 		if near(want, currencyOnly) {
 			t.Fatalf("test setup cannot tell returns from currency P&L (%v)", want)
 		}
-		if got := learnerScore(t, env.app.LearningSummary(), strategy.BasicID, "BTC/EUR", "long"); !near(got, want) {
+		if got := learnerScore(t, env.app.LearningSummary(), strategy.Basic1hID, "BTC/EUR", "long"); !near(got, want) {
 			t.Errorf("score after the close %v, want %v (currency-only would be %v)", got, want, currencyOnly)
 		}
 
 		env.restart(t, fullyAutomated)
-		if got := learnerScore(t, env.app.LearningSummary(), strategy.BasicID, "BTC/EUR", "long"); !near(got, want) {
+		if got := learnerScore(t, env.app.LearningSummary(), strategy.Basic1hID, "BTC/EUR", "long"); !near(got, want) {
 			t.Errorf("score after restart %v, want %v (currency-only would be %v)", got, want, currencyOnly)
 		}
 	})
@@ -218,7 +218,7 @@ func TestLearnerUsesTradeNotional(t *testing.T) {
 			t.Fatalf("expected the seeded and the live trade, got %+v (%v)", trades, err)
 		}
 		want, currencyOnly := referenceScores(trades[0].PnL, 50_000*0.002)
-		if got := learnerScore(t, env.app.LearningSummary(), strategy.BasicID, "BTC/EUR", "long"); !near(got, want) {
+		if got := learnerScore(t, env.app.LearningSummary(), strategy.Basic1hID, "BTC/EUR", "long"); !near(got, want) {
 			t.Errorf("score after the live close %v, want %v (currency-only would be %v)", got, want, currencyOnly)
 		}
 	})
@@ -238,11 +238,11 @@ func TestStrategySeesRoutedPositions(t *testing.T) {
 			switch evaluations {
 			case 1: // paper environment: both markets trade on paper
 				return []domain.TradeIdea{
-					apptest.Idea(strategy.BasicID, "BTC/EUR", domain.Long, 0.9),
-					apptest.Idea(strategy.BasicID, "ETH/EUR", domain.Long, 0.9),
+					apptest.Idea(strategy.Basic1hID, "BTC/EUR", domain.Long, 0.9),
+					apptest.Idea(strategy.Basic1hID, "ETH/EUR", domain.Long, 0.9),
 				}
 			case 2: // live environment: a live entry on BTC/EUR
-				return []domain.TradeIdea{apptest.Idea(strategy.BasicID, "BTC/EUR", domain.Long, 0.9)}
+				return []domain.TradeIdea{apptest.Idea(strategy.Basic1hID, "BTC/EUR", domain.Long, 0.9)}
 			}
 			return nil
 		}
@@ -331,7 +331,7 @@ func TestDashboardShowsLivePositions(t *testing.T) {
 
 	t.Run("GIVEN a paper position WHEN the dashboard is built THEN it is marked as paper and open", func(t *testing.T) {
 		env := newEnv(t, fullyAutomated, seedPrices(40))
-		env.strategy.Ideas = ideasOnce(apptest.Idea(strategy.BasicID, "BTC/EUR", domain.Long, 0.9))
+		env.strategy.Ideas = ideasOnce(apptest.Idea(strategy.Basic1hID, "BTC/EUR", domain.Long, 0.9))
 		env.boot(t)
 		env.tick(t)
 		d := env.app.Dashboard()
@@ -360,7 +360,7 @@ func TestSubCentPricesInActivity(t *testing.T) {
 			}
 		})
 		env.market.SetPrice("BTC/EUR", 0.0000085)
-		env.strategy.Ideas = ideasOnce(apptest.Idea(strategy.BasicID, "BTC/EUR", domain.Long, 0.9))
+		env.strategy.Ideas = ideasOnce(apptest.Idea(strategy.Basic1hID, "BTC/EUR", domain.Long, 0.9))
 		env.boot(t)
 		env.tick(t)
 		env.market.SetPrice("BTC/EUR", 0.0000070)

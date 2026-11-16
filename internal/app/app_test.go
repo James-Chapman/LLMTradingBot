@@ -58,7 +58,7 @@ func newEnv(t *testing.T, mutate func(*config.Settings), seed func(*storage.Repo
 		repo:     repo,
 		market:   apptest.NewMarket(map[string]float64{"BTC/EUR": 50000, "ETH/EUR": 3000}),
 		live:     &apptest.Live{},
-		strategy: &apptest.Strategy{StrategyID: strategy.BasicID},
+		strategy: &apptest.Strategy{StrategyID: strategy.Basic1hID},
 		llm:      &apptest.LLM{},
 		logs:     &bytes.Buffer{},
 	}
@@ -211,8 +211,9 @@ func TestStrategyTickGates(t *testing.T) {
 		}
 	})
 
-	t.Run("GIVEN no price history WHEN an indicator strategy ticks THEN it waits for warm-up", func(t *testing.T) {
+	t.Run("GIVEN no price history WHEN a strategy that reads price ticks ticks THEN it waits for warm-up", func(t *testing.T) {
 		env := newEnv(t, nil, nil)
+		env.strategy.Ticks = strategy.LookbackTicks + 1
 		env.boot(t)
 		env.tick(t)
 		if env.strategy.Calls() != 0 {
@@ -256,7 +257,7 @@ func TestStrategyTickGates(t *testing.T) {
 // TestStrategyTickTradingModes covers manual, semi and fully automated handling.
 func TestStrategyTickTradingModes(t *testing.T) {
 	longIdea := func(in strategy.Input) []domain.TradeIdea {
-		return []domain.TradeIdea{apptest.Idea(strategy.BasicID, "BTC/EUR", domain.Long, 0.9)}
+		return []domain.TradeIdea{apptest.Idea(strategy.Basic1hID, "BTC/EUR", domain.Long, 0.9)}
 	}
 
 	t.Run("GIVEN manual mode WHEN a signal fires THEN it is shown but not traded", func(t *testing.T) {
@@ -370,7 +371,7 @@ func TestStrategyTickTradingModes(t *testing.T) {
 	t.Run("GIVEN fully automated mode WHEN confidence is below threshold THEN no trade and no buffered signal", func(t *testing.T) {
 		env := newEnv(t, func(s *config.Settings) { s.TradingMode = "fully_automated"; s.MinSignalConfidence = 0.95 }, seedPrices(40))
 		env.strategy.Ideas = func(strategy.Input) []domain.TradeIdea {
-			return []domain.TradeIdea{apptest.Idea(strategy.BasicID, "BTC/EUR", domain.Long, 0.5)}
+			return []domain.TradeIdea{apptest.Idea(strategy.Basic1hID, "BTC/EUR", domain.Long, 0.5)}
 		}
 		env.boot(t)
 		env.tick(t)
@@ -413,7 +414,7 @@ func TestStopLoss(t *testing.T) {
 				return nil
 			}
 			fired = true
-			return []domain.TradeIdea{apptest.Idea(strategy.BasicID, "BTC/EUR", domain.Long, 0.9)}
+			return []domain.TradeIdea{apptest.Idea(strategy.Basic1hID, "BTC/EUR", domain.Long, 0.9)}
 		}
 		env.boot(t)
 		env.tick(t)
@@ -442,7 +443,7 @@ func TestStopLoss(t *testing.T) {
 				return nil
 			}
 			fired = true
-			return []domain.TradeIdea{apptest.Idea(strategy.BasicID, "BTC/EUR", domain.Long, 0.9)}
+			return []domain.TradeIdea{apptest.Idea(strategy.Basic1hID, "BTC/EUR", domain.Long, 0.9)}
 		}
 		env.boot(t)
 		env.tick(t)
@@ -653,8 +654,8 @@ func legacyBriefing(raw map[string]any) *llm.MarketBriefing {
 func TestRegisteredStrategies(t *testing.T) {
 	t.Run("GIVEN the registered strategies WHEN inspected THEN LLM context and price-history needs match the strategy type", func(t *testing.T) {
 		list := strategy.All(testSettings())
-		basic := strategy.ByID(list, strategy.BasicID)
-		combined := strategy.ByID(list, strategy.BasicAndLLMID)
+		basic := strategy.ByID(list, strategy.Basic1hID)
+		combined := strategy.ByID(list, strategy.BasicAndLLM1hID)
 		llmOnly := strategy.ByID(list, strategy.LLMOnlyID)
 		if basic == nil || combined == nil || llmOnly == nil {
 			t.Fatalf("all three strategies must be registered")
@@ -662,10 +663,10 @@ func TestRegisteredStrategies(t *testing.T) {
 		if basic.UsesLLM() || !combined.UsesLLM() || !llmOnly.UsesLLM() {
 			t.Errorf("only the LLM-backed strategies should report LLM use")
 		}
-		if combined.RequiredPriceTicks() != strategy.LookbackTicks+1 {
-			t.Errorf("indicator-plus-LLM must wait for the full indicator lookback")
+		if combined.RequiredPriceTicks() != 0 {
+			t.Errorf("indicator-plus-LLM reads candles and waits for its own candle warm-up, not price ticks")
 		}
-		if llmOnly.RequiredPriceTicks() <= 0 || llmOnly.RequiredPriceTicks() > combined.RequiredPriceTicks() {
+		if llmOnly.RequiredPriceTicks() <= 0 || llmOnly.RequiredPriceTicks() > strategy.LookbackTicks+1 {
 			t.Errorf("LLM-only needs a short momentum window, got %d", llmOnly.RequiredPriceTicks())
 		}
 		if _, ok := StrategyLabels[basic.ID()]; !ok {

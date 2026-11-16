@@ -77,7 +77,7 @@ func newHarness(t *testing.T, cfg harnessConfig) *harness {
 	h := &harness{
 		market:   apptest.NewMarket(map[string]float64{"BTC/EUR": 50000, "ETH/EUR": 3000}),
 		live:     &apptest.Live{},
-		strategy: &apptest.Strategy{StrategyID: strategy.BasicID, Ideas: cfg.ideas},
+		strategy: &apptest.Strategy{StrategyID: strategy.Basic1hID, Ideas: cfg.ideas},
 		repo:     repo,
 	}
 	a, err := app.NewWithOptions(context.Background(), settings, repo, app.Options{
@@ -107,7 +107,7 @@ func newHarness(t *testing.T, cfg harnessConfig) *harness {
 		Access:           access,
 		FailedLoginDelay: time.Millisecond,
 	})
-	if _, err := a.SelectStrategy(strategy.BasicID); err != nil {
+	if _, err := a.SelectStrategy(strategy.Basic1hID); err != nil {
 		t.Fatalf("SelectStrategy: %v", err)
 	}
 
@@ -181,7 +181,7 @@ func requireKeys(t *testing.T, obj map[string]any, keys ...string) {
 
 // longBTC is a strategy that always proposes a confident BTC long.
 func longBTC(strategy.Input) []domain.TradeIdea {
-	return []domain.TradeIdea{apptest.Idea(strategy.BasicID, "BTC/EUR", domain.Long, 0.9)}
+	return []domain.TradeIdea{apptest.Idea(strategy.Basic1hID, "BTC/EUR", domain.Long, 0.9)}
 }
 
 // TestHealthEndpoints covers /health and /api/health.
@@ -344,7 +344,7 @@ func TestControlEndpoints(t *testing.T) {
 
 	t.Run("GIVEN strategies WHEN selected by legacy, toggle and unknown IDs THEN canonical IDs or 404 are returned", func(t *testing.T) {
 		body := decodeObject(t, h.do(http.MethodPost, "/api/control/strategies/basic_trend/select", nil))
-		if body["strategy_id"] != strategy.BasicID || body["selected"] != true {
+		if body["strategy_id"] != strategy.Basic1hID || body["selected"] != true {
 			t.Errorf("legacy ID should map to basic_strategy, got %v", body)
 		}
 		body = decodeObject(t, h.do(http.MethodPost, "/api/control/strategies/basic_strategy/toggle", nil))

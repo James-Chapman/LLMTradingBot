@@ -16,12 +16,14 @@ import (
 var logger = observability.Logger("control")
 
 // DefaultSelectedStrategy is the strategy used when none has been chosen.
-const DefaultSelectedStrategy = "basic_and_llm_strategy"
+const DefaultSelectedStrategy = "basic_and_llm_strategy_1h"
 
 // LegacyStrategyIDs maps old strategy ids to their current canonical ids.
 var LegacyStrategyIDs = map[string]string{
-	"basic_trend": "basic_strategy",
-	"llm_only":    "llm_only_strategy",
+	"basic_trend":            "basic_strategy_1h",
+	"basic_strategy":         "basic_strategy_1h", // the tick-based basic strategy (before 0.18.0)
+	"basic_and_llm_strategy": "basic_and_llm_strategy_1h",
+	"llm_only":               "llm_only_strategy",
 }
 
 // CanonicalStrategyID maps a legacy strategy id to its current id.

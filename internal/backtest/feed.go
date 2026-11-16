@@ -26,25 +26,29 @@ type marketFeed struct {
 	lastBar histdata.Bar // the most recent bar with trades (bar.Start is the market's last trade interval)
 	volume  float64      // base volume of the 24 hours before this tick
 
-	c5, c15, c240 *histdata.CandleAggregator
-	vol           *histdata.RollingVolume
-	spread        spreadEstimator
-	hist          priceWindow
+	c5, c15, c60, c240 *histdata.CandleAggregator
+	vol                *histdata.RollingVolume
+	spread             spreadEstimator
+	hist               priceWindow
 }
 
 // trendInterval is the length of the 4-hour trend candles.
 const trendInterval = marketdata.TrendCandleMinutes * time.Minute
 
+// hourInterval is the length of the 1-hour candles.
+const hourInterval = marketdata.HourCandleMinutes * time.Minute
+
 // newMarketFeed returns an empty feed for market.
 func newMarketFeed(market string, spreadWindow int) *marketFeed {
 	c5, err5 := histdata.NewCandleAggregator(5*time.Minute, marketdata.CandleLimit)
 	c15, err15 := histdata.NewCandleAggregator(15*time.Minute, marketdata.CandleLimit)
+	c60, err60 := histdata.NewCandleAggregator(hourInterval, marketdata.HourCandleLimit)
 	c240, err240 := histdata.NewCandleAggregator(trendInterval, marketdata.TrendCandleLimit)
-	if err := errors.Join(err5, err15, err240); err != nil {
+	if err := errors.Join(err5, err15, err60, err240); err != nil {
 		panic(err) // constant arguments: cannot fail
 	}
 	return &marketFeed{
-		market: market, c5: c5, c15: c15, c240: c240,
+		market: market, c5: c5, c15: c15, c60: c60, c240: c240,
 		vol:    histdata.NewRollingVolume(24 * time.Hour),
 		spread: spreadEstimator{ring: make([]float64, spreadWindow)},
 		hist:   priceWindow{limit: marketdata.PriceHistoryTicks},
@@ -57,7 +61,7 @@ func newMarketFeed(market string, spreadWindow int) *marketFeed {
 func (f *marketFeed) observe(tick time.Time, mp *histdata.MarketPrice) error {
 	f.setPrice(mp)
 	if f.hasBar {
-		if err := errors.Join(f.c5.Add(f.bar), f.c15.Add(f.bar), f.c240.Add(f.bar)); err != nil {
+		if err := errors.Join(f.c5.Add(f.bar), f.c15.Add(f.bar), f.c60.Add(f.bar), f.c240.Add(f.bar)); err != nil {
 			return fmt.Errorf("%s: %w", f.market, err)
 		}
 		f.vol.Add(f.bar)

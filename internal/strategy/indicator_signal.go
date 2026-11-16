@@ -127,7 +127,7 @@ func (sig *indicatorSignal) supportingSignals(data MarketData) map[string]any {
 	if sig.ATRPct != 0 {
 		atr = pyRound(sig.ATRPct, 3)
 	}
-	return map[string]any{
+	out := map[string]any{
 		"momentum":              pyRound(sig.Momentum, 6),
 		"current_price":         data.Price,
 		"previous_price":        data.PreviousPrice,
@@ -148,6 +148,13 @@ func (sig *indicatorSignal) supportingSignals(data MarketData) map[string]any {
 		"price_change_5m":       v["price_change_5m"],
 		"price_change_15m":      v["price_change_15m"],
 	}
+	// Candle versions only: the changes over 10 and 30 candles.
+	for _, key := range []string{"price_change_10_candles", "price_change_30_candles"} {
+		if c, ok := v[key]; ok {
+			out[key] = c
+		}
+	}
+	return out
 }
 
 // stopLossPercent returns the configured stop loss as a whole percentage.

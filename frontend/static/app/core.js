@@ -553,8 +553,16 @@ function dashboardCore() {
         // A readable name for a strategy id.
         _strategyLabel(strategyId) {
             const labels = {
-                basic_strategy: 'Indicator Only',
-                basic_and_llm_strategy: 'Combined',
+                basic_strategy_1h: 'Basic 1h',
+                basic_strategy_long_1h: 'Basic 1h · long only',
+                basic_strategy_4h: 'Basic 4h',
+                basic_strategy_long_4h: 'Basic 4h · long only',
+                basic_and_llm_strategy_1h: 'Basic + LLM 1h',
+                basic_and_llm_strategy_long_1h: 'Basic + LLM 1h · long only',
+                basic_and_llm_strategy_4h: 'Basic + LLM 4h',
+                basic_and_llm_strategy_long_4h: 'Basic + LLM 4h · long only',
+                basic_strategy: 'Basic (ticks, retired)',                // trades before 0.18.0
+                basic_and_llm_strategy: 'Basic + LLM (ticks, retired)',  // trades before 0.18.0
                 llm_only_strategy: 'LLM Only',
                 trend_strategy: 'Trend (4h)',
                 trend_and_llm_strategy: 'Trend + LLM',

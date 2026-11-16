@@ -537,3 +537,30 @@ func TestRoundTo(t *testing.T) {
 		}
 	})
 }
+
+// TestCandleChanges covers the percentage change over 10 and 30 candles.
+func TestCandleChanges(t *testing.T) {
+	closes := func(n int) []float64 {
+		out := make([]float64, n)
+		for i := range out {
+			out[i] = float64(i + 1)
+		}
+		return out
+	}
+
+	t.Run("GIVEN 41 closes WHEN the candle changes are computed THEN both spans are the rounded percentage change", func(t *testing.T) {
+		got := CandleChanges(closes(41))
+		if got["10_candles"] != roundTo((41.0-31.0)/31.0*100, 2) || got["30_candles"] != roundTo((41.0-11.0)/11.0*100, 2) {
+			t.Fatalf("changes %v", got)
+		}
+	})
+
+	t.Run("GIVEN too few closes for a span WHEN computed THEN that span is missing", func(t *testing.T) {
+		if got := CandleChanges(closes(20)); len(got) != 1 || got["10_candles"] == nil {
+			t.Fatalf("changes %v, want only the 10-candle change", got)
+		}
+		if got := CandleChanges(closes(10)); len(got) != 0 {
+			t.Fatalf("changes %v, want none", got)
+		}
+	})
+}

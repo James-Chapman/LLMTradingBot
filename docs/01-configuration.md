@@ -104,7 +104,7 @@ The stop distances must be above 0 because the risk engine estimates a trade's p
 | Key | Default | Applies | Description |
 |---|---|---|---|
 | `STRATEGY_INTERVAL_SECONDS` | `60` | Now | Seconds between strategy ticks (30–600), read before each wait, so a change applies from the next tick. Indicators, the warm-up and `MOMENTUM_LOOKBACK_TICKS` count ticks, so a longer interval stretches them over more time. Streamed prices count as stale after two intervals. Backtests run every 30 s unless a `--settings` file sets this key (a multiple of 30); orders still fill on the next 30-second bar |
-| `MIN_SIGNAL_CONFIDENCE` | `0.65` | Now | Minimum confidence to trade in fully automated mode (a 4-hour strategy's exit of a held long is exempt). No effect in manual or semi-automated mode |
+| `MIN_SIGNAL_CONFIDENCE` | `0.65` | Now | Minimum confidence to trade in fully automated mode (a rule exit of a held long by a 4-hour or basic strategy is exempt). No effect in manual or semi-automated mode |
 | `LLM_VETO_THRESHOLD` | `0.70` | Now | The combined strategy vetoes signals the LLM rates below this. `0` disables the veto |
 | `LLM_SHADOW_REVIEW` | `true` | Now | While a 4-hour strategy without LLM is selected, ask the LLM about each new entry as its LLM version would, and only record the answer (Intelligence → *LLM Shadow Reviews*). Never changes a trade; one LLM call per market per closed 4-hour candle with an entry |
 | `MOMENTUM_LOOKBACK_TICKS` | `10` | Now | Strategy ticks of price history used for the momentum baseline (1–199: the bot keeps 200 ticks per market and momentum over N ticks needs N+1) |

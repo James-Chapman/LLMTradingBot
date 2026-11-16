@@ -676,7 +676,7 @@ func TestLiveExitRace(t *testing.T) {
 
 // apptestShort returns a BTC/EUR short idea.
 func apptestShort() domain.TradeIdea {
-	idea := domain.TradeIdea{ID: domain.NewID(), StrategyID: strategy.BasicID, Market: "BTC/EUR", Direction: domain.Short,
+	idea := domain.TradeIdea{ID: domain.NewID(), StrategyID: strategy.Basic1hID, Market: "BTC/EUR", Direction: domain.Short,
 		Thesis: "exit", SupportingSignals: map[string]any{}, Confidence: 0.9, PositionSizingProposal: 0.2}
 	return idea
 }

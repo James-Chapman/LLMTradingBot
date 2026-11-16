@@ -70,7 +70,7 @@ func newBootApp(t *testing.T, market *flakyMarket, now func() time.Time, seed fu
 	if seed != nil {
 		seed(repo)
 	}
-	strat := &apptest.Strategy{StrategyID: strategy.BasicID}
+	strat := &apptest.Strategy{StrategyID: strategy.Basic1hID}
 	a, err := NewWithOptions(context.Background(), settings, repo, Options{
 		Market:          market,
 		Live:            &apptest.Live{},
