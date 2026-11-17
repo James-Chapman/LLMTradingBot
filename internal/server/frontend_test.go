@@ -256,6 +256,23 @@ func TestFrontendLayout(t *testing.T) {
 		mustAppearBefore(t, "fetch handler", fetchHandler, "if (isAppAsset(path)) {", "staleWhileRevalidate(req)")
 	})
 
+	t.Run("GIVEN a deploy of new dashboard code WHEN the browser asks for app code THEN it must check with the bot instead of reusing its own cached copy", func(t *testing.T) {
+		// The service worker's fetch() goes through the browser's HTTP cache, so
+		// without this a fresh HTML page can run yesterday's script.
+		h := newHarness(t, harnessConfig{})
+		for _, path := range []string{"/static/app/intelligence.js", "/static/app/core.js", "/static/styles.css"} {
+			rec := h.do(http.MethodGet, path, nil)
+			if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-cache" {
+				t.Errorf("%s: status %d, Cache-Control %q, want revalidation on every load", path, rec.Code, rec.Header().Get("Cache-Control"))
+			}
+			// An unchanged file stays cheap: the check answers 304 without a body.
+			since := map[string]string{"If-Modified-Since": rec.Header().Get("Last-Modified")}
+			if again := h.do(http.MethodGet, path, since); again.Code != http.StatusNotModified {
+				t.Errorf("%s: revalidating an unchanged file gave %d, want 304", path, again.Code)
+			}
+		}
+	})
+
 	t.Run("GIVEN trade tables WHEN rendered THEN the four tables share the striped trade-table style", func(t *testing.T) {
 		if n := strings.Count(index, `class="table trade-table"`); n != 4 {
 			t.Errorf("expected 4 trade tables, got %d", n)

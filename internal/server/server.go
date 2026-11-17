@@ -267,6 +267,10 @@ func (h *handler) serviceWorker(w http.ResponseWriter, r *http.Request) {
 }
 
 // staticFiles serves frontend/static under /static/ without directory listings.
+// The dashboard's own code must match the uncached HTML that loads it, so the
+// browser is told to check with the bot before reusing a cached copy (an
+// unchanged file costs a 304). Without a Cache-Control header the browser may
+// reuse an old script for hours, even through the service worker's fetch.
 func (h *handler) staticFiles() http.Handler {
 	files := http.StripPrefix("/static/", http.FileServer(http.Dir(filepath.Join(h.frontendDir, "static"))))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -274,8 +278,17 @@ func (h *handler) staticFiles() http.Handler {
 			writeDetail(w, http.StatusNotFound, "Not Found")
 			return
 		}
+		if isAppAsset(r.URL.Path) {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
 		files.ServeHTTP(w, r)
 	})
+}
+
+// isAppAsset reports whether path is the dashboard's own code, matching the
+// service worker's isAppAsset: the scripts under /static/app/ and the stylesheet.
+func isAppAsset(path string) bool {
+	return strings.HasPrefix(path, "/static/app/") || path == "/static/styles.css"
 }
 
 // ---------------------------------------------------------------------------

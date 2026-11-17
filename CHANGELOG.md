@@ -7,6 +7,13 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.22.1] — 2026-11-17
+
+### Fixed
+- **The signal card could show the LLM multiplier as `NaN%` after an update.** The dashboard HTML is never cached, but its scripts and stylesheet were sent without a `Cache-Control` header, so the browser could reuse an old `intelligence.js` for hours, even through the service worker's network-first fetch. The new HTML then read fields the old script did not return. The bot now sends `/static/app/*.js` and `/static/styles.css` with `Cache-Control: no-cache`: the browser checks with the bot on every load, and an unchanged file costs a 304.
+
+---
+
 ## [0.22.0] — 2026-11-17
 
 The signal card shows what the LLM did to a signal's score, and how much the LLM may change it is a setting.

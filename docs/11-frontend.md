@@ -234,7 +234,7 @@ All three dialogs use `.modal-backdrop` + `.modal-panel`, close on Escape and on
 ## Service worker (`sw.js`)
 
 - Versioned cache `trading-bot-v<app version>`; old caches are deleted on activation and open tabs are claimed at once.
-- HTML (navigations and `text/html`) is **network-first**, as are the dashboard's own code files `/static/app/*.js` and `/static/styles.css`, so a deploy is picked up on the next load and old scripts never run against new markup. The cached copy is used only when the bot is down. Other static files use stale-while-revalidate.
+- HTML (navigations and `text/html`) is **network-first**, as are the dashboard's own code files `/static/app/*.js` and `/static/styles.css`, so a deploy is picked up on the next load and old scripts never run against new markup. The cached copy is used only when the bot is down. The service worker's `fetch()` still goes through the browser's HTTP cache, so the bot sends app code with `Cache-Control: no-cache` (since 0.22.1); without it the browser could reuse an old script for hours after a deploy (new HTML with old JS showed `NaN%` in the signal card). Other static files use stale-while-revalidate.
 - A response is cached only when it is OK and not redirected (`cacheable()`), so the login page is never cached as the dashboard.
 - API responses are never cached. When a polled endpoint (`/api/dashboard`, `/api/trades`, `/api/closed-trades`, `/api/rejected-trades`, `/api/news`, `/api/pnl-summary`) fails because the bot is unreachable, the worker answers `503` and posts `{type: 'API_OFFLINE', endpoint, ts}` to the requesting page only.
 

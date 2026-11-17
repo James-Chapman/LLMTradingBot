@@ -24,7 +24,7 @@ All routes are registered on a standard-library `http.ServeMux` in `internal/ser
 | `GET` | `/sw.js` | Serves the service worker from the root scope |
 | `GET` | `/static/...` | Serves files under `frontend/static/` (no directory listings) |
 
-HTML pages and `sw.js` are sent with `Cache-Control: no-store, max-age=0` so frontend fixes apply immediately.
+HTML pages and `sw.js` are sent with `Cache-Control: no-store, max-age=0` so frontend fixes apply immediately. The dashboard's own code (`/static/app/*.js`, `/static/styles.css`) is sent with `Cache-Control: no-cache`: the browser checks with the bot on every load (an unchanged file answers 304), so a cached script never runs against newer HTML. Other static files have no `Cache-Control`.
 
 ---
 
