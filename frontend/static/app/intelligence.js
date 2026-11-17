@@ -37,6 +37,59 @@ function biasText(bias) {
     return String(bias || 'neutral').replace(/_/g, ' ');
 }
 
+// ── Signal dialog chart ──────────────────────────────────────────────────────
+
+// How many candles the signal chart shows at first, and how many of them come after the signal.
+const SIGNAL_CHART_CANDLES = 90;
+const SIGNAL_CHART_AFTER = 20;
+
+// The chart lives outside Alpine, like the Markets charts, so its objects are not reactive proxies.
+let signalChartView = null;   // { chart, series, el, line, signalCandle, range, rangePending, resizer }
+let signalChartRequest = 0;   // id of the latest candle request; answers to older ones are dropped
+
+// A candle length as a short label: 5 → '5m', 60 → '1h', 240 → '4h'.
+function candleLabel(minutes) {
+    return minutes >= 60 ? `${minutes / 60}h` : `${minutes}m`;
+}
+
+// Formats a candle time (UTC epoch seconds, unambiguous unlike the stored
+// timestamps parseUtc handles) as local "14 Nov 10:42".
+function fmtCandleTime(seconds) {
+    return new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
+        .format(seconds * 1000);
+}
+
+// Shows the candles around the signal (view.range), or all of them when
+// there are few. While the dialog is still opening the pane has no width and
+// a range set then would be lost, so the resize observer applies it later.
+function showSignalRange(view) {
+    if (!view.el.clientWidth) {
+        view.rangePending = true;
+        return;
+    }
+    view.rangePending = false;
+    const timeScale = view.chart.timeScale();
+    if (view.range) timeScale.setVisibleLogicalRange(view.range);
+    else timeScale.fitContent();
+    placeSignalLine(view);
+}
+
+// Moves the vertical line over the signal's candle, or hides it while that
+// candle is scrolled out of view. Called after every scroll, zoom and resize.
+function placeSignalLine(view) {
+    const timeScale = view.chart.timeScale();
+    const x = view.signalCandle == null ? null : timeScale.timeToCoordinate(view.signalCandle);
+    // timeToCoordinate is null only for a time not in the data; a candle scrolled
+    // out of view gets an x outside the plot area, so that hides the line too
+    if (x == null || x < 0 || x > timeScale.width()) {
+        view.line.style.display = 'none';
+        return;
+    }
+    view.line.style.display = 'block';
+    view.line.style.transform = `translateX(${Math.round(x)}px)`;
+    view.line.style.bottom = `${timeScale.height() + 1}px`;   // stop at the time axis (+1 px pane border)
+}
+
 Dashboard.register('intelligence', {
     news: resource([]),          // /api/news
     shadowReviews: resource({ enabled: false, strategies: [], recent: [] }), // /api/shadow-reviews
@@ -44,6 +97,8 @@ Dashboard.register('intelligence', {
     signalModal: null,           // the signal shown in the detail dialog
     signalBreakdown: null,
     signalVoteRows: [],
+    signalChartIntervals: [5, 15, 60, 240],                // candle lengths the bot keeps, in minutes
+    signalChart: { minutes: 15, state: 'idle', note: '' }, // state: idle | loading | ready | outside | empty | error
     outlooksExpanded: false,     // all market outlooks shown (reset when the view is left)
     _seenSignalIds: new Set(),   // signals already notified, so a poll does not notify twice
     _notifyReady: false,         // false until the first signals were seen (no burst on page load)
@@ -208,6 +263,8 @@ Dashboard.register('intelligence', {
             this.signalBreakdown = this._computeBreakdown(s);
             this.signalVoteRows = this._computeIndicatorVotes(s);
             this.signalModal = s;
+            // The chart opens on the candles the signal's strategy read, once the dialog is in the page
+            this.$nextTick(() => this.loadSignalChart(s.candle_minutes || 15));
         } catch (e) {
             console.error('Signal detail:', e);
             this.notify('error', `Could not load the signal — the server could not be reached (${e.message}).`);
@@ -217,10 +274,119 @@ Dashboard.register('intelligence', {
     // Closes the signal detail dialog.
     closeSignal() {
         if (!this.signalModal) return;
+        this._removeSignalChart();
         this.signalModal = null;
         this.signalBreakdown = null;
         this.signalVoteRows = [];
+        this.signalChart = { minutes: 15, state: 'idle', note: '' };
         this.restoreFocus();
+    },
+
+    // Loads the open signal's market candles of the given length and draws them.
+    async loadSignalChart(minutes) {
+        const signal = this.signalModal;
+        if (!signal) return;
+        const request = ++signalChartRequest;
+        this.signalChart = { minutes, state: 'loading', note: '' };
+        try {
+            const market = signal.market;
+            const r = await fetch(`/api/ohlc/${encodeURIComponent(market)}?interval=${minutes}`);
+            if (!r.ok) throw new Error(`OHLC HTTP ${r.status}`);
+            const candles = toCandleSeries((await r.json()).candles || []);
+            // The dialog may have closed, or another signal or length been picked, meanwhile
+            if (request !== signalChartRequest || this.signalModal?.id !== signal.id) return;
+            this._drawSignalChart(candles, minutes, signal);
+        } catch (e) {
+            console.error('Signal chart:', e);
+            if (request === signalChartRequest) this.signalChart = { minutes, state: 'error', note: e.message };
+        }
+    },
+
+    // The message shown over the chart while it has nothing to draw.
+    signalChartStatus() {
+        const { state, minutes, note } = this.signalChart;
+        if (state === 'loading') return 'Loading candles…';
+        if (state === 'empty') return `No ${candleLabel(minutes)} candles cached for this market yet.`;
+        if (state === 'error') return `Could not load the candles (${note}).`;
+        return '';
+    },
+
+    // Draws candles and marks the candle the signal was generated in with a
+    // vertical line and an arrow, showing the candles around it.
+    _drawSignalChart(candles, minutes, signal) {
+        if (!candles.length) {
+            this.signalChart = { minutes, state: 'empty', note: '' };
+            return;
+        }
+        const view = signalChartView || this._createSignalChart();
+        if (!view) return; // the dialog closed before the candles arrived
+
+        const last = candles[candles.length - 1];
+        const precision = priceDecimals(last.close);
+        view.series.applyOptions({ priceFormat: { type: 'price', precision, minMove: 10 ** -precision } });
+        view.series.setData(candles);
+
+        // The signal's candle is the last one starting at or before the signal's time,
+        // as long as the signal falls inside it (the cache may not reach that far)
+        const signalTime = Math.floor(parseUtc(signal.created_at).getTime() / 1000);
+        const index = candles.findLastIndex(c => c.time <= signalTime);
+        const inside = index >= 0 && signalTime < candles[index].time + minutes * 60;
+        view.signalCandle = inside ? candles[index].time : null;
+
+        const isLong = signal.direction === 'long';
+        view.series.setMarkers(inside ? [{
+            time: view.signalCandle,
+            position: isLong ? 'belowBar' : 'aboveBar',
+            shape: isLong ? 'arrowUp' : 'arrowDown',
+            color: cssVar(isLong ? '--profit' : '--loss'),
+            text: 'Signal',
+        }] : []);
+
+        // Show the candles leading up to the signal and a few after it (or the newest ones; all when few)
+        const to = inside ? Math.min(candles.length - 1, index + SIGNAL_CHART_AFTER) : candles.length - 1;
+        view.range = candles.length <= SIGNAL_CHART_CANDLES ? null : { from: to - SIGNAL_CHART_CANDLES + 1, to: to + 1 };
+        showSignalRange(view);
+
+        if (inside) {
+            this.signalChart = { minutes, state: 'ready', note: '' };
+            return;
+        }
+        // The signal is outside the cached candles: say which way, rather than draw a misplaced line
+        const covers = `${fmtCandleTime(candles[0].time)} – ${fmtCandleTime(last.time + minutes * 60)}`;
+        const note = signalTime < candles[0].time
+            ? `The signal is older than these candles (${covers}). Pick a longer candle length to see it.`
+            : `The signal is newer than these candles (${covers}); they refresh shortly.`;
+        this.signalChart = { minutes, state: 'outside', note };
+    },
+
+    // Creates the dialog's chart, or returns null when its pane is not in the page.
+    _createSignalChart() {
+        const el = document.querySelector('.signal-chart-pane');
+        const line = document.querySelector('.signal-chart-line');
+        if (!el || !line) return null;
+        const { chart, series } = newCandleChart(el);
+        const view = { chart, series, el, line, signalCandle: null, range: null, rangePending: false, resizer: null };
+        // Follow the pane's size (window resize, layout switch) and keep the line on its candle;
+        // the first size after the dialog opens also applies the candles' starting range
+        view.resizer = new ResizeObserver(() => {
+            chart.applyOptions({ width: el.clientWidth, height: el.clientHeight });
+            if (view.rangePending) showSignalRange(view);
+            placeSignalLine(view);
+        });
+        view.resizer.observe(el);
+        chart.timeScale().subscribeVisibleLogicalRangeChange(() => placeSignalLine(view));
+        signalChartView = view;
+        return view;
+    },
+
+    // Removes the dialog's chart and its observer, and drops any candle answer still on its way.
+    _removeSignalChart() {
+        signalChartRequest++;
+        const view = signalChartView;
+        if (!view) return;
+        view.resizer.disconnect();
+        view.chart.remove();
+        signalChartView = null;
     },
 
     // A readable label for a signal's strategy id.

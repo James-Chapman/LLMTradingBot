@@ -27,6 +27,7 @@ import (
 	"github.com/James-Chapman/LLMTradingBot/internal/config"
 	"github.com/James-Chapman/LLMTradingBot/internal/observability"
 	"github.com/James-Chapman/LLMTradingBot/internal/storage"
+	"github.com/James-Chapman/LLMTradingBot/internal/strategy"
 )
 
 // noStore disables browser caching for the HTML shells and service worker.
@@ -599,11 +600,22 @@ func pyFloat(v float64) string {
 // signalDetail returns the full context of one trade idea.
 func (h *handler) signalDetail(w http.ResponseWriter, r *http.Request) {
 	detail, err := h.app.Repository().GetSignalDetail(r.Context(), r.PathValue("trade_idea_id"))
-	if err == nil && detail == nil {
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	if detail == nil {
 		writeDetail(w, http.StatusNotFound, "Signal not found")
 		return
 	}
-	h.writeResult(w, r, detail, err)
+	// The dialog's chart opens on the candles the signal's strategy read.
+	writeJSON(w, http.StatusOK, signalDetailView{SignalDetail: detail, CandleMinutes: strategy.CandleMinutes(detail.StrategyID)})
+}
+
+// signalDetailView is a stored signal plus the candle length its chart opens on.
+type signalDetailView struct {
+	*storage.SignalDetail
+	CandleMinutes int `json:"candle_minutes"`
 }
 
 // closePosition manually closes one open position: a paper position at the

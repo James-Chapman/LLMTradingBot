@@ -658,7 +658,7 @@ Returns cached OHLC candlestick data for the requested market and interval. The 
 
 **Path parameter:** `market` — e.g. `BTC/EUR` (URL-encoded as `BTC%2FEUR`). Captured with `{market...}` so the slash is preserved.
 
-**Query parameter:** `interval` — candle width in minutes. `15` selects the 15-minute cache; anything else, including the default `5`, selects the 5-minute cache. A non-integer value returns `422` with a FastAPI-style validation body.
+**Query parameter:** `interval` — candle width in minutes. `15`, `60` and `240` select the 15-minute, 1-hour and 4-hour caches (the last two are the strategies' candles, refreshed once per interval); anything else, including the default `5`, selects the 5-minute cache. A non-integer value returns `422` with a FastAPI-style validation body.
 
 **Response:**
 
@@ -673,7 +673,7 @@ Returns cached OHLC candlestick data for the requested market and interval. The 
 }
 ```
 
-`t` is a Unix timestamp in seconds. Candles are ordered oldest-to-newest. 100 candles are requested per cycle (~8 hours at 5-min, ~25 hours at 15-min).
+`t` is a Unix timestamp in seconds. Candles are ordered oldest-to-newest. 100 candles are requested per cycle (~8 hours at 5-min, ~25 hours at 15-min); the 1-hour and 4-hour caches keep 720 candles (30 and 120 days).
 
 ---
 
@@ -837,9 +837,12 @@ Returns the full context of one trade idea for the signal detail modal. Returns 
     "entry_plan":           "...",
     "exit_plan":            "...",
     "stop_or_invalidation": "...",
-    "created_at":           "2026-04-23T14:32:10"
+    "created_at":           "2026-04-23T14:32:10",
+    "candle_minutes":       60
 }
 ```
+
+`candle_minutes` (since 0.23.0) is the candle length the signal's strategy reads (`strategy.CandleMinutes`): 60 for the 1-hour basic strategies, 240 for the 4-hour ones, 15 for `llm_only_strategy` and unknown ids. The dialog's chart opens on it.
 
 ---
 

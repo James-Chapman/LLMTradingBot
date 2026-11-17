@@ -33,6 +33,27 @@ function toCandleSeries(candles) {
     return [...byTime.values()].sort((a, b) => a.time - b.time);
 }
 
+// Creates a candlestick chart in el, styled from the theme tokens. Shared by
+// the Markets detail pane and the signal dialog; callers handle resizing.
+function newCandleChart(el) {
+    const border = cssVar('--border');
+    const chart = LightweightCharts.createChart(el, {
+        width: el.clientWidth,
+        height: el.clientHeight,
+        layout: { background: { color: cssVar('--surface-panel') }, textColor: cssVar('--text-muted') },
+        grid: { vertLines: { color: border }, horzLines: { color: border } },
+        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+        rightPriceScale: { borderColor: border },
+        timeScale: { borderColor: border, timeVisible: true, secondsVisible: false },
+    });
+    const up = cssVar('--profit');
+    const down = cssVar('--loss');
+    const series = chart.addCandlestickSeries({
+        upColor: up, downColor: down, borderUpColor: up, borderDownColor: down, wickUpColor: up, wickDownColor: down,
+    });
+    return { chart, series };
+}
+
 // The detail pane's quote before (or without) candles; span5 / span15 describe each chart's time range.
 function emptyChartQuote() {
     return { state: 'idle', error: '', close: null, change: null, span5: '', span15: '' };
@@ -327,22 +348,8 @@ Dashboard.register('markets', {
     // Creates the two Lightweight Charts instances in the detail pane for market.
     _createCharts(market) {
         const entry = { chart5: null, series5: null, chart15: null, series15: null, resizers: [] };
-        const border = cssVar('--border');
         const makeChart = el => {
-            const chart = LightweightCharts.createChart(el, {
-                width: el.clientWidth,
-                height: el.clientHeight,
-                layout: { background: { color: cssVar('--surface-panel') }, textColor: cssVar('--text-muted') },
-                grid: { vertLines: { color: border }, horzLines: { color: border } },
-                crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-                rightPriceScale: { borderColor: border },
-                timeScale: { borderColor: border, timeVisible: true, secondsVisible: false },
-            });
-            const up = cssVar('--profit');
-            const down = cssVar('--loss');
-            const series = chart.addCandlestickSeries({
-                upColor: up, downColor: down, borderUpColor: up, borderDownColor: down, wickUpColor: up, wickDownColor: down,
-            });
+            const { chart, series } = newCandleChart(el);
             // Follow the pane's size (window resize, sidebar collapse, layout change) and refit the candles
             const resizer = new ResizeObserver(() => {
                 chart.applyOptions({ width: el.clientWidth, height: el.clientHeight });

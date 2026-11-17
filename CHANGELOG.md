@@ -7,6 +7,19 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.23.0] — 2026-11-17
+
+### Added
+- **Candle chart in the signal dialog.** Opening a signal shows its market's candles beside the details (above them below 900 px), with the candle the signal was generated in marked by a dashed vertical line and a *Signal* arrow. The chart opens on the candles the signal's strategy read (1 h for the `*_1h` strategies, 4 h for the 4-hour ones, 15 min for `llm_only_strategy`) and 5m / 15m / 1h / 4h chips switch it. A signal older or newer than the cached candles gets a note instead of a misplaced line.
+- `GET /api/ohlc/{market}` serves the cached 1-hour and 4-hour candles for `interval=60` and `interval=240`.
+- `GET /api/signals/{id}` returns `candle_minutes`, the candle length of the signal's strategy (`strategy.CandleMinutes`).
+
+### Changed
+- The signal dialog is wider (up to 1240 px) to fit the chart.
+- The Markets view and the signal dialog build their candle charts with one shared helper (`newCandleChart`).
+
+---
+
 ## [0.22.1] — 2026-11-17
 
 ### Fixed

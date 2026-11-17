@@ -11,6 +11,7 @@ import (
 	"github.com/James-Chapman/LLMTradingBot/internal/control"
 	"github.com/James-Chapman/LLMTradingBot/internal/domain"
 	"github.com/James-Chapman/LLMTradingBot/internal/learner"
+	"github.com/James-Chapman/LLMTradingBot/internal/marketdata"
 	"github.com/James-Chapman/LLMTradingBot/internal/observability"
 	"github.com/James-Chapman/LLMTradingBot/internal/paper"
 	"github.com/James-Chapman/LLMTradingBot/internal/portfolio"
@@ -80,15 +81,20 @@ func (a *App) LLMHealth() LLMHealth {
 	}
 }
 
-// OHLC returns cached candles for market; interval 15 selects the 15-minute
-// cache and anything else the 5-minute one. An empty payload echoes the
-// requested interval so the chart waits gracefully.
+// OHLC returns cached candles for market: interval 15, 60 or 240 selects the
+// 15-minute, 1-hour or 4-hour cache and anything else the 5-minute one. An
+// empty payload echoes the requested interval so the chart waits gracefully.
 func (a *App) OHLC(market string, interval int) OHLCPayload {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	cache := a.ohlc5
-	if interval == 15 {
+	cache := a.ohlc5 // any interval the bot does not keep gets the 5-minute candles
+	switch interval {
+	case 15:
 		cache = a.ohlc15
+	case marketdata.HourCandleMinutes:
+		cache = a.ohlc60
+	case marketdata.TrendCandleMinutes:
+		cache = a.ohlc240
 	}
 	if cached, ok := cache[market]; ok && len(cached.Candles) > 0 {
 		return cached

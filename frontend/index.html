@@ -2651,165 +2651,191 @@
                         </div>
                     </div>
 
-                    <div class="dialog-body stack">
-                        <p class="note-box" x-text="signalModal.thesis"></p>
-
-                        <!-- Score breakdown -->
-                        <template x-if="signalBreakdown">
-                            <div class="stack-sm">
-                                <h3 class="section-title">Score breakdown</h3>
-                                <div class="breakdown">
-                                    <div class="breakdown-row is-head"><span>Component</span><span>Input</span><span class="num">Δ Score</span></div>
-                                    <div class="breakdown-row">
-                                        <span>Momentum base<span class="breakdown-note">min(|momentum| × 100, 50)</span></span>
-                                        <span class="num muted" x-text="(signalBreakdown.momentum >= 0 ? '+' : '') + (signalBreakdown.momentum * 100).toFixed(3) + '%'"></span>
-                                        <span class="num" x-text="'+' + (signalBreakdown.base * 100).toFixed(1) + '%'"></span>
-                                    </div>
-                                    <div class="breakdown-row">
-                                        <span>Indicator consensus<span class="breakdown-note"
-                                                x-text="signalBreakdown.supporting + ' supporting indicator' + (signalBreakdown.supporting !== 1 ? 's' : '')"></span></span>
-                                        <span class="num muted" x-text="signalBreakdown.supporting + ' / ' + signalBreakdown.available"></span>
-                                        <span class="num" :class="pnlClass(signalBreakdown.indicatorBonus)" x-text="signedFractionPct(signalBreakdown.indicatorBonus)"></span>
-                                    </div>
-                                    <div class="breakdown-row">
-                                        <span>News sentiment<span class="breakdown-note"
-                                                x-text="signalBreakdown.newsBonus > 0 ? 'aligned with signal direction' : signalBreakdown.newsBonus < 0 ? 'opposing signal direction' : 'neutral / no relevant news'"></span></span>
-                                        <span class="num muted" x-text="(signalBreakdown.newsSent >= 0 ? '+' : '') + signalBreakdown.newsSent.toFixed(2)"></span>
-                                        <span class="num" :class="pnlClass(signalBreakdown.newsBonus)" x-text="signedFractionPct(signalBreakdown.newsBonus)"></span>
-                                    </div>
-                                    <div class="breakdown-row">
-                                        <span>LLM briefing sentiment<span class="breakdown-note"
-                                                x-text="signalBreakdown.llmSentimentBonus > 0 ? 'aligned with signal direction' : signalBreakdown.llmSentimentBonus < 0 ? 'opposing signal direction' : 'neutral / unused'"></span></span>
-                                        <span class="num muted" x-text="(signalBreakdown.llmSentiment >= 0 ? '+' : '') + signalBreakdown.llmSentiment.toFixed(2)"></span>
-                                        <span class="num" :class="pnlClass(signalBreakdown.llmSentimentBonus)" x-text="signedFractionPct(signalBreakdown.llmSentimentBonus)"></span>
-                                    </div>
-                                    <div class="breakdown-row">
-                                        <span>Volatility (ATR)<span class="breakdown-note"
-                                                x-text="signalBreakdown.atrPct > 1 ? signalBreakdown.atrPct.toFixed(3) + '% of price — penalty' : signalBreakdown.atrPct > 0 ? signalBreakdown.atrPct.toFixed(3) + '% — no penalty' : 'ATR warming up'"></span></span>
-                                        <span class="num muted" x-text="signalBreakdown.atrPct.toFixed(3) + '%'"></span>
-                                        <span class="num" :class="signalBreakdown.atrPenalty < 0 ? 'warn' : 'muted'" x-text="signedFractionPct(signalBreakdown.atrPenalty)"></span>
-                                    </div>
-                                    <div class="breakdown-row is-subtotal">
-                                        <span>Strategy confidence</span><span></span>
-                                        <span class="num" x-text="(signalBreakdown.stratConf * 100).toFixed(1) + '%'"></span>
-                                    </div>
-                                    <!-- LLM multiplier: the LLM's scale, weighted by LLM_WEIGHT -->
-                                    <template x-if="signalBreakdown.llmUsed">
-                                        <div class="breakdown-row">
-                                            <span>LLM multiplier<span class="breakdown-note"
-                                                    x-text="(signalBreakdown.llmScale >= 1 ? 'supported signal' : signalBreakdown.llmScale >= .7 ? 'partially opposed' : 'strongly opposed')
-                                                        + (signalBreakdown.llmWeight !== 1 ? ' · LLM × ' + signalBreakdown.llmScale.toFixed(2) + ' at weight ' + signalBreakdown.llmWeight.toFixed(2) : '')
-                                                        + (signalModal.llm_reasoning ? ' · “' + signalModal.llm_reasoning + '”' : '')"></span></span>
-                                            <span class="num muted" x-text="'× ' + signalBreakdown.llmApplied.toFixed(2)"></span>
-                                            <span class="num" :class="pnlClass(signalBreakdown.llmDiff)" x-text="signedFractionPct(signalBreakdown.llmDiff)"></span>
-                                        </div>
-                                    </template>
-                                    <template x-if="signalBreakdown.learnerAdjusted">
-                                        <div class="breakdown-row">
-                                            <span>Historical performance<span class="breakdown-note">learner adjusted from past trade outcomes</span></span>
-                                            <span class="num muted" x-text="'× ' + signalBreakdown.learnerScale.toFixed(2)"></span>
-                                            <span class="num" :class="pnlClass(signalBreakdown.learnerDiff)" x-text="signedFractionPct(signalBreakdown.learnerDiff)"></span>
-                                        </div>
-                                    </template>
-                                    <div class="breakdown-row is-total">
-                                        <span>Final confidence<span x-show="!signalBreakdown.llmUsed" class="breakdown-note">LLM unavailable — no multiplier</span></span>
-                                        <span></span>
-                                        <span class="num" :class="confidenceClass(signalBreakdown.finalConf)" x-text="(signalBreakdown.finalConf * 100).toFixed(1) + '%'"></span>
-                                    </div>
-                                </div>
-
-                                <!-- Indicator votes -->
-                                <div class="breakdown">
-                                    <div class="breakdown-row votes-row is-head"><span>Indicator</span><span>Value</span><span>Reading</span><span class="num">Vote</span></div>
-                                    <template x-for="row in signalVoteRows" :key="row.name">
-                                        <div class="breakdown-row votes-row" :class="{ 'is-empty': !row.hasData }">
-                                            <span x-text="row.name"></span>
-                                            <span class="num muted" x-text="row.displayValue"></span>
-                                            <span :class="row.vote === 1 ? 'pos' : row.vote === -1 ? 'neg' : 'muted'" x-text="row.signal"></span>
-                                            <span class="num" :class="row.vote === 1 ? 'pos' : row.vote === -1 ? 'neg' : 'muted'"
-                                                x-text="row.vote === 1 ? '▲ +1' : row.vote === -1 ? '▼ −1' : row.hasData ? '— 0' : 'n/a'"></span>
-                                        </div>
-                                    </template>
-                                    <div class="breakdown-row is-subtotal" style="grid-template-columns: minmax(0, 1fr) auto;">
-                                        <span>Net consensus: <span x-text="(signalBreakdown.votes >= 0 ? '+' : '') + signalBreakdown.votes"></span>
-                                            from <span x-text="signalBreakdown.available"></span>
-                                            active indicator<span x-text="signalBreakdown.available !== 1 ? 's' : ''"></span>
-                                            <span class="breakdown-note" x-text="signalBreakdown.available < 3 ? '(gate inactive — needs ≥3)' : '(gate requires ≥1 to proceed ✓)'"></span></span>
-                                        <span class="num" :class="pnlClass(signalBreakdown.indicatorBonus)"
-                                            x-text="'bonus ' + signedFractionPct(signalBreakdown.indicatorBonus)"></span>
-                                    </div>
-                                </div>
-
-                                <!-- Raw signal data (all supporting_signals values) -->
-                                <details>
-                                    <summary>Raw signal data</summary>
-                                    <div class="breakdown raw-signal-grid">
-                                        <template x-for="[k, v] in Object.entries(signalModal.supporting_signals ?? {})" :key="k">
-                                            <div class="raw-signal-row" :class="{ 'is-empty': v == null }">
-                                                <span class="muted" x-text="k.replace(/_/g, ' ')"></span>
-                                                <span :class="typeof v === 'number' ? pnlClass(v) : ''" x-text="rawSignalValue(v)"></span>
-                                            </div>
+                    <div class="dialog-body">
+                        <div class="signal-layout">
+                            <!-- Candle chart: the market around the signal, its candle marked by a vertical line -->
+                            <section class="signal-chart" aria-labelledby="signal-chart-title">
+                                <div class="signal-chart-head">
+                                    <h3 id="signal-chart-title" class="section-title"
+                                        x-text="signalModal.market + ' · ' + candleLabel(signalChart.minutes) + ' candles'"></h3>
+                                    <div class="filter-group" role="group" aria-label="Candle length">
+                                        <template x-for="m in signalChartIntervals" :key="m">
+                                            <button type="button" class="filter-chip" :aria-pressed="signalChart.minutes === m"
+                                                @click="loadSignalChart(m)" x-text="candleLabel(m)"></button>
                                         </template>
                                     </div>
-                                </details>
-                            </div>
-                        </template>
-
-                        <!-- Risk decision and LLM assessment -->
-                        <div class="two-col">
-                            <div class="note-box">
-                                <h3 class="section-title">Risk decision</h3>
-                                <p x-show="signalModal.risk_approved" class="pos">✓ Approved</p>
-                                <p x-show="!signalModal.risk_approved && signalModal.risk_approved !== null" class="neg">✗ Rejected</p>
-                                <p x-show="signalModal.risk_approved === null" class="muted">—</p>
-                                <p class="list-item-meta" x-text="signalModal.risk_reason || '—'"></p>
-                            </div>
-                            <div class="note-box">
-                                <h3 class="section-title">LLM assessment</h3>
-                                <template x-if="signalModal.llm_used">
-                                    <dl class="kv">
-                                        <dt>Sentiment</dt>
-                                        <dd class="num" :class="signalModal.llm_sentiment >= 0 ? 'pos' : 'neg'"
-                                            x-text="(signalModal.llm_sentiment >= 0 ? '+' : '') + signalModal.llm_sentiment.toFixed(2)"></dd>
-                                        <dt>Scale</dt>
-                                        <dd class="num" :class="signalModal.llm_confidence_scale >= 1 ? 'pos' : 'neg'"
-                                            x-text="'× ' + signalModal.llm_confidence_scale.toFixed(2)"></dd>
-                                        <dt>Weight</dt>
-                                        <dd class="num" x-text="signalBreakdown ? signalBreakdown.llmWeight.toFixed(2) + ' → × ' + signalBreakdown.llmApplied.toFixed(2) + ' applied' : '—'"></dd>
-                                        <dt x-show="signalModal.llm_reasoning">Reasoning</dt>
-                                        <dd x-show="signalModal.llm_reasoning" x-text="'“' + signalModal.llm_reasoning + '”'"></dd>
-                                    </dl>
-                                </template>
-                                <p x-show="!signalModal.llm_used" class="list-item-meta">LLM unavailable when this signal was
-                                    generated — no adjustment applied.</p>
-                            </div>
-                        </div>
-
-                        <!-- News in context -->
-                        <template x-if="signalModal.news_context && signalModal.news_context.length">
-                            <div class="note-box">
-                                <h3 class="section-title">News in context</h3>
-                                <div class="stack-sm">
-                                    <template x-for="n in signalModal.news_context" :key="n.url || n.title">
-                                        <div>
-                                            <span class="pill pill-outline" x-text="n.source"></span>
-                                            <a :href="safeUrl(n.url)" target="_blank" rel="noopener noreferrer" x-text="n.title"></a>
-                                            <p x-show="n.summary" class="list-item-meta" x-text="n.summary"></p>
-                                        </div>
-                                    </template>
                                 </div>
-                            </div>
-                        </template>
+                                <div class="signal-chart-frame">
+                                    <div class="chart-pane signal-chart-pane"></div>
+                                    <div class="signal-chart-line" aria-hidden="true"></div>
+                                    <p class="signal-chart-status" x-show="['loading', 'empty', 'error'].includes(signalChart.state)"
+                                        x-text="signalChartStatus()"></p>
+                                </div>
+                                <p class="list-item-meta" x-show="signalChart.state === 'ready'">The dashed line marks the candle the signal was generated in.</p>
+                                <p class="list-item-meta warn" x-show="signalChart.state === 'outside'" x-text="signalChart.note"></p>
+                            </section>
 
-                        <!-- Entry and exit plans -->
-                        <div class="two-col">
-                            <div class="note-box">
-                                <h3 class="section-title">Entry plan</h3>
-                                <p x-text="signalModal.entry_plan"></p>
-                            </div>
-                            <div class="note-box">
-                                <h3 class="section-title">Exit plan</h3>
-                                <p x-text="signalModal.exit_plan"></p>
+                            <div class="signal-details stack">
+                                <p class="note-box" x-text="signalModal.thesis"></p>
+
+                                <!-- Score breakdown -->
+                                <template x-if="signalBreakdown">
+                                    <div class="stack-sm">
+                                        <h3 class="section-title">Score breakdown</h3>
+                                        <div class="breakdown">
+                                            <div class="breakdown-row is-head"><span>Component</span><span>Input</span><span class="num">Δ Score</span></div>
+                                            <div class="breakdown-row">
+                                                <span>Momentum base<span class="breakdown-note">min(|momentum| × 100, 50)</span></span>
+                                                <span class="num muted" x-text="(signalBreakdown.momentum >= 0 ? '+' : '') + (signalBreakdown.momentum * 100).toFixed(3) + '%'"></span>
+                                                <span class="num" x-text="'+' + (signalBreakdown.base * 100).toFixed(1) + '%'"></span>
+                                            </div>
+                                            <div class="breakdown-row">
+                                                <span>Indicator consensus<span class="breakdown-note"
+                                                        x-text="signalBreakdown.supporting + ' supporting indicator' + (signalBreakdown.supporting !== 1 ? 's' : '')"></span></span>
+                                                <span class="num muted" x-text="signalBreakdown.supporting + ' / ' + signalBreakdown.available"></span>
+                                                <span class="num" :class="pnlClass(signalBreakdown.indicatorBonus)" x-text="signedFractionPct(signalBreakdown.indicatorBonus)"></span>
+                                            </div>
+                                            <div class="breakdown-row">
+                                                <span>News sentiment<span class="breakdown-note"
+                                                        x-text="signalBreakdown.newsBonus > 0 ? 'aligned with signal direction' : signalBreakdown.newsBonus < 0 ? 'opposing signal direction' : 'neutral / no relevant news'"></span></span>
+                                                <span class="num muted" x-text="(signalBreakdown.newsSent >= 0 ? '+' : '') + signalBreakdown.newsSent.toFixed(2)"></span>
+                                                <span class="num" :class="pnlClass(signalBreakdown.newsBonus)" x-text="signedFractionPct(signalBreakdown.newsBonus)"></span>
+                                            </div>
+                                            <div class="breakdown-row">
+                                                <span>LLM briefing sentiment<span class="breakdown-note"
+                                                        x-text="signalBreakdown.llmSentimentBonus > 0 ? 'aligned with signal direction' : signalBreakdown.llmSentimentBonus < 0 ? 'opposing signal direction' : 'neutral / unused'"></span></span>
+                                                <span class="num muted" x-text="(signalBreakdown.llmSentiment >= 0 ? '+' : '') + signalBreakdown.llmSentiment.toFixed(2)"></span>
+                                                <span class="num" :class="pnlClass(signalBreakdown.llmSentimentBonus)" x-text="signedFractionPct(signalBreakdown.llmSentimentBonus)"></span>
+                                            </div>
+                                            <div class="breakdown-row">
+                                                <span>Volatility (ATR)<span class="breakdown-note"
+                                                        x-text="signalBreakdown.atrPct > 1 ? signalBreakdown.atrPct.toFixed(3) + '% of price — penalty' : signalBreakdown.atrPct > 0 ? signalBreakdown.atrPct.toFixed(3) + '% — no penalty' : 'ATR warming up'"></span></span>
+                                                <span class="num muted" x-text="signalBreakdown.atrPct.toFixed(3) + '%'"></span>
+                                                <span class="num" :class="signalBreakdown.atrPenalty < 0 ? 'warn' : 'muted'" x-text="signedFractionPct(signalBreakdown.atrPenalty)"></span>
+                                            </div>
+                                            <div class="breakdown-row is-subtotal">
+                                                <span>Strategy confidence</span><span></span>
+                                                <span class="num" x-text="(signalBreakdown.stratConf * 100).toFixed(1) + '%'"></span>
+                                            </div>
+                                            <!-- LLM multiplier: the LLM's scale, weighted by LLM_WEIGHT -->
+                                            <template x-if="signalBreakdown.llmUsed">
+                                                <div class="breakdown-row">
+                                                    <span>LLM multiplier<span class="breakdown-note"
+                                                            x-text="(signalBreakdown.llmScale >= 1 ? 'supported signal' : signalBreakdown.llmScale >= .7 ? 'partially opposed' : 'strongly opposed')
+                                                                + (signalBreakdown.llmWeight !== 1 ? ' · LLM × ' + signalBreakdown.llmScale.toFixed(2) + ' at weight ' + signalBreakdown.llmWeight.toFixed(2) : '')
+                                                                + (signalModal.llm_reasoning ? ' · “' + signalModal.llm_reasoning + '”' : '')"></span></span>
+                                                    <span class="num muted" x-text="'× ' + signalBreakdown.llmApplied.toFixed(2)"></span>
+                                                    <span class="num" :class="pnlClass(signalBreakdown.llmDiff)" x-text="signedFractionPct(signalBreakdown.llmDiff)"></span>
+                                                </div>
+                                            </template>
+                                            <template x-if="signalBreakdown.learnerAdjusted">
+                                                <div class="breakdown-row">
+                                                    <span>Historical performance<span class="breakdown-note">learner adjusted from past trade outcomes</span></span>
+                                                    <span class="num muted" x-text="'× ' + signalBreakdown.learnerScale.toFixed(2)"></span>
+                                                    <span class="num" :class="pnlClass(signalBreakdown.learnerDiff)" x-text="signedFractionPct(signalBreakdown.learnerDiff)"></span>
+                                                </div>
+                                            </template>
+                                            <div class="breakdown-row is-total">
+                                                <span>Final confidence<span x-show="!signalBreakdown.llmUsed" class="breakdown-note">LLM unavailable — no multiplier</span></span>
+                                                <span></span>
+                                                <span class="num" :class="confidenceClass(signalBreakdown.finalConf)" x-text="(signalBreakdown.finalConf * 100).toFixed(1) + '%'"></span>
+                                            </div>
+                                        </div>
+
+                                        <!-- Indicator votes -->
+                                        <div class="breakdown">
+                                            <div class="breakdown-row votes-row is-head"><span>Indicator</span><span>Value</span><span>Reading</span><span class="num">Vote</span></div>
+                                            <template x-for="row in signalVoteRows" :key="row.name">
+                                                <div class="breakdown-row votes-row" :class="{ 'is-empty': !row.hasData }">
+                                                    <span x-text="row.name"></span>
+                                                    <span class="num muted" x-text="row.displayValue"></span>
+                                                    <span :class="row.vote === 1 ? 'pos' : row.vote === -1 ? 'neg' : 'muted'" x-text="row.signal"></span>
+                                                    <span class="num" :class="row.vote === 1 ? 'pos' : row.vote === -1 ? 'neg' : 'muted'"
+                                                        x-text="row.vote === 1 ? '▲ +1' : row.vote === -1 ? '▼ −1' : row.hasData ? '— 0' : 'n/a'"></span>
+                                                </div>
+                                            </template>
+                                            <div class="breakdown-row is-subtotal" style="grid-template-columns: minmax(0, 1fr) auto;">
+                                                <span>Net consensus: <span x-text="(signalBreakdown.votes >= 0 ? '+' : '') + signalBreakdown.votes"></span>
+                                                    from <span x-text="signalBreakdown.available"></span>
+                                                    active indicator<span x-text="signalBreakdown.available !== 1 ? 's' : ''"></span>
+                                                    <span class="breakdown-note" x-text="signalBreakdown.available < 3 ? '(gate inactive — needs ≥3)' : '(gate requires ≥1 to proceed ✓)'"></span></span>
+                                                <span class="num" :class="pnlClass(signalBreakdown.indicatorBonus)"
+                                                    x-text="'bonus ' + signedFractionPct(signalBreakdown.indicatorBonus)"></span>
+                                            </div>
+                                        </div>
+
+                                        <!-- Raw signal data (all supporting_signals values) -->
+                                        <details>
+                                            <summary>Raw signal data</summary>
+                                            <div class="breakdown raw-signal-grid">
+                                                <template x-for="[k, v] in Object.entries(signalModal.supporting_signals ?? {})" :key="k">
+                                                    <div class="raw-signal-row" :class="{ 'is-empty': v == null }">
+                                                        <span class="muted" x-text="k.replace(/_/g, ' ')"></span>
+                                                        <span :class="typeof v === 'number' ? pnlClass(v) : ''" x-text="rawSignalValue(v)"></span>
+                                                    </div>
+                                                </template>
+                                            </div>
+                                        </details>
+                                    </div>
+                                </template>
+
+                                <!-- Risk decision and LLM assessment -->
+                                <div class="two-col">
+                                    <div class="note-box">
+                                        <h3 class="section-title">Risk decision</h3>
+                                        <p x-show="signalModal.risk_approved" class="pos">✓ Approved</p>
+                                        <p x-show="!signalModal.risk_approved && signalModal.risk_approved !== null" class="neg">✗ Rejected</p>
+                                        <p x-show="signalModal.risk_approved === null" class="muted">—</p>
+                                        <p class="list-item-meta" x-text="signalModal.risk_reason || '—'"></p>
+                                    </div>
+                                    <div class="note-box">
+                                        <h3 class="section-title">LLM assessment</h3>
+                                        <template x-if="signalModal.llm_used">
+                                            <dl class="kv">
+                                                <dt>Sentiment</dt>
+                                                <dd class="num" :class="signalModal.llm_sentiment >= 0 ? 'pos' : 'neg'"
+                                                    x-text="(signalModal.llm_sentiment >= 0 ? '+' : '') + signalModal.llm_sentiment.toFixed(2)"></dd>
+                                                <dt>Scale</dt>
+                                                <dd class="num" :class="signalModal.llm_confidence_scale >= 1 ? 'pos' : 'neg'"
+                                                    x-text="'× ' + signalModal.llm_confidence_scale.toFixed(2)"></dd>
+                                                <dt>Weight</dt>
+                                                <dd class="num" x-text="signalBreakdown ? signalBreakdown.llmWeight.toFixed(2) + ' → × ' + signalBreakdown.llmApplied.toFixed(2) + ' applied' : '—'"></dd>
+                                                <dt x-show="signalModal.llm_reasoning">Reasoning</dt>
+                                                <dd x-show="signalModal.llm_reasoning" x-text="'“' + signalModal.llm_reasoning + '”'"></dd>
+                                            </dl>
+                                        </template>
+                                        <p x-show="!signalModal.llm_used" class="list-item-meta">LLM unavailable when this signal was
+                                            generated — no adjustment applied.</p>
+                                    </div>
+                                </div>
+
+                                <!-- News in context -->
+                                <template x-if="signalModal.news_context && signalModal.news_context.length">
+                                    <div class="note-box">
+                                        <h3 class="section-title">News in context</h3>
+                                        <div class="stack-sm">
+                                            <template x-for="n in signalModal.news_context" :key="n.url || n.title">
+                                                <div>
+                                                    <span class="pill pill-outline" x-text="n.source"></span>
+                                                    <a :href="safeUrl(n.url)" target="_blank" rel="noopener noreferrer" x-text="n.title"></a>
+                                                    <p x-show="n.summary" class="list-item-meta" x-text="n.summary"></p>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
+
+                                <!-- Entry and exit plans -->
+                                <div class="two-col">
+                                    <div class="note-box">
+                                        <h3 class="section-title">Entry plan</h3>
+                                        <p x-text="signalModal.entry_plan"></p>
+                                    </div>
+                                    <div class="note-box">
+                                        <h3 class="section-title">Exit plan</h3>
+                                        <p x-text="signalModal.exit_plan"></p>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>

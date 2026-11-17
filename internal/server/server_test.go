@@ -258,6 +258,15 @@ func TestDashboard(t *testing.T) {
 		}
 	})
 
+	t.Run("GIVEN a signal from a 1-hour strategy WHEN its detail is requested THEN it names the strategy's candle length for the chart", func(t *testing.T) {
+		signals := h.app.Dashboard().Signals
+		body := decodeObject(t, h.do(http.MethodGet, "/api/signals/"+signals[0].TradeIdeaID, nil))
+		want := float64(strategy.CandleMinutes(body["strategy_id"].(string)))
+		if body["candle_minutes"] != want {
+			t.Errorf("candle_minutes = %v, want %v for %v", body["candle_minutes"], want, body["strategy_id"])
+		}
+	})
+
 	t.Run("GIVEN an unknown signal WHEN its detail is requested THEN 404 Signal not found", func(t *testing.T) {
 		rec := h.do(http.MethodGet, "/api/signals/does-not-exist", nil)
 		if rec.Code != http.StatusNotFound || decodeObject(t, rec)["detail"] != "Signal not found" {
