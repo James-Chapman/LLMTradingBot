@@ -159,7 +159,9 @@ analysis := analyser.AnalyseSignal(ctx, llm.SignalRequest{
 if analysis.ConfidenceScale < b.settings.LLMVetoThreshold {
 	return nil // vetoed
 }
-finalConfidence := math.Min(calc.MaxConfidence, baseConfidence*analysis.ConfidenceScale)
+// LLM_WEIGHT sets how much of the scale reaches the score; the veto above uses the raw scale.
+applied := 1 + b.settings.LLMWeight*(analysis.ConfidenceScale-1)
+finalConfidence := math.Min(calc.MaxConfidence, baseConfidence*applied)
 if analysis.LLMUsed {
 	thesis = append(thesis, "LLM: "+analysis.Reasoning)
 }

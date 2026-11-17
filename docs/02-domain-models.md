@@ -380,8 +380,8 @@ Every strategy-generated signal with full context. Written by `Repository.SaveTr
 | `market` | VARCHAR | Trading pair |
 | `direction` | VARCHAR | `"long"` or `"short"` |
 | `thesis` | TEXT | Human-readable rationale (includes LLM reasoning if available) |
-| `supporting_signals` | JSON | Raw indicator values, votes, momentum, ATR, price changes, `pre_llm_confidence` |
-| `confidence` | FLOAT | Final confidence after learner + LLM adjustments |
+| `supporting_signals` | JSON | Raw indicator values, votes, momentum, ATR, price changes, and the score steps: `pre_llm_confidence` (the strategy's confidence before the LLM), `llm_weight` and `llm_applied_scale` (LLM strategies, nil when the LLM was not used), `pre_learner_confidence` (after the LLM, before the learner; since 0.22.0) |
+| `confidence` | FLOAT | Final confidence after the LLM and learner adjustments |
 | `entry_plan` / `exit_plan` / `stop_or_invalidation` | TEXT | Strategy description fields |
 | `position_sizing_proposal` | FLOAT | Fraction of equity proposed (0.20 = 20%) |
 | `mode_eligibility` | JSON | List of trading modes this signal can execute in |

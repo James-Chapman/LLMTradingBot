@@ -254,7 +254,8 @@ base         = min(|momentum| × 100, 0.50)
 ind_bonus    = clamp(net_votes × 0.05, −0.20, +0.40)
 atr_penalty  = −min(0.10, max(0, (ATR% − 1.0) × 0.05))   # only when ATR% > 1.0
 base_conf    = clamp(base + ind_bonus + atr_penalty, 0.10, 0.95)
-final_conf   = min(0.95, base_conf × llm_confidence_scale)
+applied      = 1 + LLM_WEIGHT × (llm_confidence_scale − 1)
+final_conf   = min(0.95, base_conf × applied)
 ```
 
 #### System Prompt
@@ -335,13 +336,14 @@ In this example:
 
 When the LLM is available (`LLMUsed == true`):
 
-1. **Veto check** — if `ConfidenceScale < LLM_VETO_THRESHOLD` (default 0.70), the signal is discarded:
+1. **Veto check** — if the raw `ConfidenceScale < LLM_VETO_THRESHOLD` (default 0.70), the signal is discarded (whatever `LLM_WEIGHT` is):
    ```
    BTC/EUR long vetoed by LLM — scale 0.55 < threshold 0.70: contradicted by bearish macro outlook
    ```
 2. **Confidence adjustment** — if the veto does not fire, final confidence is calculated and the LLM reasoning is appended to the thesis:
    ```go
-   finalConfidence := math.Min(calc.MaxConfidence, baseConfidence*analysis.ConfidenceScale)
+   applied := 1 + settings.LLMWeight*(analysis.ConfidenceScale-1) // LLM_WEIGHT, 0–1
+   finalConfidence := math.Min(calc.MaxConfidence, baseConfidence*applied)
    if analysis.LLMUsed {
    	thesis = append(thesis, "LLM: "+analysis.Reasoning) // parts are joined with " | "
    }

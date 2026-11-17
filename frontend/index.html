@@ -2693,20 +2693,22 @@
                                         <span>Strategy confidence</span><span></span>
                                         <span class="num" x-text="(signalBreakdown.stratConf * 100).toFixed(1) + '%'"></span>
                                     </div>
+                                    <!-- LLM multiplier: the LLM's scale, weighted by LLM_WEIGHT -->
+                                    <template x-if="signalBreakdown.llmUsed">
+                                        <div class="breakdown-row">
+                                            <span>LLM multiplier<span class="breakdown-note"
+                                                    x-text="(signalBreakdown.llmScale >= 1 ? 'supported signal' : signalBreakdown.llmScale >= .7 ? 'partially opposed' : 'strongly opposed')
+                                                        + (signalBreakdown.llmWeight !== 1 ? ' · LLM × ' + signalBreakdown.llmScale.toFixed(2) + ' at weight ' + signalBreakdown.llmWeight.toFixed(2) : '')
+                                                        + (signalModal.llm_reasoning ? ' · “' + signalModal.llm_reasoning + '”' : '')"></span></span>
+                                            <span class="num muted" x-text="'× ' + signalBreakdown.llmApplied.toFixed(2)"></span>
+                                            <span class="num" :class="pnlClass(signalBreakdown.llmDiff)" x-text="signedFractionPct(signalBreakdown.llmDiff)"></span>
+                                        </div>
+                                    </template>
                                     <template x-if="signalBreakdown.learnerAdjusted">
                                         <div class="breakdown-row">
                                             <span>Historical performance<span class="breakdown-note">learner adjusted from past trade outcomes</span></span>
                                             <span class="num muted" x-text="'× ' + signalBreakdown.learnerScale.toFixed(2)"></span>
                                             <span class="num" :class="pnlClass(signalBreakdown.learnerDiff)" x-text="signedFractionPct(signalBreakdown.learnerDiff)"></span>
-                                        </div>
-                                    </template>
-                                    <template x-if="signalBreakdown.llmUsed">
-                                        <div class="breakdown-row">
-                                            <span>LLM multiplier<span class="breakdown-note"
-                                                    x-text="(signalBreakdown.llmScale >= 1 ? 'supported signal' : signalBreakdown.llmScale >= .7 ? 'partially opposed' : 'strongly opposed') + (signalModal.llm_reasoning ? ' · “' + signalModal.llm_reasoning + '”' : '')"></span></span>
-                                            <span class="num muted" x-text="'× ' + signalBreakdown.llmScale.toFixed(2)"></span>
-                                            <span class="num" :class="pnlClass(signalBreakdown.finalConf - signalBreakdown.preLlm)"
-                                                x-text="signedFractionPct(signalBreakdown.finalConf - signalBreakdown.preLlm)"></span>
                                         </div>
                                     </template>
                                     <div class="breakdown-row is-total">
@@ -2772,6 +2774,8 @@
                                         <dt>Scale</dt>
                                         <dd class="num" :class="signalModal.llm_confidence_scale >= 1 ? 'pos' : 'neg'"
                                             x-text="'× ' + signalModal.llm_confidence_scale.toFixed(2)"></dd>
+                                        <dt>Weight</dt>
+                                        <dd class="num" x-text="signalBreakdown ? signalBreakdown.llmWeight.toFixed(2) + ' → × ' + signalBreakdown.llmApplied.toFixed(2) + ' applied' : '—'"></dd>
                                         <dt x-show="signalModal.llm_reasoning">Reasoning</dt>
                                         <dd x-show="signalModal.llm_reasoning" x-text="'“' + signalModal.llm_reasoning + '”'"></dd>
                                     </dl>

@@ -7,6 +7,20 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.22.0] — 2026-11-17
+
+The signal card shows what the LLM did to a signal's score, and how much the LLM may change it is a setting.
+
+### Added
+- **`LLM_WEIGHT`** (live, Signals group, 0–1, default 1.0): the share of the LLM's `confidence_scale` applied to an entry's score, as applied scale = 1 + weight × (scale − 1). 1 keeps today's behaviour, 0.5 halves the LLM's effect (×1.20 becomes ×1.10), 0 stops the LLM changing the score. Used by `basic_and_llm_strategy_*` and the LLM versions (`trend_and_llm_strategy`, the 4-hour `*_and_llm` strategies). The veto still uses the LLM's raw scale, so a strong objection blocks the trade at any weight.
+- Supporting signals `llm_weight` and `llm_applied_scale` on LLM-reviewed entries, and `pre_learner_confidence` on every signal.
+- Signal card: the LLM assessment shows the weight and the applied scale.
+
+### Fixed
+- **The signal card showed the LLM as +0.0 % on every signal.** The strategy loop stamped `pre_llm_confidence` after the LLM and the learner had already changed the score, so the card's LLM row compared the final score with itself and the LLM's effect showed up under *Historical performance*. The LLM strategies now record the confidence before the LLM themselves, the loop records it before the learner, and the card lists the steps in the order the backend applies them: strategy → LLM → learner → final. Signals stored before 0.22.0 have their LLM step rebuilt from the raw scale.
+
+---
+
 ## [0.21.0] — 2026-11-16
 
 Costs at Kraken Pro's current Tier 1 rates (0.40 % maker / 0.80 % taker, read from https://www.kraken.com/pro/fees on 2026-11-16).

@@ -173,7 +173,7 @@ Risk checks run before mode routing, not inside each mode's branch. This means n
 Positions are keyed by UUID (`position_id`), not by market symbol. This allows complete independent tracking of every trade's lifecycle and pairs BUY and SELL orders in the trade ledger via a shared `position_id`.
 
 ### 3. LLM as an Advisor with Veto Power and Self-Improvement Loop
-The LLM adjusts confidence (`confidence_scale` 0.5–2.0) and annotates the thesis. It can also veto a signal entirely when its `confidence_scale` falls below `LLM_VETO_THRESHOLD` (default 0.70). Vetoes only fire when an LLM backend is available. Final execution authority for all non-vetoed signals remains with the risk engine and the operator.
+The LLM adjusts confidence (`confidence_scale` 0.5–2.0, weighted by `LLM_WEIGHT`) and annotates the thesis. It can also veto a signal entirely when its `confidence_scale` falls below `LLM_VETO_THRESHOLD` (default 0.70). Vetoes only fire when an LLM backend is available. Final execution authority for all non-vetoed signals remains with the risk engine and the operator.
 
 Every signal analysis prompt includes the LLM's own most recent hourly reflection (pattern + suggestion), closing the feedback loop so its advice influences subsequent decisions. The hourly reflection itself receives the full indicator state at the time of each trade entry (joined from `trade_ideas`), enabling indicator-level pattern detection rather than summary statistics alone.
 

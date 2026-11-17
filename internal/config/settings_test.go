@@ -74,6 +74,22 @@ func TestSettingsFields(t *testing.T) {
 		}
 	})
 
+	t.Run("GIVEN the LLM weight setting WHEN it is edited THEN it applies live and only accepts 0 to 1", func(t *testing.T) {
+		f, ok := FieldByKey("LLM_WEIGHT")
+		if !ok || !f.Live || f.Group != GroupSignals {
+			t.Fatalf("LLM_WEIGHT: expected a live signals setting, got %+v (found %v)", f, ok)
+		}
+		s := Defaults()
+		if err := f.Apply(&s, "0.25"); err != nil || s.LLMWeight != 0.25 {
+			t.Fatalf("0.25: err %v, weight %v", err, s.LLMWeight)
+		}
+		for _, bad := range []string{"-0.1", "1.5"} {
+			if err := f.Apply(&s, bad); err == nil {
+				t.Errorf("%s was accepted, want it refused", bad)
+			}
+		}
+	})
+
 	t.Run("GIVEN valid text for each kind WHEN applied THEN the setting changes and reads back the same", func(t *testing.T) {
 		cases := map[string]string{
 			"MIN_SIGNAL_CONFIDENCE":   "0.8",

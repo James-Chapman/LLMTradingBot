@@ -391,15 +391,18 @@ Returns `[]learner.SummaryRow` for the `GET /api/learning` endpoint and dashboar
 
 ## LLM Confidence Adjustment
 
-Inside `BasicAndLLMStrategy`, the LLM analyser applies a multiplier to the strategy's base confidence:
+Inside `BasicAndLLMStrategy` and the LLM versions (`applyLLMScore`), the LLM's scale, weighted by `LLM_WEIGHT`, multiplies the strategy's base confidence:
 
 ```go
-finalConfidence := math.Min(calc.MaxConfidence, baseConfidence*analysis.ConfidenceScale)
+applied := 1 + settings.LLMWeight*(analysis.ConfidenceScale-1)
+finalConfidence := math.Min(calc.MaxConfidence, baseConfidence*applied)
 ```
 
-`ConfidenceScale` is returned by the LLM in range [0.5, 2.0]. A value of 2.0 means the LLM strongly supports the signal and can double the base confidence. The final confidence is always capped at 0.95. When the LLM was not used the scale is a neutral 1.0.
+`ConfidenceScale` is returned by the LLM in range [0.5, 2.0]. A value of 2.0 means the LLM strongly supports the signal and, at the default weight of 1, can double the base confidence. `LLM_WEIGHT` (0–1) scales that effect: at 0.5 a ×1.20 becomes ×1.10, at 0 the LLM never changes the score. The final confidence is always capped at 0.95. When the LLM was not used the scale is a neutral 1.0.
 
-If `ConfidenceScale` is below `LLM_VETO_THRESHOLD` (default 0.70) the strategy drops the signal before it reaches the risk engine — see `07-llm-integration.md` for details.
+The strategy records `pre_llm_confidence`, `llm_weight` and `llm_applied_scale` in the supporting signals, and the strategy loop records `pre_learner_confidence` before the learner adjusts the score, so the signal card can show what the LLM and the learner each changed.
+
+If the raw `ConfidenceScale` (not the weighted one) is below `LLM_VETO_THRESHOLD` (default 0.70) the strategy drops the signal before it reaches the risk engine — see `07-llm-integration.md` for details.
 
 ### Combined Adjustment Chain
 
@@ -411,8 +414,9 @@ Strategy base confidence
     → clamp to [0.10, 0.95]
     → discard if < 0.20
 
-    × LLM ConfidenceScale (0.5–2.0, basic_and_llm_strategy_* only, when available)
-    → veto if scale < LLM_VETO_THRESHOLD (default 0.70)
+    → veto if raw LLM ConfidenceScale < LLM_VETO_THRESHOLD (default 0.70)
+    × applied LLM scale = 1 + LLM_WEIGHT × (ConfidenceScale − 1)
+      (scale 0.5–2.0, LLM strategies only, when available; LLM_WEIGHT default 1.0)
     → cap at 0.95
 
     × Learner scale (0.5–1.5, requires ≥5 samples; applied in the strategy loop)
@@ -593,7 +597,7 @@ Every 4-hour strategy has an LLM version: `trend_and_llm_strategy`, `donchian_an
 1. The base strategy evaluates as usual; its ideas are relabelled with the LLM version's id.
 2. **Exits are passed on unchanged, without an LLM call**, so an LLM outage or veto can never keep a position open. So are entries for a market already held.
 3. Each new entry is sent to `LLMAnalyser.AnalyseSignal` with the strategy's **own prompt** (`llm.StrategyPrompt`): its name, its instructions (what the signal means, what would make it more or less likely to work, when to oppose it), and its data (the idea's supporting signals: channel levels, RSI and EMA gap, MACD values, band width, rank and return). The prompt also carries what the `basic_and_llm_strategy_*` versions send: the market briefing, the latest reflection, the tick indicators, the portfolio and up to five recent news items for the asset. "Momentum" in the prompt is the 24-hour change of the 4-hour candles.
-4. The reply's `confidence_scale` (0.5–2.0) multiplies the entry's confidence, capped at 0.95; a scale below `LLM_VETO_THRESHOLD` (0.70) drops the entry. The `llm_sentiment`, `llm_confidence_scale` and `llm_reasoning` supporting signals are set as for `basic_and_llm_strategy` (nil when the LLM was not used), and the reasoning is appended to the thesis.
+4. The reply's `confidence_scale` (0.5–2.0), weighted by `LLM_WEIGHT`, multiplies the entry's confidence, capped at 0.95; a raw scale below `LLM_VETO_THRESHOLD` (0.70) drops the entry. The `llm_sentiment`, `llm_confidence_scale` and `llm_reasoning` supporting signals are set as for `basic_and_llm_strategy` (nil when the LLM was not used), and the reasoning is appended to the thesis.
 5. **One LLM call per market per closed 4-hour candle.** The verdict (including a veto) is reused until the market's last finished candle changes, so a 60-second strategy interval does not ask the LLM 240 times about the same signal. A reply made without the LLM (unavailable, unparsable) is not kept, so it is retried on the next tick; meanwhile the base entry stands with its own confidence.
 
 Like every LLM strategy, the LLM versions wait for news before evaluating (`llmStrategyDataReady`) and **cannot be backtested**: a replay cannot reproduce what the LLM would have said on a past date. Their only difference from the base strategy is which entries the LLM lets through, so judge them against the base strategy's backtest and on paper.

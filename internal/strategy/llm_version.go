@@ -33,8 +33,8 @@ type llmVerdict struct {
 
 // LLMVersion runs a base strategy and asks the LLM about each new entry with
 // the base strategy's own prompt plus the news, briefing and portfolio. The
-// LLM's confidence scale multiplies the entry's confidence; a scale below
-// LLM_VETO_THRESHOLD drops it. Exits are passed on without asking the LLM,
+// LLM's confidence scale, weighted by LLM_WEIGHT, multiplies the entry's
+// confidence; a raw scale below LLM_VETO_THRESHOLD drops it. Exits are passed on without asking the LLM,
 // so an LLM outage or veto can never keep a position open.
 type LLMVersion struct {
 	base     Prompter
@@ -102,12 +102,12 @@ func (v *LLMVersion) review(ctx context.Context, analyser Analyser, idea domain.
 		return nil
 	}
 	base := idea.Confidence
-	idea.Confidence = math.Min(calc.MaxConfidence, base*analysis.ConfidenceScale)
 	idea.Thesis += " | LLM: " + analysis.Reasoning
 	withLLMFields(&idea, &analysis)
+	applyLLMScore(&idea, analysis.ConfidenceScale, v.settings.LLMWeight)
 	v.log.Info("Generated trade idea", "strategy", v.id, "market", idea.Market,
 		"base_confidence", pyRound(base, 3), "llm_scale", pyRound(analysis.ConfidenceScale, 3),
-		"final_confidence", pyRound(idea.Confidence, 3))
+		"llm_weight", v.settings.LLMWeight, "final_confidence", pyRound(idea.Confidence, 3))
 	return &idea
 }
 
@@ -156,17 +156,37 @@ func askLLM(ctx context.Context, analyser Analyser, base Prompter, idea domain.T
 // withLLMFields sets the llm_* supporting signals: nil when the LLM was not
 // used (as basic_and_llm records them), else its sentiment, scale and reason.
 func withLLMFields(idea *domain.TradeIdea, a *llm.SignalAnalysis) {
-	signals := make(map[string]any, len(idea.SupportingSignals)+3)
+	signals := make(map[string]any, len(idea.SupportingSignals)+5)
 	for k, val := range idea.SupportingSignals {
 		signals[k] = val
 	}
 	signals["llm_sentiment"], signals["llm_confidence_scale"], signals["llm_reasoning"] = nil, nil, nil
+	signals["llm_weight"], signals["llm_applied_scale"] = nil, nil
 	if a != nil {
 		signals["llm_sentiment"] = pyRound(a.Sentiment, 3)
 		signals["llm_confidence_scale"] = pyRound(a.ConfidenceScale, 3)
 		signals["llm_reasoning"] = a.Reasoning
 	}
 	idea.SupportingSignals = signals
+}
+
+// appliedScale is the share of the LLM's confidence scale that LLM_WEIGHT lets
+// through: 1 + weight × (scale − 1). Weight 1 applies the scale in full,
+// weight 0 gives a neutral 1.
+func appliedScale(scale, weight float64) float64 {
+	return 1 + weight*(scale-1)
+}
+
+// applyLLMScore multiplies idea's confidence by the weighted LLM scale
+// (capped at calc.MaxConfidence) and records the steps for the signal card:
+// the confidence before the LLM, the weight and the applied scale. The raw
+// scale is recorded by withLLMFields.
+func applyLLMScore(idea *domain.TradeIdea, scale, weight float64) {
+	applied := appliedScale(scale, weight)
+	idea.SupportingSignals["pre_llm_confidence"] = idea.Confidence
+	idea.SupportingSignals["llm_weight"] = weight
+	idea.SupportingSignals["llm_applied_scale"] = pyRound(applied, 3)
+	idea.Confidence = math.Min(calc.MaxConfidence, idea.Confidence*applied)
 }
 
 // holdsLong reports whether the portfolio holds a long position in market.

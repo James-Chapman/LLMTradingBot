@@ -14,8 +14,8 @@ import (
 
 // BasicAndLLMStrategy runs the basic candle rules, then asks the LLM to
 // validate each new entry (emitted once per candle, so asked once per
-// candle): confidence is scaled by the LLM and a scale below the veto
-// threshold drops the trade. Exits and covers of held positions skip the
+// candle): confidence is scaled by the LLM, weighted by LLM_WEIGHT, and a raw
+// scale below the veto threshold drops the trade. Exits and covers of held positions skip the
 // LLM. Four versions: 1h or 4h candles, with or without paper shorts.
 type BasicAndLLMStrategy struct {
 	basicCore
@@ -83,20 +83,20 @@ func (b *BasicAndLLMStrategy) validated(ctx context.Context, d basicDecision, in
 	}
 
 	idea := b.entryIdea(d, fmt.Sprintf("Enter at market on indicator consensus on the closed %s candles and LLM validation", b.interval()))
-	idea.Confidence = math.Min(calc.MaxConfidence, baseConfidence*answer.ConfidenceScale)
+	idea.Confidence = math.Min(calc.MaxConfidence, baseConfidence)
 	// LLM fields are always present; nil when the LLM was not used.
-	idea.SupportingSignals["llm_sentiment"] = nil
-	idea.SupportingSignals["llm_confidence_scale"] = nil
-	idea.SupportingSignals["llm_reasoning"] = nil
 	if answer.LLMUsed {
-		idea.SupportingSignals["llm_sentiment"] = pyRound(answer.Sentiment, 3)
-		idea.SupportingSignals["llm_confidence_scale"] = pyRound(answer.ConfidenceScale, 3)
-		idea.SupportingSignals["llm_reasoning"] = answer.Reasoning
+		withLLMFields(&idea, &answer)
+		applyLLMScore(&idea, answer.ConfidenceScale, b.settings.LLMWeight)
 		idea.Thesis = strings.Join([]string{idea.Thesis, "LLM: " + answer.Reasoning}, " | ")
+	} else {
+		withLLMFields(&idea, nil)
+		idea.SupportingSignals["pre_llm_confidence"] = idea.Confidence
 	}
 	b.log.Debug("Generated trade idea", "strategy", b.id, "market", d.symbol,
 		"direction", string(sig.Direction), "base_confidence", pyRound(baseConfidence, 3),
-		"llm_scale", pyRound(answer.ConfidenceScale, 3), "final_confidence", pyRound(idea.Confidence, 3), "llm_used", answer.LLMUsed)
+		"llm_scale", pyRound(answer.ConfidenceScale, 3), "llm_weight", b.settings.LLMWeight,
+		"final_confidence", pyRound(idea.Confidence, 3), "llm_used", answer.LLMUsed)
 	return &idea
 }
 

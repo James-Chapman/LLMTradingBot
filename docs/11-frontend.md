@@ -221,7 +221,7 @@ All three dialogs use `.modal-backdrop` + `.modal-panel`, close on Escape and on
 
 `saveSettings()` confirms with one line per change (lists show `+` added and `−` removed; news feeds *switched off …* / *switched on …*; secrets only *new value* / *cleared*), then posts the changes. Closing with unsaved changes asks first. While `settingsRestartRequired` is not empty, a banner lists the keys: *Settings saved. Restart the bot to apply: …*.
 
-**Signal detail** (`.signal-panel`, `showSignal(id)`): strategy, time, market and direction, final confidence, thesis, score breakdown (momentum base, indicator consensus, news and LLM sentiment, ATR penalty, strategy confidence, learner and LLM multipliers, final), indicator votes, raw signal data, risk decision, LLM assessment, news in context, entry and exit plans.
+**Signal detail** (`.signal-panel`, `showSignal(id)`): strategy, time, market and direction, final confidence, thesis, score breakdown (momentum base, indicator consensus, news and LLM sentiment, ATR penalty, strategy confidence, then the LLM multiplier and the learner in the order the backend applies them, final; the LLM row shows the applied scale and, when `LLM_WEIGHT` is not 1, the raw scale and weight; signals stored before 0.22.0 have their LLM step rebuilt from the raw scale), indicator votes, raw signal data, risk decision, LLM assessment (sentiment, raw scale, weight and applied scale, reasoning), news in context, entry and exit plans.
 
 ---
 

@@ -333,8 +333,13 @@ func (a *App) strategyTick(ctx context.Context) (skipped bool, err error) {
 		a.activity.Info("Strategies evaluated - no signals this tick", "")
 	}
 
-	// Apply historical performance learning before the risk gate.
+	// Apply historical performance learning before the risk gate, keeping the
+	// confidence before it for the signal card's score breakdown.
 	for i := range ideas {
+		if ideas[i].SupportingSignals == nil {
+			ideas[i].SupportingSignals = map[string]any{}
+		}
+		ideas[i].SupportingSignals["pre_learner_confidence"] = ideas[i].Confidence
 		ideas[i].Confidence = a.learner.AdjustConfidence(ideas[i].StrategyID, ideas[i].Market, string(ideas[i].Direction), ideas[i].Confidence)
 	}
 
@@ -505,11 +510,19 @@ func (a *App) handleIdea(ctx context.Context, idea *domain.TradeIdea, marketData
 	if hasMD && md.PreviousPrice != 0 {
 		momentum = (md.Price - md.PreviousPrice) / md.PreviousPrice * 100
 	}
-	// Record the pre-LLM subtotal for the signal detail score breakdown.
+	// The LLM strategies record their own pre-LLM confidence; without the LLM
+	// it is the confidence before the learner (or the final one, if the idea
+	// skipped the learner step).
 	if idea.SupportingSignals == nil {
 		idea.SupportingSignals = map[string]any{}
 	}
-	idea.SupportingSignals["pre_llm_confidence"] = idea.Confidence
+	if idea.SupportingSignals["pre_llm_confidence"] == nil {
+		preLLM, ok := idea.SupportingSignals["pre_learner_confidence"]
+		if !ok {
+			preLLM = idea.Confidence
+		}
+		idea.SupportingSignals["pre_llm_confidence"] = preLLM
+	}
 	llmAnalysis := signalLLMAnalysis(*idea)
 
 	// Read the mode and environment once so a change from the web interface

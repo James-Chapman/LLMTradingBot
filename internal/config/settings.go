@@ -37,7 +37,8 @@ type Settings struct {
 	FeeAndSlippage          float64
 	MinSignalConfidence     float64
 	LLMVetoThreshold        float64
-	LLMShadowReview         bool // ask the LLM about non-LLM 4-hour entries and only record its verdict
+	LLMWeight               float64 // 0–1: share of the LLM's confidence scale applied to an entry's score
+	LLMShadowReview         bool    // ask the LLM about non-LLM 4-hour entries and only record its verdict
 
 	// Basic strategy rules (the eight basic_* strategies)
 	BasicExitVotes          int     // net indicator votes against a position that turn the consensus
@@ -132,6 +133,7 @@ func Defaults() Settings {
 		FeeAndSlippage:          0.009,
 		MinSignalConfidence:     0.65,
 		LLMVetoThreshold:        0.70,
+		LLMWeight:               1.0,
 		LLMShadowReview:         true,
 		BasicExitVotes:          3,
 		BasicExitConfirmCandles: 3,

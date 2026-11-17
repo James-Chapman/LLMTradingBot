@@ -252,7 +252,7 @@ Dashboard.register('intelligence', {
         return (value >= 0 ? '+' : '') + (value * 100).toFixed(1) + '%';
     },
 
-    // Rebuilds the confidence calculation (momentum base, bonuses, penalties, learner, LLM) from the stored inputs.
+    // Rebuilds the confidence calculation (momentum base, bonuses, penalties, LLM, learner) from the stored inputs.
     _computeBreakdown(s) {
         const ss = s.supporting_signals || {};
         const isLong = s.direction === 'long';
@@ -284,30 +284,39 @@ Dashboard.register('intelligence', {
         const atrPct = ss.atr_pct || 0;
         const atrPenalty = atrPct > 1.0 ? -Math.min(0.10, (atrPct - 1.0) * 0.05) : 0;
 
-        // Strategy subtotal
-        const stratConf = Math.max(0.10, Math.min(0.95,
+        // Strategy subtotal, rebuilt from the inputs above
+        const rebuiltConf = Math.max(0.10, Math.min(0.95,
             base + indicatorBonus + newsBonus + llmSentimentBonus + atrPenalty));
 
-        // Learner adjustment: pre_llm_confidence is after the learner, so the
-        // difference to the strategy subtotal is what the learner added or removed.
-        const preLlm = ss.pre_llm_confidence != null ? ss.pre_llm_confidence : stratConf;
-        const learnerDiff = preLlm - stratConf;
-        const learnerScale = stratConf > 0 ? preLlm / stratConf : 1.0;
-
-        // LLM multiplier
-        const llmScale = s.llm_confidence_scale ?? 1.0;
+        // The backend scores in this order: strategy → LLM → learner → final.
         const llmUsed = s.llm_used ?? false;
+        const llmScale = s.llm_confidence_scale ?? 1.0;         // the LLM's own scale (drives the veto)
+        const llmWeight = ss.llm_weight ?? 1.0;                 // LLM_WEIGHT when the signal was made
+        const llmApplied = ss.llm_applied_scale ?? llmScale;    // the scale actually applied to the score
         const finalConf = s.confidence;
+
+        // Signals stored before v0.22.0 lack pre_learner_confidence, and their
+        // pre_llm_confidence is the final score; rebuild their steps instead.
+        const hasSteps = ss.pre_learner_confidence != null;
+        const stratConf = hasSteps ? ss.pre_llm_confidence : rebuiltConf;
+        const afterLlm = hasSteps ? ss.pre_learner_confidence
+            : (llmUsed ? Math.min(0.95, stratConf * llmScale) : stratConf);
+        const llmDiff = afterLlm - stratConf;
+
+        // Learner adjustment: what the learner added or removed after the LLM.
+        const learnerDiff = finalConf - afterLlm;
+        const learnerScale = afterLlm > 0 ? finalConf / afterLlm : 1.0;
 
         return {
             momentum: momentum * 100, base,
             indicatorBonus, votes, available, supporting,
             newsBonus, newsSent, llmSentiment, llmSentimentBonus,
             atrPct, atrPenalty,
-            stratConf, preLlm,
+            stratConf, afterLlm,
+            llmUsed, llmScale, llmWeight, llmApplied, llmDiff,
             learnerDiff, learnerScale,
             learnerAdjusted: Math.abs(learnerDiff) > 0.005,
-            llmScale, llmUsed, finalConf,
+            finalConf,
         };
     },
 
