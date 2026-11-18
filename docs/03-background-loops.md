@@ -86,7 +86,7 @@ The emergency stop is checked again for every idea in step 16 (`handleIdea`). A 
 
 Since 0.19.0 the tick warm-up follows what the selected strategy needs: a strategy without LLM waits until the longest price history among the enabled, priced markets reaches its `RequiredPriceTicks()` ("Tick #N - prices fetched (warming up N/M ticks)"). Every strategy without LLM now reads candles (`RequiredPriceTicks` 0), so none waits for ticks: the candle strategies wait for their own finished candles instead (40 for the basic strategies, more for the 4-hour ones), which the first OHLC fetch usually already provides. The backtest replay applies the same rule.
 
-LLM-backed strategies use a data-driven check instead: each declares `RequiredPriceTicks()`, and the tick waits ("LLM data warmup waiting for … price ticks and news") until at least one market has that many ticks and the news cache is non-empty. `app.TradeWarmupTicks` is `0`; there is no fixed post-start delay.
+LLM-backed strategies use a data-driven check instead: each declares `RequiredPriceTicks()`, and the tick waits ("LLM data warmup waiting for … price ticks and news") until at least one market has that many ticks and the news cache is non-empty. Every LLM strategy now reads candles (`RequiredPriceTicks` 0, including `llm_only_strategy` since 0.24.0), so the message reads "waiting for market data" until a market has its finished candles and the news cache is non-empty. `app.TradeWarmupTicks` is `0`; there is no fixed post-start delay.
 
 On restart, up to 60 price ticks per market are restored from the database, so warm-up may complete immediately.
 
@@ -133,7 +133,7 @@ The loop evaluates the single strategy selected in control state (`evaluateStrat
 
 - The eight basic strategies (`basic_strategy_1h`/`_4h`, `basic_and_llm_strategy_1h`/`_4h`, each also `_long_` = long only) read the indicator consensus gates on finished 1-hour or 4-hour candles; the `basic_and_llm_strategy_*` versions add the LLM signal-analysis/veto pass inside the strategy, once per market per candle.
 - The six 4-hour strategies without LLM evaluate their candles; with `LLM_SHADOW_REVIEW` on, their new entries are also sent to the LLM in the background, exactly as their LLM versions would send them, and the answer is only recorded (`queueShadowReviews`, `docs/06-strategy-and-learning.md`). The tick does not wait for these calls; `App.Wait` does at shutdown.
-- `llm_only_strategy` uses `LLMOnlyStrategy.Evaluate()` and asks the LLM directly for `long`, `short`, or `hold`; indicators are passed into the LLM prompt but do not gate the trade locally.
+- `llm_only_strategy` uses `LLMOnlyStrategy.Evaluate()` and asks the LLM directly for `long`, `short`, or `hold`, once per market per newly closed 1-hour candle (since 0.24.0); indicators (computed on the 1h candles) are passed into the LLM prompt but do not gate the trade locally.
 
 Only one strategy is active at a time. The strategy chosen in the dashboard's Trading settings dialog writes `control.State.SelectStrategy()`, and the next tick applies that strategy to all markets. If the selected ID is unknown, the loop falls back to `strategy.DefaultID` (`basic_and_llm_strategy_1h`). LLM strategies receive the news cache, the analyser, the latest briefing, and the current portfolio in `strategy.Input`.
 

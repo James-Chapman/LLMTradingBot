@@ -201,6 +201,9 @@ type RecommendationRequest struct {
 	Equity        float64
 	Cash          float64
 	OpenPositions []domain.PositionRecord
+	// CandleSeconds is the candle length PriceHistory and Indicators are built
+	// on (whole hours); 0 leaves the prompt without any candle wording.
+	CandleSeconds int
 }
 
 // BriefingStore persists the latest briefing and reflection so they survive
@@ -506,13 +509,21 @@ func (a *LLMAnalyser) RecommendTrade(ctx context.Context, req RecommendationRequ
 		momentum = 0
 	}
 
+	// With a candle length the figures come from finished candles: say so.
+	previousNote, indicatorNote := "", "context only, do not require consensus"
+	if req.CandleSeconds > 0 {
+		hours := strconv.Itoa(req.CandleSeconds/3600) + "h"
+		previousNote = "(previous finished " + hours + " close) "
+		indicatorNote = hours + " candles, finished only; " + indicatorNote
+	}
+
 	userMsg := "Market: " + req.Market + "\n" +
 		"Price: " + a.currency + fmtThousands(req.CurrentPrice, 2) + " | " +
-		"Previous: " + a.currency + fmtThousands(req.PreviousPrice, 2) + " " +
+		"Previous: " + a.currency + fmtThousands(req.PreviousPrice, 2) + " " + previousNote +
 		"| Momentum: " + fmtSigned(momentum*100, 2) + "%\n" +
 		briefingBlock(briefing, req.Market) +
 		reflectionBlock(reflection, "Apply this advice when choosing the current action.\n") + "\n" +
-		"Technical indicators (context only, do not require consensus):\n" + formatIndicators(req.Indicators) + "\n\n" +
+		"Technical indicators (" + indicatorNote + "):\n" + formatIndicators(req.Indicators) + "\n\n" +
 		a.portfolioBlock(req.Equity, req.Cash, req.OpenPositions) +
 		"Recent news (" + assetName(req.Market) + "):\n" + delimitedNewsBlock(relevantNews(req.Market, req.News, 5)) + "\n\n" +
 		"Return JSON with exactly these keys:\n" +

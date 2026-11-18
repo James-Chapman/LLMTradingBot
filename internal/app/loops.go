@@ -318,7 +318,11 @@ func (a *App) strategyTick(ctx context.Context) (skipped bool, err error) {
 		if !llmStrategyDataReady(marketData, latestNews, required) {
 			var waiting []string
 			if len(llmMarketData) == 0 {
-				waiting = append(waiting, fmt.Sprintf("%d price ticks", required))
+				if required > 0 {
+					waiting = append(waiting, fmt.Sprintf("%d price ticks", required))
+				} else {
+					waiting = append(waiting, "market data")
+				}
 			}
 			if len(latestNews) == 0 {
 				waiting = append(waiting, "news")

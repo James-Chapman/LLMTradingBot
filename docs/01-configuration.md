@@ -118,7 +118,7 @@ The stop distances must be above 0 because the risk engine estimates a trade's p
 | `BASIC_MIN_ATR_COST` | `1` | Now | Basic strategies: skip entries whose candle ATR% is below this many times `FEE_AND_SLIPPAGE` (0 = off, at most 20). Set `FEE_AND_SLIPPAGE` to the account's real per-trade cost for this to mean what the backtest measured |
 | `BASIC_TAKE_PROFIT_ATR` | `0` | Now | Basic strategies: close once the price is this many candle ATRs in profit from the entry (0 = off, at most 50) |
 | `MOMENTUM_LOOKBACK_TICKS` | `10` | Now | Strategy ticks of price history used for the momentum baseline (1–199: the bot keeps 200 ticks per market and momentum over N ticks needs N+1) |
-| `LLM_ONLY_MAX_CONCURRENCY` | `3` | Now | Markets the LLM-only strategy analyses at once per tick (1–16) |
+| `LLM_ONLY_MAX_CONCURRENCY` | `3` | Now | Markets the LLM-only strategy analyses at once when a new 1h candle closes (1–16) |
 
 ### Markets
 

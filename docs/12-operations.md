@@ -378,7 +378,7 @@ The strategy loop runs every `STRATEGY_INTERVAL_SECONDS` (Settings → Signals �
 If LLM calls are too slow, either:
 - Increase `LMSTUDIO_TIMEOUT` (default 60 s) or `OPENAI_TIMEOUT` (default 30 s) in Settings → LLM (restart needed).
 - Load a smaller/faster model in LM Studio.
-- Lower `LLM_ONLY_MAX_CONCURRENCY` if parallel per-market calls overload the local server.
+- Lower `LLM_ONLY_MAX_CONCURRENCY` if parallel per-market calls (made when a 1h candle closes) overload the local server.
 - Disable LLM features by clearing `LMSTUDIO_BASE_URL` and `OPENAI_BASE_URL`.
 
 After a timeout or transport failure, the LLM client opens a circuit breaker before retrying. The retry delay starts at 30 seconds, doubles on repeated failures, and caps at 5 minutes. While LM Studio's circuit is open, calls go to the remote fallback if one is configured. A malformed JSON response from the model does not mark the backend unavailable; it only skips that one LLM decision so the next prompt can still run.
@@ -447,7 +447,7 @@ func All(s config.Settings) []Strategy {
 
 Shown at start-up only for a strategy without LLM that reads price ticks: the loop waits until the price history reaches its `RequiredPriceTicks()` (M). None of the registered strategies needs this since 0.19.0; the candle strategies evaluate from the first tick and wait for their own finished candles. The count is the longest history among the enabled markets that were priced this tick, so a disabled or unpriced market cannot hold it back. If price ticks were restored from the database, this message may not appear at all.
 
-For strategies that use the LLM, this tick warm-up is not used. Instead the loop logs "LLM data warmup waiting for …" until at least one market has the strategy's `RequiredPriceTicks()` of history (10 for `llm_only_strategy`; 0 for the `basic_and_llm_strategy_*` versions, which wait instead for 40 finished candles of their own: about 41 hours for 1h, 7 days for 4h, usually already in the first Kraken fetch) and at least one news item is cached. Only markets whose price history is ready are evaluated.
+For strategies that use the LLM, this tick warm-up is not used. Instead the loop logs "LLM data warmup waiting for …" until at least one market has the strategy's `RequiredPriceTicks()` of history (0 for every LLM strategy since 0.24.0, `llm_only_strategy` included, which used 10; they wait instead for 40 finished candles of their own (the message then reads "waiting for market data"): about 41 hours for 1h, 7 days for 4h, usually already in the first Kraken fetch) and at least one news item is cached. Only markets whose price history is ready are evaluated.
 
 ### "No markets could be validated - waiting for Kraken"
 

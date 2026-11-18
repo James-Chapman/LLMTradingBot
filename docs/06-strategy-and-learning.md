@@ -462,7 +462,7 @@ Once 5-minute candles are cached by the OHLC loop, ATR and Stochastic are comput
 
 A strategy without LLM is blocked at start-up until the price history reaches its `RequiredPriceTicks()`. Every such strategy now reads candles (0), so none waits for ticks; each waits for its own finished candles instead. There is no fixed post-start trade delay (`app.TradeWarmupTicks = 0`).
 
-Strategies that include the LLM use data readiness instead of a fixed warm-up time, via `RequiredPriceTicks()`. `LLMOnlyStrategy` needs 10 price-history ticks (`calc.MomentumWindowPoints × 2`), enough for averaged momentum. The `basic_and_llm_strategy_*` versions and the 4-hour LLM versions need 0: they read candles. In both cases the tick waits until at least one market has enough history and the news cache contains at least one item. Markets without enough price history are excluded from that LLM evaluation pass.
+Strategies that include the LLM use data readiness instead of a fixed warm-up time, via `RequiredPriceTicks()`. `LLMOnlyStrategy` needs 0 since 0.24.0 (it used 10 price-history ticks before): like the `basic_and_llm_strategy_*` versions and the 4-hour LLM versions it reads candles, and skips a market until 40 finished 1h candles exist. In both cases the tick waits until at least one market has enough history and the news cache contains at least one item. Markets without enough price history are excluded from that LLM evaluation pass.
 
 ---
 
@@ -471,9 +471,11 @@ Strategies that include the LLM use data readiness instead of a fixed warm-up ti
 **Type:** `LLMOnlyStrategy`  
 **Strategy ID:** `"llm_only_strategy"` (`strategy.LLMOnlyID`; legacy `llm_only` accepted)
 
-The LLM-only strategy does not apply local indicator gates or indicator voting. It asks the LLM for an explicit `long`, `short`, or `hold` recommendation for each market and converts only `long`/`short` responses into `TradeIdea` values. The strategy loop still applies the learner adjustment to its ideas.
+The LLM-only strategy does not apply local indicator gates or indicator voting. Since 0.24.0 it reads the same 1-hour candle view as the basic 1h strategies and asks the LLM for an explicit `long`, `short`, or `hold` recommendation once per market per newly closed 1-hour candle, and converts only `long`/`short` responses into `TradeIdea` values. The strategy loop still applies the learner adjustment to its ideas.
 
-Indicators are still passed into the LLM prompt as context. They are not counted, voted, or required by local strategy code.
+Indicators (computed on the finished 1h candles, with `price_changes` from `CandleChanges`) are still passed into the LLM prompt as context. They are not counted, voted, or required by local strategy code.
+
+**Data and cadence (0.24.0).** For each market the strategy takes the newest finished 1-hour candles (up to 200, the forming candle dropped): the closes are the price history, the previous price is the previous finished 1h close, and the current price sent to the LLM is still the live price. A market with fewer than 40 finished 1h candles (`BasicMinClosedCandles`) is skipped with a log line and no LLM call. The LLM is asked once per market per newly closed candle: a candle is marked done only when the LLM actually answered (any action, including `hold`); if it was unavailable the strategy retries on the next tick. The record is in memory, so after a restart each market is asked once more on its newest closed candle; missed candles are not backfilled. A long/short idea fires at most once per candle: one rejected by the risk engine or approval is not offered again until the next candle. Ideas carry `candle_interval: "1h"`.
 
 Markets are evaluated concurrently: one goroutine per market, bounded by a semaphore of `LLM_ONLY_MAX_CONCURRENCY` (minimum 1). Each goroutine writes only its own result slot, so ideas keep sorted market order. A panic while evaluating one market is recovered, logged, and skips only that market.
 
@@ -506,7 +508,7 @@ The LLM response must contain:
 }
 ```
 
-`hold`, invalid actions, parse failures, or unavailable LLM state (`rec.LLMUsed == false`) produce no signal. A valid `long`/`short` recommendation uses the LLM confidence directly as the trade confidence, with `PositionSizingProposal` from `calc.CalculatePositionSizing(0)` (20%). The normal risk engine, approval flow, position limits, and fully automated confidence threshold still apply after the strategy emits the trade idea.
+`hold`, invalid actions, parse failures, or unavailable LLM state (`rec.LLMUsed == false`) produce no signal. A valid `long`/`short` recommendation (thesis "LLM recommendation on the closed 1h candles: …", entry plan "Enter at market on LLM recommendation, read from the closed 1h candles") uses the LLM confidence directly as the trade confidence, with `PositionSizingProposal` from `calc.CalculatePositionSizing(0)` (20%). The normal risk engine, approval flow, position limits, and fully automated confidence threshold still apply after the strategy emits the trade idea.
 
 ---
 

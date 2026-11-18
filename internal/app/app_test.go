@@ -666,8 +666,8 @@ func TestRegisteredStrategies(t *testing.T) {
 		if combined.RequiredPriceTicks() != 0 {
 			t.Errorf("indicator-plus-LLM reads candles and waits for its own candle warm-up, not price ticks")
 		}
-		if llmOnly.RequiredPriceTicks() <= 0 || llmOnly.RequiredPriceTicks() > strategy.LookbackTicks+1 {
-			t.Errorf("LLM-only needs a short momentum window, got %d", llmOnly.RequiredPriceTicks())
+		if llmOnly.RequiredPriceTicks() != 0 {
+			t.Errorf("LLM-only reads finished 1h candles and waits for its own candle warm-up, got %d ticks", llmOnly.RequiredPriceTicks())
 		}
 		if _, ok := StrategyLabels[basic.ID()]; !ok {
 			t.Errorf("every strategy needs a dashboard label")

@@ -129,6 +129,25 @@ func signalRequest() SignalRequest {
 func TestRecommendTrade(t *testing.T) {
 	ctx := context.Background()
 
+	t.Run("GIVEN a candle interval WHEN a recommendation runs THEN the prompt says the figures are from finished candles", func(t *testing.T) {
+		client := newFakeLLMClient(nil)
+		NewAnalyser(client, "€").RecommendTrade(ctx, RecommendationRequest{Market: "BTC/EUR", CurrentPrice: 102, PreviousPrice: 100, CandleSeconds: 3600})
+		prompt := client.userPrompt(t)
+		for _, want := range []string{"1h candles", "previous finished 1h close"} {
+			if !strings.Contains(prompt, want) {
+				t.Errorf("prompt missing %q:\n%s", want, prompt)
+			}
+		}
+	})
+
+	t.Run("GIVEN no candle interval WHEN a recommendation runs THEN the prompt does not mention candles", func(t *testing.T) {
+		client := newFakeLLMClient(nil)
+		NewAnalyser(client, "€").RecommendTrade(ctx, RecommendationRequest{Market: "BTC/EUR", CurrentPrice: 102, PreviousPrice: 100})
+		if prompt := client.userPrompt(t); strings.Contains(prompt, "candle") {
+			t.Errorf("prompt should be unchanged without an interval:\n%s", prompt)
+		}
+	})
+
 	t.Run("GIVEN indicator context WHEN a recommendation runs THEN indicators are in the prompt", func(t *testing.T) {
 		client := newFakeLLMClient(nil)
 		analyser := NewAnalyser(client, "€")

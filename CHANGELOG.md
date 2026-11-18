@@ -7,6 +7,17 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.24.0] — 2026-11-18
+
+### Changed
+- **The All LLM strategy now reads finished 1-hour candles and asks the LLM once per closed candle.** It used to call the LLM for every market on every strategy tick (60 s default) with 30-second price ticks and indicators from ticks and 5-minute candles. It now sees the same 1-hour candle view as the basic 1h strategies (up to 200 finished candles, the forming one dropped; the live price is still sent as the current price) and asks once per market per newly closed candle. A candle counts as asked only when the LLM answered (any action, including hold); if the LLM was unavailable it retries on the next tick. After a restart each market is asked once more on its newest closed candle; missed candles are not backfilled.
+- A market with fewer than 40 finished 1h candles is skipped (logged, no LLM call). The 30-second tick warm-up is gone (`RequiredPriceTicks()` is 0); the start-up message reads "waiting for market data".
+- A long/short idea fires at most once per candle; one rejected by risk or approval is not offered again until the next candle.
+- The trade prompt labels the previous price "(previous finished 1h close)" and the indicators "(1h candles, finished only; ...)" for this strategy (new `RecommendationRequest.CandleSeconds`; other callers are unchanged). Ideas carry `candle_interval: "1h"`.
+- The signal dialog's chart opens on 1h candles for this strategy (`candle_minutes` 60, was 15).
+
+---
+
 ## [0.23.0] — 2026-11-17
 
 ### Added

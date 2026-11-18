@@ -842,7 +842,7 @@ Returns the full context of one trade idea for the signal detail modal. Returns 
 }
 ```
 
-`candle_minutes` (since 0.23.0) is the candle length the signal's strategy reads (`strategy.CandleMinutes`): 60 for the 1-hour basic strategies, 240 for the 4-hour ones, 15 for `llm_only_strategy` and unknown ids. The dialog's chart opens on it.
+`candle_minutes` (since 0.23.0) is the candle length the signal's strategy reads (`strategy.CandleMinutes`): 60 for the 1-hour basic strategies, 240 for the 4-hour ones, 60 for `llm_only_strategy` (since 0.24.0; 15 before) and 15 for unknown ids. The dialog's chart opens on it.
 
 ---
 

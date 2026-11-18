@@ -77,12 +77,11 @@ func TestStrategyRegistry(t *testing.T) {
 		}
 	})
 
-	t.Run("GIVEN LLM strategies WHEN price history requirements are read THEN the candle-based combined strategies need no ticks and llm_only needs a short history", func(t *testing.T) {
+	t.Run("GIVEN LLM strategies WHEN price history requirements are read THEN the candle-based combined strategies and llm_only need no ticks", func(t *testing.T) {
 		if got := ByID(list, BasicAndLLM1hID).RequiredPriceTicks(); got != 0 {
 			t.Fatalf("basic_and_llm_strategy_1h ticks = %d", got)
 		}
-		llmOnly := ByID(list, LLMOnlyID).RequiredPriceTicks()
-		if llmOnly <= 0 || llmOnly >= LookbackTicks+1 {
+		if llmOnly := ByID(list, LLMOnlyID).RequiredPriceTicks(); llmOnly != 0 {
 			t.Fatalf("llm_only ticks = %d", llmOnly)
 		}
 	})

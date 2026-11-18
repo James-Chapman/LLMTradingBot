@@ -367,10 +367,10 @@ Indicators are computed once per tick inside `strategyLoop` (`internal/app/loops
 
 ### Workflow 2b: LLM-Only Trade Recommendation (`RecommendTrade`)
 
-**Trigger:** Every market evaluated by `llm_only_strategy` (`internal/strategy/llm_only.go`), at most `LLM_ONLY_MAX_CONCURRENCY` calls in parallel  
+**Trigger:** Each market evaluated by `llm_only_strategy` (`internal/strategy/llm_only.go`) once per newly closed 1-hour candle (since 0.24.0; before, every strategy tick), at most `LLM_ONLY_MAX_CONCURRENCY` calls in parallel  
 **Returns:** `LLMTradeRecommendation`
 
-The LLM receives all the same contextual inputs as signal analysis (price, indicators, briefing, reflection, portfolio, news) but there is no pre-existing trade direction; it must originate the action itself. Indicators are passed as context; the strategy applies no indicator consensus gate before calling the LLM.
+The LLM receives all the same contextual inputs as signal analysis (price, indicators, briefing, reflection, portfolio, news) but there is no pre-existing trade direction; it must originate the action itself. Indicators are passed as context; the strategy applies no indicator consensus gate before calling the LLM. Since 0.24.0 the strategy sends the finished 1-hour candles (closes as price history, indicators computed on them, previous price = previous finished 1h close, live current price) and sets `RecommendationRequest.CandleSeconds` (3600); with it set the prompt labels the previous price "(previous finished 1h close)" and the indicators "(1h candles, finished only; context only, do not require consensus)". Other callers leave `CandleSeconds` 0 and their prompt is unchanged. The example below shows the prompt without it.
 
 #### System Prompt
 

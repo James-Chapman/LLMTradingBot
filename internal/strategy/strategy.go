@@ -131,13 +131,13 @@ func IsBasicAndLLM(id string) bool {
 }
 
 // CandleMinutes returns the length, in minutes, of the candles strategy id
-// reads its signals from: 60 for the 1-hour basic strategies, 240 for the
+// reads its signals from: 60 for the 1-hour basic strategies and All LLM, 240 for the
 // 4-hour ones (the basic 4h, trend, Donchian, RSI dip, MACD, squeeze and
-// rotation strategies and their LLM versions). Strategies that read the tick
-// price (llm_only) and unknown ids get 15, the closest candles the bot keeps.
+// rotation strategies and their LLM versions). Unknown ids get 15,
+// the closest candles the bot keeps.
 func CandleMinutes(id string) int {
 	switch control.CanonicalStrategyID(id) {
-	case Basic1hID, BasicLong1hID, BasicAndLLM1hID, BasicAndLLMLong1hID:
+	case Basic1hID, BasicLong1hID, BasicAndLLM1hID, BasicAndLLMLong1hID, LLMOnlyID:
 		return 60
 	case Basic4hID, BasicLong4hID, BasicAndLLM4hID, BasicAndLLMLong4hID,
 		TrendID, TrendAndLLMID, DonchianID, DonchianAndLLMID, RSIDipID, RSIDipAndLLMID,

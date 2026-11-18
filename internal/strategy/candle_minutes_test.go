@@ -32,8 +32,14 @@ func TestCandleMinutes(t *testing.T) {
 		}
 	})
 
-	t.Run("GIVEN a strategy that reads the tick price, or an unknown id WHEN its candle length is asked THEN the 15-minute candles are used", func(t *testing.T) {
-		for _, id := range []string{LLMOnlyID, "retired_strategy"} {
+	t.Run("GIVEN the All LLM strategy WHEN its candle length is asked THEN it is one hour", func(t *testing.T) {
+		if m := CandleMinutes(LLMOnlyID); m != 60 {
+			t.Errorf("%s: %d minutes, want 60", LLMOnlyID, m)
+		}
+	})
+
+	t.Run("GIVEN an unknown id WHEN its candle length is asked THEN the 15-minute candles are used", func(t *testing.T) {
+		for _, id := range []string{"retired_strategy"} {
 			if m := CandleMinutes(id); m != 15 {
 				t.Errorf("%s: %d minutes, want 15", id, m)
 			}
